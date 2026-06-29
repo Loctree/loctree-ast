@@ -28,7 +28,7 @@ LOCTREE_LSP_PATH=/path/to/suite-language-server npm run package
 ### From Marketplace (Coming Soon)
 
 ```
-ext install libraxis.loctree
+ext install vetcoders.loctree
 ```
 
 ## Features
