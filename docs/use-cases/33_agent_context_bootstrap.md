@@ -26,7 +26,7 @@ loct --for-ai
 
 Output (condensed):
 ```
-Project: CodeScribe (Rust + AppKit)
+Project: Codescribe (Rust + AppKit)
 Files: 230, LOC: 110K
 Languages: Rust (87%), Swift (8%), Other (5%)
 

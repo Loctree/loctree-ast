@@ -259,4 +259,4 @@ For questions or issues with integration:
 
 ---
 
-Vibecrafted with AI Agents by VetCoders (c)2025 The Loctree Team
+Vibecrafted with AI Agents by Vetcoders (c)2025 The Loctree Team

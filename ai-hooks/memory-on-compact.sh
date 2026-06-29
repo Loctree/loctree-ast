@@ -2,7 +2,7 @@
 # ============================================================================
 # memory-on-compact.sh - Save session context before compaction
 # ============================================================================
-# Created by Vetcoders ⓒ 2025-2026 VetCoders
+# Created by Vetcoders ⓒ 2025-2026 Vetcoders
 #
 # TRIGGER: PreCompact hook (manual or auto)
 # PURPOSE: Persist conversation context to memex before context window compacts

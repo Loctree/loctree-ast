@@ -1,4 +1,4 @@
-## VibeCrafted Guidelines
+## Vibecrafted Guidelines
 
 This repository keeps the canonical project contract in `AGENTS.md`.
 Read that first, then use these repo-specific defaults:

@@ -622,7 +622,7 @@ mod tests {
             SnapshotRecordSpec {
                 roots: &["/tmp/demo"],
                 generated_at: Some("2026-03-31T16:18:00Z"),
-                owner_repo: Some("VetCoders/demo"),
+                owner_repo: Some("vetcoders/demo"),
                 repo: Some("demo"),
                 branch: Some("main"),
                 commit: Some("abc123"),
@@ -635,7 +635,7 @@ mod tests {
             SnapshotRecordSpec {
                 roots: &["/tmp/demo/src"],
                 generated_at: Some("2026-03-31T16:19:00Z"),
-                owner_repo: Some("VetCoders/demo"),
+                owner_repo: Some("vetcoders/demo"),
                 repo: Some("demo"),
                 branch: Some("feature"),
                 commit: Some("def456"),
@@ -681,7 +681,7 @@ mod tests {
             SnapshotRecordSpec {
                 roots: &["/tmp/demo"],
                 generated_at: Some("2026-03-30T12:00:00Z"),
-                owner_repo: Some("VetCoders/demo"),
+                owner_repo: Some("vetcoders/demo"),
                 repo: Some("demo"),
                 branch: Some("main"),
                 commit: Some("aaa111"),
@@ -694,7 +694,7 @@ mod tests {
             SnapshotRecordSpec {
                 roots: &["/tmp/demo"],
                 generated_at: Some("2026-03-31T12:00:00Z"),
-                owner_repo: Some("VetCoders/demo"),
+                owner_repo: Some("vetcoders/demo"),
                 repo: Some("demo"),
                 branch: Some("feature"),
                 commit: Some("bbb222"),
@@ -707,7 +707,7 @@ mod tests {
             SnapshotRecordSpec {
                 roots: &["/tmp/demo"],
                 generated_at: Some("2026-03-31T12:00:00Z"),
-                owner_repo: Some("VetCoders/demo"),
+                owner_repo: Some("vetcoders/demo"),
                 repo: Some("demo"),
                 branch: Some("feature"),
                 commit: Some("bbb222"),

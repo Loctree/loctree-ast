@@ -2,7 +2,7 @@
 
 > How AI agents use loctree to build a mental model of the codebase before touching a single line.
 
-**Context:** Real agent workflow observed in production (CodeScribe, macOS Rust+AppKit)
+**Context:** Real agent workflow observed in production (Codescribe, macOS Rust+AppKit)
 **Date:** 2026-02
 
 ## The Problem

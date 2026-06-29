@@ -1759,7 +1759,7 @@ mod management_commands {
                 "schema_version": "0.9.0",
                 "generated_at": "2026-03-30T12:00:00Z",
                 "roots": [repo_root.display().to_string()],
-                "git_owner_repo": "VetCoders/Loctree",
+                "git_owner_repo": "vetcoders/loctree",
                 "git_repo": "Loctree",
                 "git_branch": "main",
                 "git_commit": "aaa111"
@@ -1771,7 +1771,7 @@ mod management_commands {
                 "schema_version": "0.9.0",
                 "generated_at": "2026-03-31T12:00:00Z",
                 "roots": [nested_root.display().to_string()],
-                "git_owner_repo": "VetCoders/Loctree",
+                "git_owner_repo": "vetcoders/loctree",
                 "git_repo": "Loctree",
                 "git_branch": "feature",
                 "git_commit": "bbb222"
@@ -1783,7 +1783,7 @@ mod management_commands {
                 "schema_version": "0.9.0",
                 "generated_at": "2026-03-31T12:00:00Z",
                 "roots": [nested_root.display().to_string()],
-                "git_owner_repo": "VetCoders/Loctree",
+                "git_owner_repo": "vetcoders/loctree",
                 "git_repo": "Loctree",
                 "git_branch": "feature",
                 "git_commit": "bbb222"
@@ -1811,7 +1811,7 @@ mod management_commands {
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(stdout.contains("Org/Repo | Path | Cache size MB | Meta"));
-        assert!(stdout.contains(&format!("VetCoders/Loctree | {} |", repo_root.display())));
+        assert!(stdout.contains(&format!("vetcoders/loctree | {} |", repo_root.display())));
         assert!(stdout.contains("scans 2"));
         assert!(stdout.contains("roots 2"));
         assert!(stdout.contains("branches 2"));

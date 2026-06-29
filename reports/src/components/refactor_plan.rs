@@ -1,6 +1,6 @@
 //! Refactor plan panel - architectural refactoring visualization.
 //!
-//! Vibecrafted with AI Agents by VetCoders (c)2026 VetCoders
+//! Vibecrafted with AI Agents by Vetcoders (c)2026 Vetcoders
 
 use leptos::prelude::*;
 

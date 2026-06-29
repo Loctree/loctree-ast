@@ -2,7 +2,7 @@
 # ============================================================================
 # memex-startup.sh - Project context loader at session start
 # ============================================================================
-# Created by Vetcoders ⓒ 2025-2026 VetCoders
+# Created by Vetcoders ⓒ 2025-2026 Vetcoders
 #
 # TRIGGER: SessionStart hook
 # PURPOSE: Load institutional knowledge about the current project from memex

@@ -3039,7 +3039,7 @@ input[type="range"]::-webkit-slider-thumb {
 
 /* ============================================
    Refactor Plan Panel
-   Vibecrafted with AI Agents by VetCoders (c)2026 VetCoders
+   Vibecrafted with AI Agents by Vetcoders (c)2026 Vetcoders
    ============================================ */
 
 .refactor-plan-panel {

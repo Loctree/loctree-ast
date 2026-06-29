@@ -2,7 +2,7 @@
 
 > How an AI agent used loctree to plan and execute a surgical removal of a UI component from a multi-module Rust+AppKit application.
 
-**Context:** CodeScribe (macOS daemon, Rust + AppKit), removing Transcription tab from voice chat overlay
+**Context:** Codescribe (macOS daemon, Rust + AppKit), removing Transcription tab from voice chat overlay
 **Date:** 2026-02
 
 ## The Task

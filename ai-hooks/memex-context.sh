@@ -2,7 +2,7 @@
 # ============================================================================
 # memex-context.sh - Project context loader via HTTP API
 # ============================================================================
-# Created by Vetcoders ⓒ 2025-2026 VetCoders
+# Created by Vetcoders ⓒ 2025-2026 Vetcoders
 #
 # TRIGGER: PostToolUse (Grep, Read)
 # PURPOSE: Augment tool results with relevant memories from memex

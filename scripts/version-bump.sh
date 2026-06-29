@@ -38,7 +38,7 @@
 #   ./scripts/version-bump.sh --set 1.0.0 --all --tag
 #   ./scripts/version-bump.sh --show-deps
 #
-# 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents (c)2024-2026 VetCoders
+# 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents (c)2024-2026 Vetcoders
 
 set -euo pipefail
 
@@ -809,7 +809,7 @@ git -C "$ROOT_DIR" commit -m "chore(release): bump versions
 
 $commit_parts
 
-𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents (c)2024-2026 VetCoders"
+𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents (c)2024-2026 Vetcoders"
 
 log_success "Committed version bump"
 
