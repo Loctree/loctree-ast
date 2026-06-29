@@ -101,7 +101,7 @@ heartbeat_enabled = false
 # socket = "~/.rmcp-servers/sockets/memory.sock"
 # cmd = "npx"
 # args = ["-y", "@modelcontextprotocol/server-memory"]
-# env = { MEMORY_FILE_PATH = "/Users/YOURUSER/AI_memory/memory.json" }
+# env = { MEMORY_FILE_PATH = "/Users/YOURUSER/memory/memory.json" }
 # max_active_clients = 3
 # lazy_start = true
 # heartbeat_enabled = false
