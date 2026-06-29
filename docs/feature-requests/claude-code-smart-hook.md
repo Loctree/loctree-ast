@@ -105,7 +105,7 @@ When Claude Code uses Grep with pattern `useAgentSlashHandler`:
 ## Reference Implementation
 
 Working prototype at: `~/.claude/hooks/loct-smart-suggest.sh`
-(Created during Vista development session by M&K)
+(Created during Vista development session by vetcoders)
 
 ---
 

@@ -2,7 +2,7 @@
 # ============================================================================
 # loct-grep-augment.sh v10 - SEMANTIC AUGMENTATION WITH loct find
 # ============================================================================
-# Created by M&K ⓒ 2025-2026 The Loctree Team
+# Created by Vetcoders ⓒ 2025-2026 The Loctree Team
 #
 # PHILOSOPHY: Every grep gets loctree context. Always <100ms.
 #
@@ -160,7 +160,7 @@ $json_content"
     # Truncate if too large (prevents client issues)
     msg="$(truncate_payload "$msg" "$MAX_PAYLOAD_BYTES")"
 
-    # Human-readable for Maciej (stderr)
+    # Human-readable (stderr)
     echo "$msg" >&2
 
     # JSON for Claude Code (stdout - CC parses hookSpecificOutput)

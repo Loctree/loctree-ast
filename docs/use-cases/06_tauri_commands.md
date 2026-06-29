@@ -29,8 +29,8 @@ $ loct commands --missing
 
 Tauri command coverage:
   Missing handlers (frontend calls without backend):
-    save_libraxis_api_key, load_llm_endpoint, load_stt_endpoint,
-    load_libraxis_api_key, load_tts_endpoint
+    save_provider_api_key, load_llm_endpoint, load_stt_endpoint,
+    load_provider_api_key, load_tts_endpoint
   Unused handlers (HIGH confidence):
     validate_veterinary_medication, transcription_publish_partial,
     cancel_invitation, get_pending_invitations, voice_get_metrics...

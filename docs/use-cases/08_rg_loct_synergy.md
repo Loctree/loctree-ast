@@ -61,4 +61,4 @@ rg "handler" --type ts           # sprawdź matche
 
 ---
 
-*M&K ⓒ 2025-2026*
+*Vetcoders ⓒ 2025-2026*

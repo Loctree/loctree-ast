@@ -22,7 +22,7 @@
 #
 # ============================================================================
 # Part of loctree - https://loct.io
-# Created by M&K ⓒ 2025-2026 The LibraxisAI Team
+# Created by Vetcoders ⓒ 2025-2026 The Loctree Team
 # ============================================================================
 
 set -euo pipefail
@@ -167,7 +167,7 @@ select_hooks() {
                 success "rmcp-memex installed"
             else
                 warn "cargo install failed - trying from git..."
-                if cargo install --git https://github.com/LibraxisAI/rmcp-memex 2>/dev/null; then
+                if cargo install --git https://github.com/vetcoders/rmcp-memex 2>/dev/null; then
                     success "rmcp-memex installed from git"
                 else
                     error "Failed to install rmcp-memex"

@@ -9,9 +9,9 @@ members = [
 ]
 
 # Removed from workspace:
-# - rust-memex: use crates.io version (0.3.2+), standalone: ~/Libraxis/rmcp-memex
+# - rust-memex: use crates.io version (0.3.2+), standalone: ~/rmcp-memex
 # - rmcp-mux: deprecated (dead end approach)
-# - rmcp-config-ui: moved to ~/Libraxis/rmcp-config-ui
+# - rmcp-config-ui: moved to ~/rmcp-config-ui
 
 [workspace.package]
 version = "0.8.17"

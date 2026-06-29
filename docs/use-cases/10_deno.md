@@ -80,4 +80,4 @@ This is a method, not a module-level function. Minor refinement needed.
 
 ---
 
-*Tested by M&K ⓒ 2025-2026 The Loctree Team*
+*Tested by Vetcoders ⓒ 2025-2026 The Loctree Team*

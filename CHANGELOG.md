@@ -1033,7 +1033,7 @@ This release dramatically reduces false positives in dead export detection acros
 - `--ignore-symbols-preset <name>` (currently `common` → `main,run,setup,test_*`) and support for `foo*` prefixes in `--ignore-symbols`.
 
 ### Changed
-- Help/README/Monika guide updated with new flags; duplicate analysis now considers prefix patterns.
+- Help/README/user guide updated with new flags; duplicate analysis now considers prefix patterns.
 
 ## [0.2.6] - 2025-11-22
 
@@ -1050,7 +1050,7 @@ This release dramatically reduces false positives in dead export detection acros
 - Default analyzer extensions now include `py`.
 
 ### Changed
-- README and Monika's guide updated with Python support.
+- README and user guide updated with Python support.
 
 ## [0.2.4] - 2025-11-22
 
