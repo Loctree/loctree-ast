@@ -12,7 +12,7 @@ Vista is a veterinary clinic management desktop application built with Tauri (Ru
 ## Initial Scan
 
 ```bash
-cd /Users/maciejgad/hosted/vista
+cd ~/vista
 loct
 ```
 

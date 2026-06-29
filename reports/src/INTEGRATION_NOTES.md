@@ -180,7 +180,7 @@ To test the visualization without full integration:
 
 1. **Open the standalone example**:
    ```bash
-   open /Users/maciejgad/hosted/loctree/reports/src/twins_graph_example.html
+   open ~/loctree/reports/src/twins_graph_example.html
    ```
 
 2. **Verify features**:

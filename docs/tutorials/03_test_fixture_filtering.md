@@ -15,7 +15,7 @@ Example false positives:
 
 ## Solution Overview
 
-Add test filtering using the existing `is_test_file()` function in `/Users/maciejgad/hosted/loctree/loctree_rs/src/cli/dispatch.rs` (lines 895-930).
+Add test filtering using the existing `is_test_file()` function in `~/loctree/loctree_rs/src/cli/dispatch.rs` (lines 895-930).
 
 ### Key Function (Already Exists)
 ```rust
@@ -206,7 +206,7 @@ if arg == "--include-tests" {
 ### Test with loctree's own repository
 
 ```bash
-cd /Users/maciejgad/hosted/loctree
+cd ~/loctree
 
 # Build with changes
 cargo build --release

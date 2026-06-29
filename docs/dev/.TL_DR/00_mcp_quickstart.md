@@ -39,7 +39,7 @@ cp docs/dev/.TL_DR/config-files/mux.toml ~/.rmcp_servers/config/mux.toml
 ```
 
 **IMPORTANT**: Edit `~/.rmcp_servers/config/mux.toml` and replace all occurrences of:
-- `/Users/YOURUSER/` → your actual home path (e.g., `/Users/monika/`)
+- `/Users/YOURUSER/` → your actual home path (e.g., `/Users/you/`)
 - `YOUR_BRAVE_API_KEY_HERE` → your Brave Search API key
 - `YOUR_GITHUB_TOKEN_HERE` → your GitHub personal access token
 
@@ -145,12 +145,12 @@ In `mux.toml`:
 ```toml
 [servers.rmcp-memex]
 socket = "~/.rmcp_servers/sockets/rmcp-memex.sock"  # Unique socket!
-cmd = "/Users/silver/.cargo/bin/rmcp_memex"
+cmd = "/Users/YOURUSER/.cargo/bin/rmcp_memex"
 args = ["serve", "--db-path", "~/.rmcp_servers/rmcp_memex/lancedb"]
 
 [servers.rmcp-memex-ollama]
 socket = "~/.rmcp_servers/sockets/rmcp-memex-ollama.sock"  # Different socket!
-cmd = "/Users/silver/.cargo/bin/rmcp_memex"
+cmd = "/Users/YOURUSER/.cargo/bin/rmcp_memex"
 args = ["serve", "--db-path", "/path/to/other/lancedb"]
 ```
 
@@ -160,11 +160,11 @@ In `~/.claude.json`:
   "mcpServers": {
     "rmcp-memex": {
       "command": "rmcp-mux",
-      "args": ["proxy", "--socket", "/Users/silver/.rmcp_servers/sockets/rmcp-memex.sock"]
+      "args": ["proxy", "--socket", "/Users/YOURUSER/.rmcp_servers/sockets/rmcp-memex.sock"]
     },
     "rmcp-memex-ollama": {
       "command": "rmcp-mux",
-      "args": ["proxy", "--socket", "/Users/silver/.rmcp_servers/sockets/rmcp-memex-ollama.sock"]
+      "args": ["proxy", "--socket", "/Users/YOURUSER/.rmcp_servers/sockets/rmcp-memex-ollama.sock"]
     }
   }
 }

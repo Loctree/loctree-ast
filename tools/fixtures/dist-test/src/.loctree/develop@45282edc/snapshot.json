@@ -15,7 +15,7 @@
       "ts_paths": {},
       "ts_base_url": null,
       "py_roots": [
-        "/Users/maciejgad/hosted/loctree/tools/fixtures/dist-test/src"
+        "/Users/tester/loctree/tools/fixtures/dist-test/src"
       ],
       "rust_crate_roots": []
     },

@@ -90,7 +90,7 @@ log_level = "info"
 # Jeśli puste, domyślnie $HOME i current working directory
 allowed_paths = [
     "~",
-    "/Volumes/LibraxisShare/Klaudiusz",
+    "/Volumes/Share/user",
     "/opt/shared/documents"
 ]
 

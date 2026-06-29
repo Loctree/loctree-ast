@@ -15,7 +15,7 @@
       "ts_paths": {},
       "ts_base_url": null,
       "py_roots": [
-        "/Users/polyversai/Libraxis/loctree-suite/tools/fixtures/typescript-ambient"
+        "/Users/tester/loctree/tools/fixtures/typescript-ambient"
       ],
       "rust_crate_roots": []
     },

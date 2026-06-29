@@ -11,7 +11,7 @@ use super::{
 use crate::types::ReportSection;
 use leptos::prelude::*;
 
-/// Shorten a path for display: "vista/src" instead of "/Users/maciej/hosted/vista/src"
+/// Shorten a path for display: "project/src" instead of "/Users/you/project/src"
 fn shorten_path(path: &str) -> String {
     let parts: Vec<&str> = path.split('/').collect();
     // Take last 2-3 meaningful parts

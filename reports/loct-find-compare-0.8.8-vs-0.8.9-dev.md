@@ -4,8 +4,8 @@ Generated: 2026-01-20 07:00
 
 ## Binaries
 
-- system: `/Users/maciejgad/.local/bin/loct` (loctree 0.8.8)
-- local: `/Users/maciejgad/hosted/loctree/target/debug/loct` (loctree 0.8.9-dev)
+- system: `~/.local/bin/loct` (loctree 0.8.8)
+- local: `~/loctree/target/debug/loct` (loctree 0.8.9-dev)
 
 ## Symbol match deltas (10 queries)
 
@@ -31,7 +31,7 @@ Generated: 2026-01-20 07:00
 
 ## Raw side-by-side output
 
-Full output: `/Users/maciejgad/hosted/loctree/reports/loct-find-compare-0.8.8-vs-0.8.9-dev.txt`
+Full output: `~/loctree/reports/loct-find-compare-0.8.8-vs-0.8.9-dev.txt`
 
 ---
 Example:

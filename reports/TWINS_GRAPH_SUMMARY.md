@@ -5,7 +5,7 @@
 A stunning interactive graph visualization for displaying "twin" symbols (functions/types with identical names exported from different files) and "dead parrots" (duplicate exports) in codebases.
 
 **Created**: December 6, 2025
-**Location**: `/Users/maciejgad/hosted/loctree/reports/src/`
+**Location**: `~/loctree/reports/src/`
 **Status**: Complete and ready for integration
 
 ## Files Created
@@ -177,7 +177,7 @@ pub symbol_exports: HashMap<String, Vec<SymbolLocation>>
 
 **Open the example**:
 ```bash
-open /Users/maciejgad/hosted/loctree/reports/src/twins_graph_example.html
+open ~/loctree/reports/src/twins_graph_example.html
 ```
 
 This will show a fully interactive graph with realistic Rust project data.
