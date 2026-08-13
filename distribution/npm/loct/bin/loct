@@ -1,0 +1,4 @@
+#!/usr/bin/env node
+
+// `loct` is a short alias for `loctree` — same runtime binary.
+require('../index.js').runRuntime(process.argv.slice(2));

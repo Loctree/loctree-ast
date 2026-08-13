@@ -8,13 +8,13 @@
 //!
 //! The response is byte-for-byte the same JSON shape as `loct body --json`
 //! (`{ symbol, bodies: [{ symbol, file, start_line, end_line, language,
-//! source, truncated, total_lines, line_cap }] }`) so plugins can share a
-//! single type across the CLI and LSP surfaces. The engine
+//! source, truncated, total_lines, line_cap, extent }] }`) so plugins can
+//! share a single type across the CLI and LSP surfaces. The engine
 //! ([`loctree::body::query_symbol_body`]) already serializes to that shape,
 //! so [`BodyResponse`] is a thin re-export of [`loctree::body::BodyResult`]
 //! — no field-mapping conversion is required.
 //!
-//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by VetCoders ⓒ 2025-2026 VetCoders
+//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders ⓒ 2025-2026 Vetcoders
 
 use std::path::PathBuf;
 
@@ -47,7 +47,7 @@ pub struct BodyParams {
 /// Serializes to exactly the `loct body --json` shape:
 /// `{ "symbol": "...", "bodies": [{ "symbol", "file", "start_line",
 /// "end_line", "language", "source", "truncated", "total_lines",
-/// "line_cap" }] }`.
+/// "line_cap", "extent" }] }`.
 #[derive(Debug, Clone, Serialize)]
 pub struct BodyResponse {
     /// Symbol name queried.
@@ -58,19 +58,13 @@ pub struct BodyResponse {
 
 impl BodyResponse {
     /// Build a response from the engine result, applying the optional
-    /// `file` disambiguation filter.
+    /// `file` disambiguation filter (shared with the CLI `--file` flag via
+    /// [`loctree::body::BodyResult::filtered_to_file`]).
     pub fn from_result(result: BodyResult, file_filter: Option<&str>) -> Self {
-        let bodies = match file_filter {
-            Some(needle) if !needle.is_empty() => result
-                .bodies
-                .into_iter()
-                .filter(|b| b.file == needle || b.file.ends_with(needle))
-                .collect(),
-            _ => result.bodies,
-        };
+        let filtered = result.filtered_to_file(file_filter);
         BodyResponse {
-            symbol: result.symbol,
-            bodies,
+            symbol: filtered.symbol,
+            bodies: filtered.bodies,
         }
     }
 }
@@ -112,6 +106,7 @@ mod tests {
             truncated: false,
             total_lines: 3,
             line_cap: 200,
+            extent: loctree::body::EXTENT_BRACE.into(),
         }
     }
 
@@ -157,9 +152,10 @@ mod tests {
             "truncated",
             "total_lines",
             "line_cap",
+            "extent",
         ] {
             assert!(entry.contains_key(key), "missing key {key} in {json}");
         }
-        assert_eq!(entry.len(), 9, "exactly 9 fields per body: {json}");
+        assert_eq!(entry.len(), 10, "exactly 10 fields per body: {json}");
     }
 }

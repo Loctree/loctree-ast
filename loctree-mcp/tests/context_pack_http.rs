@@ -55,7 +55,7 @@ fn context_pack_walks_all_six_cards() {
             "core",
             "structural",
             "runtime",
-            "memory",
+            "intent",
             "verification",
             "risk"
         ]
@@ -173,6 +173,9 @@ fn start_server(project: &Path) -> TestServer {
             "error",
         ])
         .env("LOCT_CACHE_DIR", project.join(".loctree-cache"))
+        // Fixtures live in TMPDIR, outside any git checkout; the scan guard
+        // (loctree snapshot.rs) documents this env var as its test-side counterpart.
+        .env("LOCT_ALLOW_NON_GIT_ROOT", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())

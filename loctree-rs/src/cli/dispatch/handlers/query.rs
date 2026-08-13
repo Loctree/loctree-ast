@@ -9,6 +9,8 @@ use super::super::{
     DispatchResult, GlobalOptions, load_or_create_query_snapshot_for_roots, load_or_create_snapshot,
 };
 
+const DEFAULT_WHERE_SYMBOL_LIMIT: usize = 25;
+
 pub fn handle_find_where_symbol_command(
     opts: &FindOptions,
     global: &GlobalOptions,
@@ -26,7 +28,7 @@ pub fn handle_find_where_symbol_command(
         return DispatchResult::Exit(1);
     }
 
-    let roots = vec![std::path::PathBuf::from(".")];
+    let roots = opts.scan_roots();
     let query_global = query_global_options(global);
     let snapshot = match load_or_create_query_snapshot_for_roots(&roots, &query_global) {
         Ok(s) => s,
@@ -36,7 +38,11 @@ pub fn handle_find_where_symbol_command(
         }
     };
 
-    let result = query_where_symbol(&snapshot, &target);
+    let result = query_where_symbol(&snapshot, &target).bounded(if opts.all {
+        None
+    } else {
+        Some(opts.limit.unwrap_or(DEFAULT_WHERE_SYMBOL_LIMIT))
+    });
 
     // Output results
     if global.json {
@@ -64,6 +70,7 @@ pub fn handle_find_where_symbol_command(
                 println!();
             }
         }
+        print_query_truncation(&result);
     }
 
     DispatchResult::Exit(0)
@@ -83,7 +90,9 @@ pub fn handle_body_command(opts: &BodyOptions, global: &GlobalOptions) -> Dispat
         }
     };
 
-    let result = query_symbol_body(&snapshot, &opts.symbol, opts.line_cap);
+    let unfiltered = query_symbol_body(&snapshot, &opts.symbol, opts.line_cap);
+    let had_candidates = !unfiltered.bodies.is_empty();
+    let result = unfiltered.filtered_to_file(opts.file.as_deref());
 
     if global.json {
         match serde_json::to_string_pretty(&result) {
@@ -97,11 +106,22 @@ pub fn handle_body_command(opts: &BodyOptions, global: &GlobalOptions) -> Dispat
     }
 
     if result.bodies.is_empty() {
-        println!("body '{}': (no source body found)", result.symbol);
-        println!(
-            "  hint: run `loct query where-symbol {}` to locate the symbol first.",
-            result.symbol
-        );
+        if let Some(file) = opts.file.as_deref().filter(|_| had_candidates) {
+            println!(
+                "body '{}': no definition in '{}' (definitions exist elsewhere).",
+                result.symbol, file
+            );
+            println!(
+                "  hint: drop --file or run `loct body {}` to list all candidates.",
+                result.symbol
+            );
+        } else {
+            println!("body '{}': (no source body found)", result.symbol);
+            println!(
+                "  hint: run `loct query where-symbol {}` to locate the symbol first.",
+                result.symbol
+            );
+        }
         return DispatchResult::Exit(1);
     }
 
@@ -116,7 +136,9 @@ pub fn handle_body_command(opts: &BodyOptions, global: &GlobalOptions) -> Dispat
                 body.file, body.start_line, body.end_line, body.language
             );
         }
-        println!("  hint: use a qualified symbol when available, e.g. Type::method.");
+        println!(
+            "  hint: qualify with --file <path>, or use a qualified symbol, e.g. Type::method."
+        );
         return DispatchResult::Exit(1);
     }
 
@@ -126,7 +148,13 @@ pub fn handle_body_command(opts: &BodyOptions, global: &GlobalOptions) -> Dispat
             body.symbol, body.language, body.file, body.start_line, body.end_line
         );
         println!("{}", body.source);
-        if body.truncated {
+        if body.extent == crate::body::EXTENT_WINDOW {
+            println!(
+                "  … extent unproven: showing a fixed {}-line window; the body's real end \
+                 was not confirmed (truncated: true).",
+                body.end_line - body.start_line + 1
+            );
+        } else if body.truncated {
             println!(
                 "  … truncated: showing {} of {} lines (cap {}). Use --max-lines to widen.",
                 body.end_line - body.start_line + 1,
@@ -147,8 +175,8 @@ pub fn handle_query_command(opts: &QueryOptions, global: &GlobalOptions) -> Disp
         query_where_symbol, query_who_imports,
     };
 
-    // Load snapshot (auto-scan if missing)
-    let roots = vec![std::path::PathBuf::from(".")];
+    // Load snapshot (auto-scan if missing). Honor --root/--project from find/query.
+    let roots = opts.scan_roots();
     let query_global = query_global_options(global);
     let snapshot = match load_or_create_query_snapshot_for_roots(&roots, &query_global) {
         Ok(s) => s,
@@ -232,6 +260,15 @@ pub fn handle_query_command(opts: &QueryOptions, global: &GlobalOptions) -> Disp
         QueryKind::ComponentOf => query_component_of(&snapshot, &opts.target),
         QueryKind::SwiftTypes => unreachable!("swift-types handled before QueryResult path"),
     };
+    let result = if matches!(opts.kind, QueryKind::WhereSymbol) {
+        result.bounded(if opts.all {
+            None
+        } else {
+            Some(opts.limit.unwrap_or(DEFAULT_WHERE_SYMBOL_LIMIT))
+        })
+    } else {
+        result
+    };
 
     // Output results
     if global.json {
@@ -261,9 +298,25 @@ pub fn handle_query_command(opts: &QueryOptions, global: &GlobalOptions) -> Disp
                 println!();
             }
         }
+        print_query_truncation(&result);
     }
 
     DispatchResult::Exit(0)
+}
+
+fn print_query_truncation(result: &crate::query::QueryResult) {
+    println!(
+        "  accounting: total={}, emitted={}, offset={}, truncated={}, has_more={}",
+        result.total, result.emitted, result.offset, result.truncated, result.has_more
+    );
+    println!("  {}", result.universe.summary_line());
+    if result.truncated {
+        println!(
+            "  … showing {} of {} exact definitions; qualify the symbol, pass --limit <N>, or use --all.",
+            result.results.len(),
+            result.total
+        );
+    }
 }
 
 fn query_global_options(global: &GlobalOptions) -> GlobalOptions {
@@ -362,4 +415,112 @@ pub fn handle_jq_query_command(opts: &JqQueryOptions, global: &GlobalOptions) ->
     }
 
     DispatchResult::Exit(0)
+}
+
+#[cfg(test)]
+mod project_root_tests {
+    use super::*;
+    use crate::cli::command::{FindOptions, QueryKind, QueryOptions};
+    use crate::query::query_where_symbol;
+    use crate::snapshot::test_env;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::process::Command as Proc;
+
+    fn git_init_with_file(root: &std::path::Path, rel: &str, body: &str) {
+        fs::create_dir_all(root.join(PathBuf::from(rel).parent().unwrap_or(root))).unwrap();
+        fs::write(root.join(rel), body).unwrap();
+        let run = |args: &[&str]| {
+            let out = Proc::new("git")
+                .args(args)
+                .current_dir(root)
+                .output()
+                .expect("git");
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        run(&["init"]);
+        run(&["config", "user.email", "t@t.com"]);
+        run(&["config", "user.name", "t"]);
+        run(&["add", "."]);
+        run(&["commit", "-m", "seed"]);
+    }
+
+    /// End-to-end: --project scopes where-symbol / who-imports load path so a
+    /// unique symbol in sibling-a is found under that project and not under
+    /// sibling-b (skeptic cluster B gap).
+    // `isolated_cache()` swaps two process-global env vars (LOCT_CACHE_DIR,
+    // LOCT_ALLOW_NON_GIT_ROOT), so every holder must be serialized — a
+    // concurrent test swapping LOCT_CACHE_DIR between this test's scan and its
+    // load makes the snapshot land in one cache and be looked up in another.
+    // Every other isolated_cache() caller in the crate is already #[serial];
+    // this one was not, which is why it failed only on the Linux runner.
+    #[test]
+    #[serial_test::serial]
+    fn where_symbol_and_who_imports_honor_explicit_project_root() {
+        let (_cache_dir, _cache_env) = test_env::isolated_cache();
+        let base = tempfile::tempdir().unwrap();
+        let sibling_a = base.path().join("sibling-a");
+        let sibling_b = base.path().join("sibling-b");
+        fs::create_dir_all(sibling_a.join("src")).unwrap();
+        fs::create_dir_all(sibling_b.join("src")).unwrap();
+
+        git_init_with_file(&sibling_a, "src/lib.rs", "pub fn UNIQUE_SYM_AAA() {}\n");
+        git_init_with_file(&sibling_b, "src/lib.rs", "pub fn OTHER_ONLY_SYM() {}\n");
+
+        let global = GlobalOptions {
+            quiet: true,
+            force_non_git: false,
+            ..Default::default()
+        };
+
+        // where-symbol --project sibling-a finds the unique symbol
+        let snap_a = load_or_create_query_snapshot_for_roots(
+            std::slice::from_ref(&sibling_a),
+            &query_global_options(&global),
+        )
+        .expect("scan sibling-a");
+        let hit_a = query_where_symbol(&snap_a, "UNIQUE_SYM_AAA");
+        assert!(
+            !hit_a.results.is_empty(),
+            "where-symbol under sibling-a must find UNIQUE_SYM_AAA; got {hit_a:?}"
+        );
+
+        // Same symbol under sibling-b: not present
+        let snap_b = load_or_create_query_snapshot_for_roots(
+            std::slice::from_ref(&sibling_b),
+            &query_global_options(&global),
+        )
+        .expect("scan sibling-b");
+        let hit_b = query_where_symbol(&snap_b, "UNIQUE_SYM_AAA");
+        assert!(
+            hit_b.results.is_empty(),
+            "where-symbol under sibling-b must not invent UNIQUE_SYM_AAA; got {hit_b:?}"
+        );
+
+        // Wiring: FindOptions / QueryOptions scan_roots carry project
+        let find_opts = FindOptions {
+            queries: vec!["UNIQUE_SYM_AAA".into()],
+            where_symbol: true,
+            roots: vec![sibling_a.clone()],
+            ..Default::default()
+        };
+        assert_eq!(find_opts.scan_roots(), vec![sibling_a.clone()]);
+
+        let query_opts = QueryOptions {
+            kind: QueryKind::WhoImports,
+            target: "src/lib.rs".into(),
+            limit: None,
+            all: false,
+            roots: vec![sibling_a.clone()],
+        };
+        assert_eq!(query_opts.scan_roots(), vec![sibling_a]);
+
+        // Handler entry (where-symbol) returns 0 when scoped correctly
+        let result = handle_find_where_symbol_command(&find_opts, &global);
+        assert!(matches!(result, DispatchResult::Exit(0)));
+    }
 }

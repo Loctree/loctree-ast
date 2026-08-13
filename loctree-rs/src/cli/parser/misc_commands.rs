@@ -6,9 +6,10 @@
 use std::path::PathBuf;
 
 use super::super::command::{
-    AuditOptions, CacheAction, CacheOptions, Command, CrowdOptions, DistOptions, DoctorOptions,
-    EnvTruthOptions, HealthOptions, HelpOptions, LayoutmapOptions, PlanOptions, PrismOptions,
-    PruneOldArtifactsOptions, SuppressOptions, TagmapOptions,
+    AtlasOptions, AuditOptions, CacheAction, CacheOptions, Command, CrowdOptions, DistOptions,
+    DoctorOptions, EnvTruthOptions, HealthOptions, HelpOptions, InventoryOptions, LayoutmapOptions,
+    PlanOptions, PrismOptions, PruneOldArtifactsOptions, SnapshotPathOptions, SuppressOptions,
+    TagmapOptions,
 };
 
 /// Parse `loct crowd [pattern] [options]` command - detect functional crowds.
@@ -841,21 +842,30 @@ USAGE:
     loct cache <SUBCOMMAND> [OPTIONS]
 
 SUBCOMMANDS:
-    list                   List cached buckets grouped by repo, path, size, and scan metadata
+    list                   List the current project's cache bucket (project-local by default)
     clean                  Remove cached snapshots
     prune|gc|clear-stale   Alias for clean, intended for quota/ENOSPC recovery
 
+LIST OPTIONS:
+    --project <DIR>        Inspect the cache bucket for a specific project
+    --all, --global        Bounded global inventory of every bucket (opt-in;
+                           per-bucket walks and total wall time are capped,
+                           omissions are reported as lower bounds)
+
 CLEAN OPTIONS:
+    --all                  Target every project bucket (requires --force to delete)
     --project <DIR>        Only clean cache for a specific project
     --older-than <DAYS>d   Only remove entries older than N days (e.g., 7d, 30d)
     --max-size <SIZE>      Cap total cache size; evict oldest buckets first
-                           (e.g., 1GB, 500MB, 250M, or plain bytes)
+                           (e.g., 1GB, 500MB, 250M, or plain bytes); fails
+                           closed if inventory, recency, or size is incomplete
     --force, -f            Skip confirmation prompt
 
 EXAMPLES:
-    loct cache list                        # Show grouped cached buckets
-    loct cache clean                       # Remove all (with confirmation)
-    loct cache clean --force               # Remove all without asking
+    loct cache list                        # Current project's bucket
+    loct cache list --all                  # Bounded global inventory (opt-in)
+    loct cache clean --all                 # Preview removal of every bucket
+    loct cache clean --all --force         # Remove every bucket
     loct cache clean --project .           # Clean cache for current project
     loct cache clean --older-than 30d      # Remove entries older than 30 days
     loct cache clean --max-size 1GB        # Evict oldest until total < 1 GB"
@@ -866,10 +876,30 @@ EXAMPLES:
     let sub_args = &args[1..];
 
     match sub {
-        "list" | "ls" => Ok(Command::Cache(CacheOptions {
-            action: CacheAction::List,
-        })),
+        "list" | "ls" => {
+            let mut all = false;
+            let mut project = None;
+            let mut i = 0;
+            while i < sub_args.len() {
+                match sub_args[i].as_str() {
+                    "--all" | "--global" | "-a" => all = true,
+                    "--project" | "-p" => {
+                        i += 1;
+                        if i >= sub_args.len() {
+                            return Err("--project requires a directory argument".to_string());
+                        }
+                        project = Some(PathBuf::from(&sub_args[i]));
+                    }
+                    other => return Err(format!("Unknown cache list option: {}", other)),
+                }
+                i += 1;
+            }
+            Ok(Command::Cache(CacheOptions {
+                action: CacheAction::List { all, project },
+            }))
+        }
         "clean" | "rm" | "purge" | "prune" | "gc" | "clear-stale" => {
+            let mut all = false;
             let mut project = None;
             let mut older_than = None;
             let mut max_size = None;
@@ -877,6 +907,7 @@ EXAMPLES:
             let mut i = 0;
             while i < sub_args.len() {
                 match sub_args[i].as_str() {
+                    "--all" | "--global" | "-a" => all = true,
                     "--project" | "-p" => {
                         i += 1;
                         if i >= sub_args.len() {
@@ -906,8 +937,26 @@ EXAMPLES:
                 }
                 i += 1;
             }
+
+            if project.is_some() && (all || older_than.is_some() || max_size.is_some()) {
+                return Err(
+                    "--project cannot be combined with --all, --older-than, or --max-size"
+                        .to_string(),
+                );
+            }
+            if all && (older_than.is_some() || max_size.is_some()) {
+                return Err("--all cannot be combined with --older-than or --max-size".to_string());
+            }
+            if !all && project.is_none() && older_than.is_none() && max_size.is_none() {
+                return Err(
+                    "Refusing unscoped cache cleanup. Choose --project, --older-than, --max-size, or explicitly pass --all."
+                        .to_string(),
+                );
+            }
+
             Ok(Command::Cache(CacheOptions {
                 action: CacheAction::Clean {
+                    all,
                     project,
                     older_than,
                     max_size,
@@ -992,6 +1041,164 @@ EXAMPLES:
     Ok(Command::PruneOldArtifacts(opts))
 }
 
+/// Parse `loct snapshot-path [PROJECT] [OPTIONS]`.
+pub(super) fn parse_snapshot_path_command(args: &[String]) -> Result<Command, String> {
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        return Err(
+            crate::cli::command::Command::format_command_help("snapshot-path")
+                .unwrap_or("loct snapshot-path")
+                .to_string(),
+        );
+    }
+
+    let mut opts = SnapshotPathOptions::default();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--json" => {
+                opts.json = true;
+                i += 1;
+            }
+            "--verbose" | "-v" => {
+                opts.verbose_siblings = true;
+                i += 1;
+            }
+            "--project" => {
+                let v = args
+                    .get(i + 1)
+                    .ok_or_else(|| "--project requires PATH".to_string())?;
+                opts.project = Some(PathBuf::from(v));
+                i += 2;
+            }
+            other if !other.starts_with('-') && opts.project.is_none() => {
+                opts.project = Some(PathBuf::from(other));
+                i += 1;
+            }
+            other => {
+                return Err(format!(
+                    "Unknown option '{}' for 'snapshot-path' command.",
+                    other
+                ));
+            }
+        }
+    }
+    Ok(Command::SnapshotPath(opts))
+}
+
+/// Parse `loct inventory [PROJECT] [OPTIONS]`.
+pub(super) fn parse_inventory_command(args: &[String]) -> Result<Command, String> {
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        return Err(
+            crate::cli::command::Command::format_command_help("inventory")
+                .unwrap_or("loct inventory")
+                .to_string(),
+        );
+    }
+
+    let mut opts = InventoryOptions::default();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            // Default output is already JSONL; accept the flag as a no-op alias.
+            "--jsonl" => {
+                i += 1;
+            }
+            "--receipt-only" => {
+                opts.receipt_only = true;
+                i += 1;
+            }
+            "--no-receipt" => {
+                opts.no_receipt = true;
+                i += 1;
+            }
+            "--include-tests" => {
+                opts.include_tests = true;
+                i += 1;
+            }
+            "--include-generated" => {
+                opts.include_generated = true;
+                i += 1;
+            }
+            "--units-only" => {
+                opts.units_only = true;
+                i += 1;
+            }
+            "--prefix" => {
+                let v = args
+                    .get(i + 1)
+                    .ok_or_else(|| "--prefix requires PATH".to_string())?;
+                opts.path_prefix = Some(v.clone());
+                i += 2;
+            }
+            "--project" => {
+                let v = args
+                    .get(i + 1)
+                    .ok_or_else(|| "--project requires PATH".to_string())?;
+                opts.project = Some(PathBuf::from(v));
+                i += 2;
+            }
+            other if !other.starts_with('-') && opts.project.is_none() => {
+                opts.project = Some(PathBuf::from(other));
+                i += 1;
+            }
+            other => {
+                return Err(format!(
+                    "Unknown option '{}' for 'inventory' command.",
+                    other
+                ));
+            }
+        }
+    }
+
+    if opts.receipt_only && opts.no_receipt {
+        return Err("--receipt-only and --no-receipt are mutually exclusive".to_string());
+    }
+
+    Ok(Command::Inventory(opts))
+}
+
+/// Parse `loct atlas [PROJECT] [OPTIONS]`.
+pub(super) fn parse_atlas_command(args: &[String]) -> Result<Command, String> {
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        return Err(crate::cli::command::Command::format_command_help("atlas")
+            .unwrap_or("loct atlas")
+            .to_string());
+    }
+
+    let mut opts = AtlasOptions::default();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--json" => {
+                opts.json = true;
+                i += 1;
+            }
+            "--out" => {
+                let v = args
+                    .get(i + 1)
+                    .ok_or_else(|| "--out requires DIR".to_string())?;
+                opts.out_dir = Some(PathBuf::from(v));
+                i += 2;
+            }
+            "--project" => {
+                let v = args
+                    .get(i + 1)
+                    .ok_or_else(|| "--project requires PATH".to_string())?;
+                opts.project = Some(PathBuf::from(v));
+                i += 2;
+            }
+            other if !other.starts_with('-') && opts.project.is_none() => {
+                opts.project = Some(PathBuf::from(other));
+                i += 1;
+            }
+            other => {
+                return Err(format!("Unknown option '{}' for 'atlas' command.", other));
+            }
+        }
+    }
+    Ok(Command::Atlas(opts))
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -1063,22 +1270,93 @@ mod tests {
         assert!(matches!(
             result,
             Command::Cache(CacheOptions {
-                action: CacheAction::List
+                action: CacheAction::List {
+                    all: false,
+                    project: None
+                }
             })
         ));
     }
 
+    /// Audit class H: the global cache walk is opt-in via `--all`/`--global`;
+    /// `--project` narrows the project-local default explicitly.
     #[test]
-    fn test_parse_cache_clean() {
-        let args: Vec<String> = vec!["clean".into(), "--force".into()];
+    fn test_parse_cache_list_all_and_project() {
+        let args = vec!["list".into(), "--all".into()];
+        let result = parse_cache_command(&args).expect("parse cache list --all");
+        assert!(matches!(
+            result,
+            Command::Cache(CacheOptions {
+                action: CacheAction::List { all: true, .. }
+            })
+        ));
+
+        let args = vec!["list".into(), "--global".into()];
+        let result = parse_cache_command(&args).expect("parse cache list --global");
+        assert!(matches!(
+            result,
+            Command::Cache(CacheOptions {
+                action: CacheAction::List { all: true, .. }
+            })
+        ));
+
+        let args = vec!["list".into(), "--project".into(), "/tmp/demo".into()];
+        let result = parse_cache_command(&args).expect("parse cache list --project");
+        match result {
+            Command::Cache(CacheOptions {
+                action: CacheAction::List { all, project },
+            }) => {
+                assert!(!all);
+                assert_eq!(project, Some(PathBuf::from("/tmp/demo")));
+            }
+            other => panic!("expected cache list options, got {other:?}"),
+        }
+
+        let args = vec!["list".into(), "--project".into()];
+        assert!(
+            parse_cache_command(&args).is_err(),
+            "--project without a value must be rejected"
+        );
+    }
+
+    #[test]
+    fn test_parse_cache_clean_all() {
+        let args: Vec<String> = vec!["clean".into(), "--all".into(), "--force".into()];
         let result = parse_cache_command(&args).expect("parse cache clean command");
         if let Command::Cache(CacheOptions {
-            action: CacheAction::Clean { force, .. },
+            action: CacheAction::Clean { all, force, .. },
         }) = result
         {
+            assert!(all);
             assert!(force);
         } else {
             panic!("Expected Cache Clean command");
+        }
+    }
+
+    #[test]
+    fn test_parse_cache_clean_rejects_unscoped_and_incompatible_options() {
+        for args in [
+            vec!["clean".into(), "--force".into()],
+            vec!["prune".into(), "--force".into()],
+            vec![
+                "clean".into(),
+                "--project".into(),
+                "/tmp/demo".into(),
+                "--older-than".into(),
+                "7d".into(),
+            ],
+            vec![
+                "clean".into(),
+                "--all".into(),
+                "--max-size".into(),
+                "1GB".into(),
+            ],
+        ] {
+            assert!(
+                parse_cache_command(&args).is_err(),
+                "unsafe or incompatible clean options must be rejected: {args:?}"
+            );
         }
     }
 
@@ -1143,5 +1421,54 @@ mod tests {
         let args = vec!["--stdout".into()];
         let err = parse_audit_command(&args).expect_err("audit should reject stdout");
         assert!(err.contains("writes markdown reports to an artifact file only"));
+    }
+
+    #[test]
+    fn test_parse_snapshot_path_command() {
+        let args = vec!["--json".into(), "/tmp/proj".into()];
+        let result = parse_snapshot_path_command(&args).expect("parse snapshot-path");
+        if let Command::SnapshotPath(opts) = result {
+            assert!(opts.json);
+            assert_eq!(opts.project, Some(PathBuf::from("/tmp/proj")));
+        } else {
+            panic!("Expected SnapshotPath command");
+        }
+    }
+
+    #[test]
+    fn test_parse_inventory_command_flags() {
+        let args = vec![
+            "--receipt-only".into(),
+            "--units-only".into(),
+            "--prefix".into(),
+            "src/".into(),
+        ];
+        let result = parse_inventory_command(&args).expect("parse inventory");
+        if let Command::Inventory(opts) = result {
+            assert!(opts.receipt_only);
+            assert!(opts.units_only);
+            assert_eq!(opts.path_prefix.as_deref(), Some("src/"));
+        } else {
+            panic!("Expected Inventory command");
+        }
+    }
+
+    #[test]
+    fn test_parse_inventory_rejects_receipt_only_with_no_receipt() {
+        let args = vec!["--receipt-only".into(), "--no-receipt".into()];
+        let err = parse_inventory_command(&args).expect_err("mutually exclusive");
+        assert!(err.contains("mutually exclusive"));
+    }
+
+    #[test]
+    fn test_parse_atlas_command() {
+        let args = vec!["--out".into(), "/tmp/atlas".into(), "--json".into()];
+        let result = parse_atlas_command(&args).expect("parse atlas");
+        if let Command::Atlas(opts) = result {
+            assert!(opts.json);
+            assert_eq!(opts.out_dir, Some(PathBuf::from("/tmp/atlas")));
+        } else {
+            panic!("Expected Atlas command");
+        }
     }
 }

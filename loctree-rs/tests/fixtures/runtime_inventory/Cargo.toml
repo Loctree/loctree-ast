@@ -1,0 +1,12 @@
+[package]
+name = "runtime-inventory-fixture"
+version = "0.1.0"
+edition = "2024"
+default-run = "runtime-fixture"
+
+[[bin]]
+name = "runtime-fixture"
+path = "src/main.rs"
+
+[lib]
+crate-type = ["staticlib"]

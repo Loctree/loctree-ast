@@ -3,7 +3,7 @@
 //! Covers params parsing, mode/lang/exported_only/dead_only/limit
 //! post-processing, and the response shape contract.
 //!
-//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by VetCoders ⓒ 2025-2026 VetCoders
+//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders ⓒ 2025-2026 Vetcoders
 
 use loctree::analyzer::dead_parrots::{
     SimilarityCandidate, SymbolFileMatch, SymbolMatch, SymbolMatchKind, SymbolSearchResult,
@@ -26,6 +26,7 @@ fn sym_match(line: usize, kind: SymbolMatchKind, ctx: &str) -> SymbolMatch {
 fn fixture_results() -> SearchResults {
     SearchResults {
         query: "Auth".into(),
+        universe: loctree::analyzer::occurrences::IndexedUniverse::default(),
         symbol_matches: SymbolSearchResult {
             found: true,
             total_matches: 4,
@@ -710,7 +711,7 @@ fn find_request_build_literal_response_carries_role_truth_and_empties_buckets() 
     assert!(
         literal_json["coverage_line"]
             .as_str()
-            .is_some_and(|line| line.contains("scanned 1 of 1 repo files")),
+            .is_some_and(|line| line.contains("scanned 1 of 1 indexed files")),
         "LSP literal response must expose CLI coverage text: {json}"
     );
     assert_eq!(literal_json["scope"]["files_scanned"], 1);
@@ -796,7 +797,14 @@ fn scan_literal_honors_whole_token_boundary() {
 
     assert_eq!(loose.total, 2);
     assert_eq!(tight.total, 1);
-    assert_eq!(tight.occurrences[0].occurrence_kind.as_str(), "identifier");
+    // `let backdrop = 1` is a binding site — lexical classify now marks it
+    // definition_like / local_binding across languages (was previously
+    // identifier / reference only on TS).
+    assert_eq!(
+        tight.occurrences[0].occurrence_kind.as_str(),
+        "definition_like"
+    );
+    assert_eq!(tight.occurrences[0].match_role.as_str(), "local_binding");
 }
 
 #[test]
@@ -945,13 +953,55 @@ fn scan_literal_honors_file_scope_and_preserves_range_metadata() {
         scanned
             .occurrences
             .iter()
-            .all(|o| o.file == "src/styles.css")
+            .all(|o| o.file == "src/styles.css"),
+        "file-scoped scan must not leak sibling files"
     );
     assert_eq!(scanned.occurrences[0].line, 1);
     assert_eq!(scanned.occurrences[0].column, 2);
     assert_eq!(scanned.occurrences[0].range.start.line, 1);
     assert_eq!(scanned.occurrences[0].range.start.column, 2);
     assert_eq!(scanned.occurrences[0].range.end.column, 18);
+}
+
+#[test]
+fn scan_literal_expands_agent_pipe_or_to_multi_literal() {
+    // Same engine path as CLI/MCP: pipe form of simple identifiers is exact OR.
+    let dir = tempfile::tempdir().expect("temp project");
+    std::fs::create_dir_all(dir.path().join("src")).expect("mkdir src");
+    let source = "fn global_async_runtime() {}\nfn get_tokio_runtime() {}\n";
+    std::fs::write(dir.path().join("src/runtime.rs"), source).expect("write runtime.rs");
+
+    let mut snapshot = Snapshot::new(vec![dir.path().display().to_string()]);
+    let file: FileAnalysis =
+        serde_json::from_value(serde_json::json!({ "path": "src/runtime.rs" }))
+            .expect("minimal FileAnalysis");
+    snapshot.files.push(file);
+
+    let scanned = find::scan_literal(
+        &snapshot,
+        Some(dir.path()),
+        "global_async_runtime|get_tokio_runtime",
+        ScanOptions { whole_token: false },
+        FileScope::default(),
+    );
+    let expected = loctree::analyzer::occurrences::scan_files_for_literal_query(
+        &[("src/runtime.rs", source)],
+        "global_async_runtime|get_tokio_runtime",
+        ScanOptions::default(),
+        FileScope::default(),
+    );
+
+    assert_eq!(
+        scanned.match_mode,
+        loctree::analyzer::occurrences::MatchMode::MultiLiteral,
+        "LSP scan_literal must set multi_literal for agent pipe OR"
+    );
+    assert!(scanned.total >= 2, "expected both pattern hits");
+    assert_eq!(
+        serde_json::to_value(&scanned.occurrences).unwrap(),
+        serde_json::to_value(&expected.occurrences).unwrap(),
+        "LSP multi-literal occurrences must equal shared engine"
+    );
 }
 
 fn fixture_params_single() -> FindParams {

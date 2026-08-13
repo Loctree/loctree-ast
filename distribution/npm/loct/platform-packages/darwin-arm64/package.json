@@ -1,0 +1,29 @@
+{
+  "name": "@loctree/loct-darwin-arm64",
+  "version": "0.14.2",
+  "description": "Loctree runtime (loctree) + co-process binaries (loctree-mcp, loctree-lsp) for macOS Apple Silicon (ARM64). Technical delivery package for @loctree/loct — do not install directly.",
+  "keywords": [
+    "loctree",
+    "loctree-mcp",
+    "loctree-lsp",
+    "darwin",
+    "arm64"
+  ],
+  "license": "BUSL-1.1",
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Loctree/loctree.git",
+    "directory": "distribution/npm/loct/platform-packages/darwin-arm64"
+  },
+  "files": [
+    "loctree",
+    "loctree-mcp",
+    "loctree-lsp"
+  ]
+}

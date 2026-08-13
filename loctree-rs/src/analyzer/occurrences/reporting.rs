@@ -33,6 +33,7 @@ impl OccurrenceResults {
     /// Apply [`ReportOptions`] in place. Must be called on the full result set
     /// (before any truncation) so `total`/`by_file` reflect every occurrence.
     pub fn apply_report(&mut self, report: ReportOptions) {
+        self.offset = report.offset.min(self.total);
         if report.group_by_file {
             self.by_file = Some(self.file_rollup());
         }
@@ -75,5 +76,7 @@ impl OccurrenceResults {
             self.slim = true;
             self.occurrences.clear();
         }
+        self.emitted = self.occurrences.len();
+        self.truncated = self.emitted < self.total;
     }
 }

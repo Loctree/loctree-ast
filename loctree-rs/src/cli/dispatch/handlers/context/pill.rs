@@ -91,6 +91,10 @@ pub enum AicxRenderStatus {
     SkippedTimeout,
     /// AICX was explicitly disabled with `--no-aicx`.
     Disabled,
+    /// I1-01 bare path: memory is served from the C0-01 overlay cache
+    /// (`pack.memory.overlay`), which carries its own freshness verdict —
+    /// the legacy status strings do not apply.
+    OverlayCache,
 }
 
 #[derive(Debug, Clone)]
@@ -236,6 +240,19 @@ fn render_tldr(input: &PillInput<'_>, m: &Metrics) -> Section {
             "Active intent (AICX): \"{}\" — {} on {}.",
             summary.text, intent.agent, intent.date
         ));
+    }
+    // M1-01: the intent layer earns one TL;DR line — the thesis count with
+    // the card pointer, or the explicit stale marker. Never silence.
+    if let Some(overlay) = &input.pack.memory.overlay {
+        match overlay.stale_marker() {
+            Some(marker) => lines.push(format!(
+                "**Intent layer.** {marker} — karta `03-intent-map.md`. (StaleOrUnknown)"
+            )),
+            None => lines.push(format!(
+                "**Intent layer.** {} decyzje/intencje formujące z aicx overlay — karta `03-intent-map.md`. (LoctreeDerived)",
+                overlay.theses.len()
+            )),
+        }
     }
     if let Some(scope) = &input.pack.scope {
         let scope_name = scope.named_resolved_from.as_deref().unwrap_or_else(|| {
@@ -440,6 +457,14 @@ fn collect_stale(input: &PillInput<'_>) -> Vec<String> {
             input.pack.project.commit.as_deref().unwrap_or("unknown")
         ));
     }
+    // I1-01: the overlay cache carries its own explicit degradation marker
+    // — surface it in the TL;DR staleness slot so the operator sees the
+    // intent-layer state without scrolling to the Memory section.
+    if let Some(overlay) = &input.pack.memory.overlay
+        && let Some(marker) = overlay.stale_marker()
+    {
+        out.push(format!("{marker}. (StaleOrUnknown)"));
+    }
     // One honest line per distinct overlay outcome — "no rows" (store
     // answered: nothing there), "unavailable" (no transport) and
     // "skipped (timeout)" (store never got to answer) demand different
@@ -463,7 +488,9 @@ fn collect_stale(input: &PillInput<'_>) -> Vec<String> {
                     .to_string(),
             );
         }
-        AicxRenderStatus::EnabledWithRows | AicxRenderStatus::Disabled => {}
+        AicxRenderStatus::EnabledWithRows
+        | AicxRenderStatus::Disabled
+        | AicxRenderStatus::OverlayCache => {}
     }
     out
 }
@@ -868,6 +895,15 @@ fn render_memory(input: &PillInput<'_>) -> Section {
     let mut buf = String::new();
     buf.push_str("## Memory\n\n");
 
+    // I1-01: the overlay cache is the bare-path memory surface. It renders
+    // typed theses in the spec grammar plus an explicit freshness verdict;
+    // the legacy AICX status strings below only apply when no overlay state
+    // was composed (--with-aicx patient recall, --no-aicx, scoped runs).
+    if let Some(overlay) = &input.pack.memory.overlay {
+        render_overlay_memory(&mut buf, overlay);
+        return enforce_section_cap(buf, Budget::MEMORY_CAP);
+    }
+
     match input.aicx_status {
         AicxRenderStatus::Disabled => {
             buf.push_str(
@@ -888,6 +924,11 @@ fn render_memory(input: &PillInput<'_>) -> Section {
             buf.push_str(
                 "_AICX overlay skipped (timeout): the store did not answer within the session-start budget. No data, not an empty store — rerun with `loct context --with-aicx` (patient) or raise `LOCT_CONTEXT_AICX_BUDGET_MS`._ (StaleOrUnknown)\n\n",
             );
+        }
+        AicxRenderStatus::OverlayCache => {
+            // Unreachable in practice: `OverlayCache` implies
+            // `pack.memory.overlay` is `Some`, which returned above. Kept
+            // explicit so a future refactor cannot silently drop the arm.
         }
         AicxRenderStatus::EnabledWithRows => {
             buf.push_str(
@@ -932,6 +973,48 @@ fn render_memory(input: &PillInput<'_>) -> Section {
     }
 
     enforce_section_cap(buf, Budget::MEMORY_CAP)
+}
+
+/// Render the C0-01 intent layer: freshness verdict first (explicit stale
+/// marker with the refresh command when degraded), then the typed theses in
+/// the spec grammar `✓[U] 2026-07-13 · <thesis> → <target> (<ref>)`.
+fn render_overlay_memory(buf: &mut String, overlay: &crate::aicx::overlay::OverlayRenderState) {
+    use crate::aicx::overlay::short_revision;
+
+    buf.push_str("### Intent layer (aicx overlay)\n\n");
+    match overlay.stale_marker() {
+        None => {
+            buf.push_str(&format!(
+                "_intent layer fresh (store {}, overlay {}, producer {})._ (RepoVerified)\n\n",
+                short_revision(&overlay.store_revision),
+                short_revision(&overlay.overlay_revision),
+                overlay.producer_version,
+            ));
+        }
+        Some(marker) => {
+            buf.push_str(&format!("_{marker}._ (StaleOrUnknown)\n\n"));
+        }
+    }
+    if let Some(changed) = &overlay.key_transition {
+        buf.push_str(&format!(
+            "_intent layer refreshed since the previous read — full cache key changed: {}._ (RepoVerified)\n\n",
+            changed.join(", ")
+        ));
+    }
+
+    if overlay.theses.is_empty() {
+        if overlay.stale_marker().is_none() {
+            buf.push_str(
+                "_store answered: no attributed intents for this repo yet._ (StaleOrUnknown)\n\n",
+            );
+        }
+        return;
+    }
+
+    let lines: Vec<String> = overlay.theses.clone();
+    let capped = truncate_with_tail(lines, 80);
+    buf.push_str(&render_lines(&capped));
+    buf.push('\n');
 }
 
 // ----------------------------------------------------------------------------
@@ -1477,6 +1560,7 @@ mod tests {
             }],
             source_chunks: vec!["/tmp/aicx/store/raw.md".to_string()],
             diagnostic: None,
+            overlay: None,
         };
         pack.runtime.env_contracts.push(RuntimeEnvContract {
             name: "LOCT_AICX_BINARY".to_string(),
@@ -1530,6 +1614,7 @@ mod tests {
             }],
             source_chunks: vec!["/tmp/aicx/store/raw.md".to_string()],
             diagnostic: None,
+            overlay: None,
         };
 
         let scope = fixture_scope();
@@ -1652,6 +1737,7 @@ mod tests {
             }],
             source_chunks: vec!["/tmp/aicx/store/s1.md".to_string()],
             diagnostic: None,
+            overlay: None,
         };
         let scope = fixture_scope();
         let input = input_with(&pack, &scope, AicxRenderStatus::EnabledWithRows);
@@ -1690,6 +1776,7 @@ mod tests {
             }],
             source_chunks: vec![leaky_path.to_string()],
             diagnostic: None,
+            overlay: None,
         };
         let scope = fixture_scope();
         let input = input_with(&pack, &scope, AicxRenderStatus::EnabledWithRows);
@@ -1792,6 +1879,76 @@ mod tests {
         assert!(
             !md.contains("snapshot fresh"),
             "missing snapshot must not render as fresh: {md}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // M1-01 — intent line in the TL;DR
+    // -----------------------------------------------------------------------
+
+    fn overlay_state(
+        freshness: crate::aicx::overlay::OverlayFreshness,
+        theses: Vec<String>,
+    ) -> crate::aicx::overlay::OverlayRenderState {
+        crate::aicx::overlay::OverlayRenderState {
+            schema_version: "loctree.overlay.intent.v1".to_string(),
+            repo_id: "loctree-suite".to_string(),
+            store_revision: "sr1:abcabcabcabcabcabc".to_string(),
+            overlay_revision: "ov1:defdefdefdefdefdef".to_string(),
+            snapshot_commit: "abc1234".to_string(),
+            anchor_catalog_revision: "acr1:123123123123123123".to_string(),
+            producer_version: "aicx 0.9.0".to_string(),
+            freshness,
+            key_transition: None,
+            theses,
+            scope_paths: Vec::new(),
+            refresh_command: "aicx overlay --repo /tmp/loctree --format json".to_string(),
+            refresh_recommended: false,
+        }
+    }
+
+    #[test]
+    fn pill_tldr_carries_intent_line_with_card_pointer_when_overlay_fresh() {
+        let mut pack = fixture_pack();
+        pack.memory.overlay = Some(overlay_state(
+            crate::aicx::overlay::OverlayFreshness::Fresh,
+            vec![
+                "✓[U] 2026-07-13 · teza jeden".to_string(),
+                "✓[U] 2026-07-13 · teza dwa".to_string(),
+                "✓[V] 2026-07-12 · teza trzy".to_string(),
+            ],
+        ));
+        let scope = fixture_scope();
+        let input = input_with(&pack, &scope, AicxRenderStatus::OverlayCache);
+        let md = render_pill(input);
+        let tldr_end = md.find("## Where You Are").unwrap_or(md.len());
+        let tldr = &md[..tldr_end];
+        assert!(
+            tldr.contains(
+                "**Intent layer.** 3 decyzje/intencje formujące z aicx overlay — karta `03-intent-map.md`."
+            ),
+            "fresh overlay must earn one intent line in the TL;DR: {tldr}"
+        );
+    }
+
+    #[test]
+    fn pill_tldr_carries_explicit_stale_marker_when_overlay_degraded() {
+        let mut pack = fixture_pack();
+        pack.memory.overlay = Some(overlay_state(
+            crate::aicx::overlay::OverlayFreshness::Missing {
+                reason: "no overlay cache and no aicx transport reachable".to_string(),
+            },
+            Vec::new(),
+        ));
+        let scope = fixture_scope();
+        let input = input_with(&pack, &scope, AicxRenderStatus::OverlayCache);
+        let md = render_pill(input);
+        let tldr_end = md.find("## Where You Are").unwrap_or(md.len());
+        let tldr = &md[..tldr_end];
+        assert!(
+            tldr.contains("**Intent layer.** intent layer stale (")
+                && tldr.contains("karta `03-intent-map.md`"),
+            "degraded overlay must surface the stale marker in the TL;DR: {tldr}"
         );
     }
 }

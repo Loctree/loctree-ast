@@ -12,6 +12,55 @@ use super::super::{
 use crate::progress::Spinner;
 use crate::watch_lock::{EXIT_LOCK_CONTENDED, LockError, LockMode, WatchLock, acquire};
 
+enum WatchCompanion {
+    Lsp,
+    Http { port: u16 },
+}
+
+/// Own a companion process instead of pretending that `Child::drop()` reaps
+/// it. Rust deliberately leaves a dropped child running. This guard first
+/// closes the supervision pipe, then asks a stubborn child to terminate and
+/// waits for it. It never escalates to SIGKILL.
+struct OwnedCompanion {
+    child: std::process::Child,
+}
+
+impl OwnedCompanion {
+    fn new(child: std::process::Child) -> Self {
+        Self { child }
+    }
+}
+
+impl Drop for OwnedCompanion {
+    fn drop(&mut self) {
+        let _ = self.child.stdin.take();
+        let graceful_deadline = std::time::Instant::now() + std::time::Duration::from_millis(750);
+        while std::time::Instant::now() < graceful_deadline {
+            match self.child.try_wait() {
+                Ok(Some(_)) => return,
+                Ok(None) => std::thread::sleep(std::time::Duration::from_millis(20)),
+                Err(_) => break,
+            }
+        }
+
+        #[cfg(unix)]
+        unsafe {
+            libc::kill(self.child.id() as libc::pid_t, libc::SIGTERM);
+        }
+        #[cfg(not(unix))]
+        let _ = self.child.kill();
+
+        let term_deadline = std::time::Instant::now() + std::time::Duration::from_millis(750);
+        while std::time::Instant::now() < term_deadline {
+            match self.child.try_wait() {
+                Ok(Some(_)) => return,
+                Ok(None) => std::thread::sleep(std::time::Duration::from_millis(20)),
+                Err(_) => return,
+            }
+        }
+    }
+}
+
 /// Run the watch loop after acquiring the single-instance lock for the repo.
 ///
 /// Shared codepath for both `loct scan --watch` (legacy) and
@@ -28,6 +77,7 @@ fn run_watch_with_lock(
     extensions: Option<Vec<String>>,
     gitignore: Option<crate::fs_utils::GitIgnoreChecker>,
     lock_mode: LockMode,
+    companion: Option<WatchCompanion>,
     on_snapshot_updated: Option<Box<dyn FnMut() + Send>>,
 ) -> DispatchResult {
     use crate::watch::{WatchConfig, watch_and_rescan};
@@ -58,6 +108,30 @@ fn run_watch_with_lock(
             eprintln!("[watch] failed to acquire lock: {}", e);
             return DispatchResult::Exit(1);
         }
+    };
+
+    // Process creation is a privilege of the lock winner. A contender must
+    // return 75 without leaving a child behind.
+    let _companion = match companion {
+        Some(WatchCompanion::Lsp) => spawn_lsp_companion()
+            .map(OwnedCompanion::new)
+            .map(Some)
+            .unwrap_or_else(|e| {
+                eprintln!("[watch] could not spawn loctree-lsp companion: {e}");
+                eprintln!("[watch] continuing without LSP co-process.");
+                None
+            }),
+        Some(WatchCompanion::Http { port }) => {
+            match spawn_http_mcp_companion(port, &snapshot_root) {
+                Ok(child) => Some(OwnedCompanion::new(child)),
+                Err(e) => {
+                    eprintln!("[watch] could not spawn loctree-mcp http companion: {e}");
+                    eprintln!("[watch] continuing without --http co-process.");
+                    None
+                }
+            }
+        }
+        None => None,
     };
 
     let config = WatchConfig {
@@ -132,7 +206,15 @@ pub fn handle_scan_watch_command(opts: &ScanOptions, global: &GlobalOptions) -> 
         LockMode::Default
     };
 
-    run_watch_with_lock(roots, &parsed_args, extensions, gitignore, lock_mode, None)
+    run_watch_with_lock(
+        roots,
+        &parsed_args,
+        extensions,
+        gitignore,
+        lock_mode,
+        None,
+        None,
+    )
 }
 
 /// Handle the dedicated `loct watch` subcommand (the new shape).
@@ -211,32 +293,12 @@ pub fn handle_watch_command(opts: &WatchOptions, global: &GlobalOptions) -> Disp
         LockMode::Default
     };
 
-    // For `--lsp`, co-spawn loctree-lsp alongside the watch loop. The child
-    // is killed automatically when the parent exits (via `Drop` on `Child`).
-    let _lsp_child: Option<std::process::Child> = if matches!(opts.mode, WatchMode::Lsp) {
-        spawn_lsp_companion().map(Some).unwrap_or_else(|e| {
-            eprintln!("[watch] could not spawn loctree-lsp companion: {e}");
-            eprintln!("[watch] continuing without LSP co-process.");
-            None
+    let companion = if matches!(opts.mode, WatchMode::Lsp) {
+        Some(WatchCompanion::Lsp)
+    } else if matches!(opts.mode, WatchMode::Http) {
+        Some(WatchCompanion::Http {
+            port: opts.port.unwrap_or(5174),
         })
-    } else {
-        None
-    };
-
-    // For `--http`, co-spawn `loctree-mcp` over streamable-http. Behaves
-    // exactly like the `--lsp` companion: child inherits stdio, is killed
-    // automatically on parent exit.
-    let _mcp_child: Option<std::process::Child> = if matches!(opts.mode, WatchMode::Http) {
-        let port = opts.port.unwrap_or(5174);
-        let watched_root = crate::snapshot::resolve_snapshot_root(&roots);
-        match spawn_http_mcp_companion(port, &watched_root) {
-            Ok(child) => Some(child),
-            Err(e) => {
-                eprintln!("[watch] could not spawn loctree-mcp http companion: {e}");
-                eprintln!("[watch] continuing without --http co-process.");
-                None
-            }
-        }
     } else {
         None
     };
@@ -264,6 +326,7 @@ pub fn handle_watch_command(opts: &WatchOptions, global: &GlobalOptions) -> Disp
         extensions,
         gitignore,
         lock_mode,
+        companion,
         on_snapshot_updated,
     )
 }
@@ -397,13 +460,17 @@ fn spawn_http_mcp_companion(
 
     let bind = format!("127.0.0.1:{port}");
     let mut cmd = Command::new(&bin);
-    cmd.arg("--transport").arg("http").arg("--bind").arg(&bind);
+    cmd.arg("--transport")
+        .arg("http")
+        .arg("--bind")
+        .arg(&bind)
+        .arg("--exit-on-stdin-eof");
     // Pin the companion's default project to the watched repo root. The binary
     // stays universal — a request carrying its own `project` overrides this —
     // but a bare `/context_pack` / MCP call resolves against the repo the user
     // is actually watching.
     cmd.arg("--root").arg(watched_root);
-    cmd.stdin(Stdio::null())
+    cmd.stdin(Stdio::piped())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
 

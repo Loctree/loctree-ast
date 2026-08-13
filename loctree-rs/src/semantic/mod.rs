@@ -56,7 +56,8 @@ pub fn compute_semantic_facts(files: &[FileAnalysis], workspace_root: &Path) -> 
     if let Err(err) = ShellSemantics.analyze(files, &registry, &mut facts) {
         eprintln!("[loctree][warn] semantic: ShellSemantics aborted: {err}");
     }
-    if let Err(err) = MakeSemantics.analyze(files, &registry, &mut facts) {
+    if let Err(err) = MakeSemantics.analyze_with_root(files, &registry, &mut facts, workspace_root)
+    {
         eprintln!("[loctree][warn] semantic: MakeSemantics aborted: {err}");
     }
     if let Err(err) = PythonRuntimeSemantics.analyze(files, &registry, &mut facts) {

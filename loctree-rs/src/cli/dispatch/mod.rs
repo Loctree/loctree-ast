@@ -18,6 +18,13 @@ pub use handlers::context::atlas::{
     ContextAtlasManifest, atlas_dir_for_project, materialize_context_atlas,
 };
 pub use handlers::context::render_context_pack_markdown;
+// Cache/doctor resource contract (audit class H): ceilings are re-exported so
+// the test harness (`tests/cache_rss_bounds.rs`) enforces the same constants
+// the handlers document, instead of duplicating magic numbers.
+pub use handlers::resource_limits::{
+    CACHE_ENUM_TIME_CEILING, DOCTOR_RSS_CEILING_BYTES, DOCTOR_WALL_CEILING_SECS, MAX_LIST_ROWS,
+    MAX_SNAPSHOT_METADATA_PARSE_BYTES, MAX_WALK_ENTRIES_PER_BUCKET,
+};
 
 use crate::args::{ParsedArgs, SearchQueryMode};
 use crate::types::{DEFAULT_LOC_THRESHOLD, Mode, OutputMode};
@@ -93,6 +100,7 @@ pub fn command_to_parsed_args(cmd: &Command, global: &GlobalOptions) -> ParsedAr
     // override flag proper is set by `unified_scan_args_with_ignore`, so an empty
     // `loctignore_override_patterns` here keeps normal scans unaffected.
     parsed.include_ignored = global.include_ignored;
+    parsed.force_non_git = global.force_non_git;
 
     // Convert command-specific options
     match cmd {
@@ -124,6 +132,8 @@ pub fn command_to_parsed_args(cmd: &Command, global: &GlobalOptions) -> ParsedAr
             parsed.full_scan = opts.full_scan;
             parsed.scan_all = opts.scan_all;
             parsed.use_gitignore = true; // Auto mode respects gitignore by default
+            // Explicit write-scan: first-touch may append `.loctree/` to .gitignore.
+            parsed.allow_gitignore_mutation = true;
         }
 
         Command::Scan(opts) => {
@@ -136,6 +146,7 @@ pub fn command_to_parsed_args(cmd: &Command, global: &GlobalOptions) -> ParsedAr
             parsed.full_scan = opts.full_scan;
             parsed.scan_all = opts.scan_all;
             parsed.use_gitignore = true;
+            parsed.allow_gitignore_mutation = true;
         }
 
         Command::Watch(opts) => {
@@ -148,6 +159,7 @@ pub fn command_to_parsed_args(cmd: &Command, global: &GlobalOptions) -> ParsedAr
             parsed.full_scan = opts.full_scan;
             parsed.scan_all = opts.scan_all;
             parsed.use_gitignore = true;
+            parsed.allow_gitignore_mutation = true;
         }
 
         Command::Tree(opts) => {
@@ -257,7 +269,9 @@ pub fn command_to_parsed_args(cmd: &Command, global: &GlobalOptions) -> ParsedAr
             parsed.search_exported_only = opts.exported_only;
             parsed.search_lang = opts.lang.clone();
             parsed.search_limit = opts.limit;
-            parsed.root_list = vec![PathBuf::from(".")];
+            // Discover / Mode::Search must honor find --root/--project (same as
+            // literal/regex). Hardcoding cwd silently searched the wrong universe.
+            parsed.root_list = opts.scan_roots();
         }
 
         Command::Occurrences(_) => {
@@ -380,6 +394,10 @@ pub fn command_to_parsed_args(cmd: &Command, global: &GlobalOptions) -> ParsedAr
             // For now, map to Init which will show info if snapshot exists
             parsed.mode = Mode::Init;
             parsed.root_list = vec![PathBuf::from(".")];
+        }
+
+        Command::Anchors(_) => {
+            // Anchors is handled specially in dispatch_command.
         }
 
         Command::Lint(opts) => {
@@ -573,6 +591,15 @@ pub fn command_to_parsed_args(cmd: &Command, global: &GlobalOptions) -> ParsedAr
         Command::PruneOldArtifacts(_) => {
             // PruneOldArtifacts is handled specially in dispatch_command
         }
+        Command::SnapshotPath(_) => {
+            // SnapshotPath is handled specially in dispatch_command
+        }
+        Command::Inventory(_) => {
+            // Inventory is handled specially in dispatch_command
+        }
+        Command::Atlas(_) => {
+            // Atlas is handled specially in dispatch_command
+        }
     }
 
     parsed
@@ -639,6 +666,9 @@ pub fn dispatch_command(parsed_cmd: &ParsedCommand) -> DispatchResult {
         }
         Command::Occurrences(opts) => {
             return handlers::occurrences::handle_occurrences_command(opts, &parsed_cmd.global);
+        }
+        Command::Anchors(opts) => {
+            return handlers::anchors::handle_anchors_command(opts, &parsed_cmd.global);
         }
         // `find --literal` is the truth-layer mode of find: intercept it BEFORE
         // the ParsedArgs/Mode::Search path so the fuzzy/semantic search engine
@@ -763,6 +793,15 @@ pub fn dispatch_command(parsed_cmd: &ParsedCommand) -> DispatchResult {
         Command::PruneOldArtifacts(opts) => {
             return handlers::prune::handle_prune_old_artifacts(opts);
         }
+        Command::SnapshotPath(opts) => {
+            return handlers::inventory::handle_snapshot_path(opts, &parsed_cmd.global);
+        }
+        Command::Inventory(opts) => {
+            return handlers::inventory::handle_inventory(opts);
+        }
+        Command::Atlas(opts) => {
+            return handlers::inventory::handle_atlas(opts, &parsed_cmd.global);
+        }
         Command::Scan(opts) if opts.watch => {
             return handlers::watch::handle_scan_watch_command(opts, &parsed_cmd.global);
         }
@@ -836,6 +875,7 @@ fn acquire_options_from_global(global: &GlobalOptions) -> crate::snapshot::Acqui
         // Suppress the scan summary in json/quiet mode to keep stdout clean.
         print_scan_summary: !(global.json || global.quiet),
         include_ignored: global.include_ignored,
+        force_non_git: global.force_non_git,
         ..Default::default()
     }
 }
@@ -1042,6 +1082,20 @@ mod tests {
     }
 
     #[test]
+    fn test_find_discover_mode_honors_project_root() {
+        // Mode::Search / --discover must not hardcode cwd when --project is set.
+        let cmd = Command::Find(FindOptions {
+            queries: vec!["UNIQUE_SYM_AAA".into()],
+            discover: true,
+            roots: vec![PathBuf::from("/tmp/sibling-a")],
+            ..Default::default()
+        });
+        let parsed = command_to_parsed_args(&cmd, &GlobalOptions::default());
+        assert!(matches!(parsed.mode, Mode::Search));
+        assert_eq!(parsed.root_list, vec![PathBuf::from("/tmp/sibling-a")]);
+    }
+
+    #[test]
     fn test_find_single_arg_with_spaces_defaults_to_and_mode() {
         let cmd = Command::Find(FindOptions {
             queries: vec!["Props Options ViewModel".into()],
@@ -1121,7 +1175,11 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_crowd_command_to_dispatch() {
+        // Crowd dispatch saves a snapshot through the env-resolved cache;
+        // isolate it so the fixture scan never lands in the operator cache.
+        let (_cache_dir, _cache_env) = crate::snapshot::test_env::isolated_cache();
         let tmp = TempDir::new().expect("temp dir");
         let parsed_cmd = ParsedCommand::new(
             Command::Crowd(CrowdOptions {

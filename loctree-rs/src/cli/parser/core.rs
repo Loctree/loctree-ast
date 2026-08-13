@@ -19,15 +19,16 @@ use super::helpers::{
     should_treat_unknown_as_subcommand,
 };
 use super::misc_commands::{
-    parse_audit_command, parse_cache_command, parse_crowd_command, parse_dist_command,
-    parse_doctor_command, parse_env_truth_command, parse_health_command, parse_help_command,
-    parse_layoutmap_command, parse_plan_command, parse_prism_command,
-    parse_prune_old_artifacts_command, parse_suppress_command, parse_tagmap_command,
+    parse_atlas_command, parse_audit_command, parse_cache_command, parse_crowd_command,
+    parse_dist_command, parse_doctor_command, parse_env_truth_command, parse_health_command,
+    parse_help_command, parse_inventory_command, parse_layoutmap_command, parse_plan_command,
+    parse_prism_command, parse_prune_old_artifacts_command, parse_snapshot_path_command,
+    parse_suppress_command, parse_tagmap_command,
 };
 use super::output_commands::{
-    parse_diff_command, parse_findings_command, parse_info_command, parse_insights_command,
-    parse_jq_query_command, parse_lint_command, parse_manifests_command, parse_pipelines_command,
-    parse_report_command, parse_suppressions_command,
+    parse_anchors_command, parse_diff_command, parse_findings_command, parse_info_command,
+    parse_insights_command, parse_jq_query_command, parse_lint_command, parse_manifests_command,
+    parse_pipelines_command, parse_report_command, parse_suppressions_command,
 };
 use super::scan_commands::{
     parse_auto_command, parse_scan_command, parse_tree_command, parse_watch_command,
@@ -54,6 +55,8 @@ pub fn uses_new_syntax(args: &[String]) -> bool {
             || arg == "--no-scan"
             || arg == "--fail-stale"
             || arg == "--include-ignored"
+            || arg == "--force-non-git"
+            || arg == "--force-non-git-repository-snapshot"
             || arg == "--for-ai"
             || arg == "--findings"
             || arg == "--summary"
@@ -200,6 +203,10 @@ pub fn parse_command(args: &[String]) -> Result<Option<ParsedCommand>, String> {
             }
             "--include-ignored" => {
                 global.include_ignored = true;
+                i += 1;
+            }
+            "--force-non-git" | "--force-non-git-repository-snapshot" => {
+                global.force_non_git = true;
                 i += 1;
             }
             "--findings" => match subcommand.as_deref() {
@@ -403,6 +410,7 @@ pub fn parse_command(args: &[String]) -> Result<Option<ParsedCommand>, String> {
         Some("manifests") => parse_manifests_command(&remaining_args)?,
         Some("routes") => parse_routes_command(&remaining_args)?,
         Some("info") => parse_info_command(&remaining_args)?,
+        Some("anchors") => parse_anchors_command(&remaining_args)?,
         Some("lint") => parse_lint_command(&remaining_args)?,
         Some("report") => parse_report_command(&remaining_args)?,
         Some("prism") => parse_prism_command(&remaining_args)?,
@@ -439,6 +447,9 @@ pub fn parse_command(args: &[String]) -> Result<Option<ParsedCommand>, String> {
         Some("plan") | Some("p") => parse_plan_command(&remaining_args)?,
         Some("cache") => parse_cache_command(&remaining_args)?,
         Some("prune-old-artifacts") => parse_prune_old_artifacts_command(&remaining_args)?,
+        Some("snapshot-path") => parse_snapshot_path_command(&remaining_args)?,
+        Some("inventory") => parse_inventory_command(&remaining_args)?,
+        Some("atlas") => parse_atlas_command(&remaining_args)?,
         Some(unknown) => return Err(format_unknown_subcommand_error(unknown)),
     };
 

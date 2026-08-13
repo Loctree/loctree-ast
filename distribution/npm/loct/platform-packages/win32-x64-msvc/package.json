@@ -1,0 +1,29 @@
+{
+  "name": "@loctree/loct-win32-x64-msvc",
+  "version": "0.14.2",
+  "description": "Loctree runtime (loctree) + co-process binaries (loctree-mcp, loctree-lsp) for Windows x64 (MSVC). Technical delivery package for @loctree/loct — do not install directly.",
+  "keywords": [
+    "loctree",
+    "loctree-mcp",
+    "loctree-lsp",
+    "win32",
+    "x64"
+  ],
+  "license": "BUSL-1.1",
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Loctree/loctree.git",
+    "directory": "distribution/npm/loct/platform-packages/win32-x64-msvc"
+  },
+  "files": [
+    "loctree.exe",
+    "loctree-mcp.exe",
+    "loctree-lsp.exe"
+  ]
+}

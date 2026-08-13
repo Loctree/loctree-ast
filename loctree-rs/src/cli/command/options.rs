@@ -189,6 +189,10 @@ pub struct FindOptions {
     /// - `loct find "Foo Bar"` => queries: ["Foo Bar"] (single arg containing whitespace)
     pub queries: Vec<String>,
 
+    /// Opt into the broad AST/parameter/fuzzy discovery engine. A plain
+    /// positional `find` query is literal truth by default.
+    pub discover: bool,
+
     /// Force legacy OR behavior for multi-arg queries (combine with `|`).
     pub or_mode: bool,
 
@@ -228,8 +232,11 @@ pub struct FindOptions {
     /// Programming language filter
     pub lang: Option<String>,
 
-    /// Maximum results to return (default: 200)
+    /// Maximum results to return (default: 50 in literal mode).
     pub limit: Option<usize>,
+
+    /// Emit the complete literal/where-symbol result set instead of the public cap.
+    pub all: bool,
 
     /// Literal-mode: zero-based occurrence offset for paged output. Ignored
     /// outside `--literal`.
@@ -247,8 +254,25 @@ pub struct FindOptions {
     /// (`slim`). Ignored outside `--literal`.
     pub count_only: bool,
 
+    /// Literal-mode: terse path:line human output (`--compact`).
+    pub compact: bool,
+
+    /// Project roots to scan (`--root` / `--project`). Empty means cwd.
+    pub roots: Vec<PathBuf>,
+
     /// Find where a symbol is defined/exported
     pub where_symbol: bool,
+}
+
+impl FindOptions {
+    /// Snapshot roots for this find; empty `roots` means current directory.
+    pub fn scan_roots(&self) -> Vec<PathBuf> {
+        if self.roots.is_empty() {
+            vec![PathBuf::from(".")]
+        } else {
+            self.roots.clone()
+        }
+    }
 }
 
 /// Options for the `occurrences` command — literal exact-identifier scan.
@@ -466,6 +490,9 @@ pub struct EventsOptions {
     /// Root directories to analyze
     pub roots: Vec<PathBuf>,
 
+    /// Global maximum number of event groups emitted across every family.
+    pub limit: Option<usize>,
+
     /// Show ghost events (emitted but not handled)
     pub ghost: bool,
 
@@ -513,6 +540,13 @@ pub struct ManifestsOptions {
 #[derive(Debug, Clone, Default)]
 pub struct InfoOptions {
     /// Root directory to check
+    pub root: Option<PathBuf>,
+}
+
+/// Options for the `anchors` command.
+#[derive(Debug, Clone, Default)]
+pub struct AnchorsOptions {
+    /// Root directory whose snapshot is projected.
     pub root: Option<PathBuf>,
 }
 
@@ -684,6 +718,9 @@ pub struct TagmapOptions {
 pub struct TwinsOptions {
     /// Root directory to analyze (defaults to current directory)
     pub path: Option<PathBuf>,
+
+    /// Global maximum number of findings emitted across every family.
+    pub limit: Option<usize>,
 
     /// Show only dead parrots (symbols with 0 imports)
     pub dead_only: bool,
@@ -1038,10 +1075,21 @@ pub struct HelpOptions {
 /// Cache subcommand action.
 #[derive(Debug, Clone)]
 pub enum CacheAction {
-    /// List all cached projects with sizes and ages
-    List,
+    /// List cached buckets. Project-local by default (audit class H): the
+    /// global inventory walks and stat-samples every bucket, so it requires
+    /// the explicit `--all` opt-in.
+    List {
+        /// Enumerate the whole global cache (bounded walk with time/output
+        /// ceilings) instead of just the current/selected project's bucket.
+        all: bool,
+        /// Inspect the cache bucket for a specific project directory.
+        project: Option<PathBuf>,
+    },
     /// Clean cache: all projects, or a specific one, or stale entries
     Clean {
+        /// Explicitly target every project bucket. Global cleanup also
+        /// requires `--force`; without it the command is preview-only.
+        all: bool,
         /// Only clean cache for a specific project directory
         project: Option<PathBuf>,
         /// Only clean entries older than this duration (e.g., "7d", "30d")
@@ -1127,6 +1175,26 @@ pub struct QueryOptions {
 
     /// Target (file path or symbol name)
     pub target: String,
+
+    /// Maximum public results to emit. `None` selects the command default.
+    pub limit: Option<usize>,
+
+    /// Emit the complete result set instead of applying the public safety cap.
+    pub all: bool,
+
+    /// Project roots (`--root` / `--project` from `find` or `query`). Empty means cwd.
+    pub roots: Vec<PathBuf>,
+}
+
+impl QueryOptions {
+    /// Snapshot roots for this query; empty `roots` means current directory.
+    pub fn scan_roots(&self) -> Vec<PathBuf> {
+        if self.roots.is_empty() {
+            vec![PathBuf::from(".")]
+        } else {
+            self.roots.clone()
+        }
+    }
 }
 
 /// Options for the `body` command — bounded symbol source retrieval.
@@ -1137,6 +1205,10 @@ pub struct BodyOptions {
 
     /// Maximum source lines to return per body (None = default cap).
     pub line_cap: Option<usize>,
+
+    /// Optional file qualification (repo-relative path or path suffix) to
+    /// disambiguate a symbol defined in more than one file.
+    pub file: Option<String>,
 }
 
 /// Options for `loct prune-old-artifacts` — local `.loctree/` housekeeping.
@@ -1165,4 +1237,55 @@ impl Default for PruneOldArtifactsOptions {
             apply: false,
         }
     }
+}
+
+/// Options for `loct snapshot-path` — resolve snapshot + sibling artifact paths.
+#[derive(Debug, Clone, Default)]
+pub struct SnapshotPathOptions {
+    /// Project root (defaults to current directory).
+    pub project: Option<PathBuf>,
+
+    /// Emit structured JSON (path + artifacts + git context).
+    pub json: bool,
+
+    /// In human mode, also print sibling artifact existence comments.
+    pub verbose_siblings: bool,
+}
+
+/// Options for `loct inventory` — stream compact file inventory as JSONL.
+#[derive(Debug, Clone, Default)]
+pub struct InventoryOptions {
+    /// Project root (defaults to current directory).
+    pub project: Option<PathBuf>,
+
+    /// Emit only the coverage receipt (pretty JSON).
+    pub receipt_only: bool,
+
+    /// Skip the leading receipt record on the JSONL stream.
+    pub no_receipt: bool,
+
+    /// Include test files (excluded by default).
+    pub include_tests: bool,
+
+    /// Include generated files (excluded by default).
+    pub include_generated: bool,
+
+    /// Only emit production code units (kind=code, not test/generated).
+    pub units_only: bool,
+
+    /// Restrict rows to paths with this prefix (e.g. `loctree-rs/src/`).
+    pub path_prefix: Option<String>,
+}
+
+/// Options for `loct atlas` — materialize `loctree.repo-atlas.v1` pointer pack.
+#[derive(Debug, Clone, Default)]
+pub struct AtlasOptions {
+    /// Project root (defaults to current directory).
+    pub project: Option<PathBuf>,
+
+    /// Output directory (default: `<project>/.loctree/repo-atlas`).
+    pub out_dir: Option<PathBuf>,
+
+    /// Emit machine-readable pointer JSON to stdout.
+    pub json: bool,
 }

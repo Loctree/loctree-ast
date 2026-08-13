@@ -218,28 +218,20 @@ fn find_unknown_option_error(arg: &str) -> String {
 pub(super) fn parse_find_command(args: &[String]) -> Result<Command, String> {
     // Check for help flag first
     if args.iter().any(|a| a == "--help" || a == "-h") {
-        return Err("loct find - Semantic search for symbols by name pattern
+        return Err("loct find - Exact literal search by default; broad discovery on request
 
 USAGE:
     loct find [QUERY...] [OPTIONS]
 
 DESCRIPTION:
-    Semantic search for symbols (functions, classes, types) matching name patterns.
-    Uses regex patterns. Multi-arg QUERY defaults to split-mode (subqueries + cross-match).
-    Use --or to combine multiple QUERY args into a single OR regex.
-    Uses snapshot for instant results (15x faster than re-scanning).
-
-DEFAULT vs --literal:
-    Default 'find' is AST/fuzzy-aware: it matches symbols, parameters, and
-    similar names — great for discovery, but it can miss local variables buried
-    in a function body and it promotes fuzzy 'did you mean' candidates.
-    '--literal' is the truth layer: it scans raw source bytes for exact
-    identifier-boundary occurrences (same substrate as 'loct occurrences').
-    Primary results are literal only; fuzzy suggestions, if any, are kept in a
-    separate labeled section and never mixed in. 'Not found' means not found.
+    Plain `loct find QUERY` is the truth layer: an exact identifier-boundary
+    scan over source bytes (the same substrate as `loct occurrences`).
+    Use --discover for the broad AST/parameter/fuzzy engine. Discovery is useful
+    for exploration, but its candidates are not literal evidence.
 
 OPTIONS:
-    --literal                           Literal exact-identifier scan (truth layer, no fuzzy primaries)
+    --literal                           Explicit alias for the default literal mode
+    --discover                          Broad AST/parameter/fuzzy discovery (explicit opt-in)
     --regex                             Regex over raw file TEXT (not just identifiers); keeps coverage
                                         accounting + context labels. For secret/privacy audits where
                                         --literal cannot evaluate a pattern. Mutually exclusive with --literal.
@@ -247,7 +239,10 @@ OPTIONS:
                                         inside 'overlay-backdrop'/'--sample-z-overlay-backdrop' (opt-in, no default change)
     --group-by-file                     (literal) Add a per-file occurrence rollup ('by_file')
     --count-only, --slim                (literal) Suppress the full occurrence list, keep counters only
+    --compact                           (literal) Terse path:line human output
     --offset <N>                        (literal) Zero-based occurrence offset for paged output
+    --root <PATH>, --project <PATH>     Project root to scan (default: current directory)
+    --path <PATTERN>                    Alias for --file (path/suffix scope in literal mode)
     --or                                Combine multiple QUERY args with OR (legacy behavior)
     --symbol <PATTERN>, -s <PATTERN>    Search for symbols matching regex
     --pattern <PATTERN>                 Alias for --symbol (regex)
@@ -258,17 +253,18 @@ OPTIONS:
     --dead                              Only show dead/unused symbols
     --exported                          Only show exported symbols
     --mode <NAME>                       Alias that dispatches to a mode flag instead of typing the flag directly:
-                                        literal | regex | where-symbol | who-imports | dead | exported | fuzzy (default).
+                                        literal | regex | where-symbol | who-imports | dead | exported | discover.
                                         e.g. `--mode where-symbol` == `--where-symbol`. Compat shim for `--mode <x>` muscle memory.
     --lang <LANG>                       Filter by language (ts, rs, js, py, etc.)
-    --limit <N>                         Maximum results to show; in --literal, page size for occurrences
+    --limit <N>                         Maximum results to show (default: 50 literal, 25 where-symbol)
+    --all                               Emit all literal/where-symbol results (explicitly unbounded)
     --help, -h                          Show this help message
 
 EXAMPLES:
-    loct find Patient                   # Find symbols containing \"Patient\"
-    loct find Props Options ViewModel   # Split-mode: run subqueries + cross-match
-    loct find \"Props Options\"          # AND-mode: require ALL terms (quoted)
-    loct find --or foo bar baz          # Legacy: combine with OR
+    loct find Patient                   # Every exact identifier-boundary occurrence
+    loct find --discover Patient        # Broad AST/parameter/fuzzy discovery
+    loct find --discover Props Options ViewModel # Split discovery + cross-match
+    loct find --discover --or foo bar baz # Legacy OR discovery
     loct find --symbol \".*Config$\"      # Regex: symbols ending with Config
     loct find --literal utterance_id    # Literal truth: every exact occurrence
     loct find --literal utterance_id --json  # Literal matches as JSON (literal_matches section)
@@ -306,12 +302,29 @@ EXAMPLES:
                 opts.symbol = Some(value.clone());
                 i += 2;
             }
-            "--file" | "-f" => {
+            "--file" | "-f" | "--path" => {
+                // `--path` is a natural alias for file-scope filtering (loctree-feedback:
+                // agents type `find --path <dir>` after learning `--path` on dead/routes).
+                let flag = arg.as_str();
                 let value = args
                     .get(i + 1)
-                    .ok_or_else(|| "--file requires a pattern".to_string())?;
+                    .ok_or_else(|| format!("{flag} requires a pattern"))?;
                 opts.file = Some(value.clone());
                 i += 2;
+            }
+            "--root" | "--project" => {
+                // Help advertises `--root`; agents also pass `--project` (parity with
+                // `loct context --project`). Both set the scan root for find.
+                let flag = arg.as_str();
+                let value = args
+                    .get(i + 1)
+                    .ok_or_else(|| format!("{flag} requires a path"))?;
+                opts.roots.push(PathBuf::from(value));
+                i += 2;
+            }
+            "--compact" => {
+                opts.compact = true;
+                i += 1;
             }
             "--impact" => {
                 let value = args
@@ -329,6 +342,10 @@ EXAMPLES:
             }
             "--literal" => {
                 opts.literal = true;
+                i += 1;
+            }
+            "--discover" => {
+                opts.discover = true;
                 i += 1;
             }
             "--regex" => {
@@ -369,8 +386,8 @@ EXAMPLES:
                     "who-imports" | "who_imports" => who_imports = true,
                     "dead" => opts.dead_only = true,
                     "exported" => opts.exported_only = true,
-                    // Default AST/fuzzy discovery mode — no flag to set.
-                    "fuzzy" | "ast" | "default" | "symbol" => {}
+                    "discover" | "fuzzy" | "ast" | "symbol" => opts.discover = true,
+                    "default" => opts.literal = true,
                     "similar" => {
                         return Err(
                             "`--mode similar` needs a target symbol. Use `loct find --similar <SYMBOL>` instead."
@@ -413,6 +430,10 @@ EXAMPLES:
                     .ok_or_else(|| "--limit requires a number".to_string())?;
                 opts.limit = Some(value.parse().map_err(|_| "--limit requires a number")?);
                 i += 2;
+            }
+            "--all" => {
+                opts.all = true;
+                i += 1;
             }
             "--offset" => {
                 let value = args
@@ -466,6 +487,38 @@ EXAMPLES:
         );
     }
 
+    let discovery_selected = opts.discover
+        || opts.or_mode
+        || opts.symbol.is_some()
+        || opts.impact.is_some()
+        || opts.similar.is_some()
+        || opts.dead_only
+        || opts.exported_only
+        || opts.lang.is_some()
+        || (opts.file.is_some() && queries.is_empty());
+
+    if opts.discover && (opts.literal || opts.regex) {
+        return Err(
+            "--discover cannot be combined with --literal or --regex: choose one evidence mode"
+                .to_string(),
+        );
+    }
+
+    if opts.all && opts.limit.is_some() {
+        return Err("--all and --limit are mutually exclusive".to_string());
+    }
+
+    if !discovery_selected && !opts.regex && !opts.where_symbol && !who_imports {
+        // Multi-arg and `A|B` are multi-literal OR on the exact-truth substrate
+        // (not discovery). Agents used to get silent fixed_string-0 on pipes and
+        // fall back to grep — multi-literal closes that hole.
+        opts.literal = true;
+    }
+
+    if opts.literal && !opts.all && opts.limit.is_none() {
+        opts.limit = Some(50);
+    }
+
     if who_imports {
         if opts.symbol.is_some()
             || opts.file.is_some()
@@ -498,6 +551,11 @@ EXAMPLES:
         return Ok(Command::Query(QueryOptions {
             kind: QueryKind::WhoImports,
             target: target.to_string(),
+            limit: None,
+            all: false,
+            // Preserve find --root/--project so who-imports does not silently
+            // re-home to cwd (loctree-feedback / skeptic: wrong universe).
+            roots: opts.roots.clone(),
         }));
     }
 
@@ -528,10 +586,11 @@ USAGE:
     loct occurrences <IDENT> [OPTIONS]
 
 DESCRIPTION:
-    Walks raw source bytes of snapshot files and reports every
+    Walks source bytes of files in the current snapshot and reports every
     identifier-boundary occurrence of <IDENT>. Token-aware (not naive
     substring), literal only (no fuzzy suggestions promoted as primary).
-    'Not found' means not found.
+    'Not found' means no match in the stated snapshot scope; it is not proof
+    about ignored, generated, unsupported, or otherwise unindexed files.
 
 OPTIONS:
     --root <PATH>        Project root to scan (default: current directory)
@@ -562,10 +621,16 @@ EXAMPLES:
     while i < args.len() {
         let arg = &args[i];
         match arg.as_str() {
-            "--root" => {
+            "--root" | "--project" => {
+                // Same pair `find` accepts: help advertises `--root`, agents reach for
+                // `--project` by analogy with `loct context --project`. Occurrences is
+                // the literal oracle agents cross-check `find` against, so rejecting
+                // the spelling that just worked on `find` reads as "this project has
+                // no occurrences" rather than "wrong flag".
+                let flag = arg.as_str();
                 let value = args
                     .get(i + 1)
-                    .ok_or_else(|| "--root requires a path".to_string())?;
+                    .ok_or_else(|| format!("{flag} requires a path"))?;
                 opts.roots.push(PathBuf::from(value));
                 i += 2;
             }
@@ -645,17 +710,24 @@ pub(super) fn parse_query_command(args: &[String]) -> Result<Command, String> {
         return Err("loct query - Graph queries (who-imports, who-exports, etc.)
 
 USAGE:
-    loct query <KIND> <TARGET>
+    loct query <KIND> <TARGET> [OPTIONS]
 
 QUERY KINDS:
     who-imports <FILE>        Find all files that import the specified file
-    where-symbol <SYMBOL>     Find where a symbol is defined/exported
+    where-symbol <SYMBOL>     Find exact definitions (25 results by default)
     component-of <FILE>       Show which components/modules contain this file
     swift-types <SWIFT_FILE>  Classify Swift type-position references
+
+OPTIONS:
+    --limit <N>              Cap public results (kind default when omitted)
+    --all                    Emit the complete result set
+    --root <PATH>            Project root to scan (default: current directory)
+    --project <PATH>         Alias for --root
 
 EXAMPLES:
     loct query who-imports src/utils.ts
     loct query where-symbol PatientRecord
+    loct query where-symbol Foo --project /path/to/sibling
     loct query swift-types Sources/App/AppController.swift"
             .to_string());
     }
@@ -669,6 +741,37 @@ EXAMPLES:
 
     let kind_str = &args[0];
     let target = args[1].clone();
+    let mut limit = None;
+    let mut all = false;
+    let mut roots: Vec<PathBuf> = Vec::new();
+    let mut i = 2;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--limit" => {
+                let value = args
+                    .get(i + 1)
+                    .ok_or_else(|| "--limit requires a number".to_string())?;
+                limit = Some(value.parse().map_err(|_| "--limit requires a number")?);
+                i += 2;
+            }
+            "--all" => {
+                all = true;
+                i += 1;
+            }
+            "--root" | "--project" => {
+                let flag = args[i].as_str();
+                let value = args
+                    .get(i + 1)
+                    .ok_or_else(|| format!("{flag} requires a path"))?;
+                roots.push(PathBuf::from(value));
+                i += 2;
+            }
+            other => return Err(format!("Unknown query option '{other}'")),
+        }
+    }
+    if all && limit.is_some() {
+        return Err("--all and --limit are mutually exclusive".to_string());
+    }
 
     let kind = match kind_str.as_str() {
         "who-imports" => QueryKind::WhoImports,
@@ -683,7 +786,13 @@ EXAMPLES:
         }
     };
 
-    Ok(Command::Query(QueryOptions { kind, target }))
+    Ok(Command::Query(QueryOptions {
+        kind,
+        target,
+        limit,
+        all,
+        roots,
+    }))
 }
 
 /// Parse `loct body <symbol> [options]` command - bounded symbol source retrieval.
@@ -697,24 +806,32 @@ USAGE:
 
 DESCRIPTION:
     Once `where-symbol` locates a symbol, `body` shows the actual source
-    lines of its definition without ever shelling out to grep/sed.
-    Body extraction is brace-balanced (Rust, TS/JS, C-family) with a
-    fixed-window fallback for brace-less languages (e.g. Python).
+    lines of its definition directly from indexed source.
+    Body extents are structural: brace balancing (Rust, Swift, TS/JS,
+    C-family), indentation blocks for Python def/class, bracket-balanced
+    collection consts, and single-line statements. When no extent can be
+    proven the result falls back to a fixed window and is reported as
+    truncated (extent \"window\").
 
 OPTIONS:
     --max-lines <N>   Cap source lines returned per body (default: 200)
-    --json            Emit JSON (file, start/end line, language, source)
+    --file <PATH>     Qualify an ambiguous symbol to one defining file
+                      (exact repo-relative path or path suffix)
+    --json            Emit JSON (file, start/end line, language, source,
+                      truncated, extent)
     --help, -h        Show this help message
 
 EXAMPLES:
     loct body transcription_session
     loct body handle_query_command --max-lines 80
+    loct body build --file src/beta.py
     loct body query_where_symbol --json"
             .to_string());
     }
 
     let mut symbol: Option<String> = None;
     let mut line_cap: Option<usize> = None;
+    let mut file: Option<String> = None;
     let mut i = 0;
 
     while i < args.len() {
@@ -725,6 +842,13 @@ EXAMPLES:
                     .get(i + 1)
                     .ok_or_else(|| "--max-lines requires a number".to_string())?;
                 line_cap = Some(value.parse().map_err(|_| "--max-lines requires a number")?);
+                i += 2;
+            }
+            "--file" => {
+                let value = args
+                    .get(i + 1)
+                    .ok_or_else(|| "--file requires a path".to_string())?;
+                file = Some(value.clone());
                 i += 2;
             }
             _ if !arg.starts_with('-') => {
@@ -748,7 +872,11 @@ EXAMPLES:
         "'body' command requires a symbol name. Usage: loct body <symbol>".to_string()
     })?;
 
-    Ok(Command::Body(BodyOptions { symbol, line_cap }))
+    Ok(Command::Body(BodyOptions {
+        symbol,
+        line_cap,
+        file,
+    }))
 }
 
 /// Parse `loct impact <file> [options]` command - analyze impact of file changes.
@@ -829,6 +957,7 @@ USAGE:
 
 OPTIONS:
     --path <DIR>       Root directory to analyze (default: current directory)
+    --limit <N>        Maximum findings across all output families
     --dead-only        Show only dead parrots (exports with 0 imports)
     --include-tests    Include test files in analysis (excluded by default)
     --help, -h         Show this help message
@@ -846,6 +975,13 @@ EXAMPLES:
     while i < args.len() {
         let arg = &args[i];
         match arg.as_str() {
+            "--limit" => {
+                let value = args
+                    .get(i + 1)
+                    .ok_or_else(|| "--limit requires a number".to_string())?;
+                opts.limit = Some(value.parse().map_err(|_| "--limit requires a number")?);
+                i += 2;
+            }
             "--path" => {
                 let value = args
                     .get(i + 1)
@@ -992,18 +1128,165 @@ mod tests {
         if let Command::Query(opts) = result {
             assert!(matches!(opts.kind, QueryKind::WhoImports));
             assert_eq!(opts.target, "src/utils.ts");
+            assert!(opts.roots.is_empty(), "default roots empty => cwd");
         } else {
             panic!("Expected Query command from --mode who-imports");
         }
     }
 
     #[test]
-    fn test_parse_find_mode_fuzzy_is_noop_default() {
+    fn test_parse_find_who_imports_preserves_project_root() {
+        // Skeptic: who-imports rewrite used to drop --project and re-home to cwd.
+        let args = vec![
+            "--project".into(),
+            "/tmp/sibling-a".into(),
+            "src/lib.rs".into(),
+            "--who-imports".into(),
+        ];
+        let result = parse_find_command(&args).unwrap();
+        if let Command::Query(opts) = result {
+            assert!(matches!(opts.kind, QueryKind::WhoImports));
+            assert_eq!(opts.target, "src/lib.rs");
+            assert_eq!(opts.roots, vec![PathBuf::from("/tmp/sibling-a")]);
+            assert_eq!(opts.scan_roots(), vec![PathBuf::from("/tmp/sibling-a")]);
+        } else {
+            panic!("Expected Query command");
+        }
+    }
+
+    // loctree-feedback 2026-07-27 / 2026-08-11: help advertised --root/--compact while
+    // the parser rejected them. Keep help ↔ parser on one contract.
+    #[test]
+    fn test_parse_find_accepts_root_project_path_and_compact() {
+        let args = vec![
+            "--root".into(),
+            "/tmp/proj".into(),
+            "--literal".into(),
+            "FOO".into(),
+            "--compact".into(),
+        ];
+        let result = parse_find_command(&args).unwrap();
+        if let Command::Find(opts) = result {
+            assert_eq!(opts.roots, vec![PathBuf::from("/tmp/proj")]);
+            assert!(opts.compact);
+            assert!(opts.literal);
+            assert_eq!(opts.queries, vec!["FOO".to_string()]);
+        } else {
+            panic!("Expected Find command");
+        }
+
+        let args = vec![
+            "--project".into(),
+            "/tmp/sibling".into(),
+            "--path".into(),
+            "src/".into(),
+            "BAR".into(),
+        ];
+        let result = parse_find_command(&args).unwrap();
+        if let Command::Find(opts) = result {
+            assert_eq!(opts.roots, vec![PathBuf::from("/tmp/sibling")]);
+            assert_eq!(opts.file.as_deref(), Some("src/"));
+            assert_eq!(opts.queries, vec!["BAR".to_string()]);
+        } else {
+            panic!("Expected Find command");
+        }
+    }
+
+    // loctree-feedback 2026-08-12: `--project` was healed on find but not on
+    // occurrences, so the same spelling worked on one command and errored on the
+    // other. Occurrences is the literal oracle agents cross-check find against —
+    // an agent that scoped find to a sibling project and then reached for
+    // occurrences got a hard parse error mid-investigation.
+    #[test]
+    fn test_parse_occurrences_accepts_project_as_root_alias() {
+        for flag in ["--root", "--project"] {
+            let args = vec!["FOO".into(), flag.into(), "/tmp/sibling".into()];
+            let result = parse_occurrences_command(&args)
+                .unwrap_or_else(|e| panic!("{flag} rejected by occurrences: {e}"));
+            if let Command::Occurrences(opts) = result {
+                assert_eq!(opts.ident, "FOO");
+                assert_eq!(opts.roots, vec![PathBuf::from("/tmp/sibling")]);
+            } else {
+                panic!("Expected Occurrences command for {flag}");
+            }
+        }
+    }
+
+    // A path-less `--project` must fail loudly rather than swallow the next
+    // positional as its value — otherwise the identifier silently becomes the
+    // scan root and the search returns a confident empty result.
+    #[test]
+    fn test_parse_occurrences_project_requires_a_path() {
+        let args = vec!["FOO".into(), "--project".into()];
+        let err = parse_occurrences_command(&args).expect_err("expected a missing-path error");
+        assert!(
+            err.contains("--project"),
+            "error should name the flag: {err}"
+        );
+    }
+
+    #[test]
+    fn test_parse_find_mode_fuzzy_explicitly_selects_discovery() {
         let args = vec!["--mode".into(), "fuzzy".into(), "Patient".into()];
         let result = parse_find_command(&args).unwrap();
         if let Command::Find(opts) = result {
             assert!(!opts.literal && !opts.regex && !opts.where_symbol);
+            assert!(opts.discover);
             assert_eq!(opts.queries, vec!["Patient".to_string()]);
+        } else {
+            panic!("Expected Find command");
+        }
+    }
+
+    #[test]
+    fn test_plain_find_is_literal_truth_by_default() {
+        let args = vec!["utterance_id".into()];
+        let result = parse_find_command(&args).unwrap();
+        if let Command::Find(opts) = result {
+            assert!(opts.literal);
+            assert!(!opts.discover);
+            assert_eq!(opts.limit, Some(50));
+        } else {
+            panic!("Expected Find command");
+        }
+    }
+
+    #[test]
+    fn test_discover_preserves_broad_find_engine() {
+        let args = vec!["--discover".into(), "Patient".into()];
+        let result = parse_find_command(&args).unwrap();
+        if let Command::Find(opts) = result {
+            assert!(opts.discover);
+            assert!(!opts.literal);
+        } else {
+            panic!("Expected Find command");
+        }
+    }
+
+    #[test]
+    fn test_plain_multi_query_is_multi_literal() {
+        let args = vec!["Props".into(), "Options".into()];
+        let result = parse_find_command(&args).unwrap();
+        if let Command::Find(opts) = result {
+            assert!(opts.literal);
+            assert!(!opts.discover);
+            assert_eq!(
+                opts.queries,
+                vec!["Props".to_string(), "Options".to_string()]
+            );
+        } else {
+            panic!("Expected Find command");
+        }
+    }
+
+    #[test]
+    fn test_plain_find_all_is_explicitly_unbounded() {
+        let args = vec!["utterance_id".into(), "--all".into()];
+        let result = parse_find_command(&args).unwrap();
+        if let Command::Find(opts) = result {
+            assert!(opts.literal);
+            assert!(opts.all);
+            assert_eq!(opts.limit, None);
         } else {
             panic!("Expected Find command");
         }
@@ -1074,9 +1357,65 @@ mod tests {
         if let Command::Query(opts) = result {
             assert!(matches!(opts.kind, QueryKind::WhoImports));
             assert_eq!(opts.target, "src/utils.ts");
+            assert_eq!(opts.limit, None);
+            assert!(!opts.all);
+            assert!(opts.roots.is_empty());
         } else {
             panic!("Expected Query command");
         }
+    }
+
+    #[test]
+    fn test_parse_query_accepts_project_root() {
+        let args = vec![
+            "where-symbol".into(),
+            "Foo".into(),
+            "--project".into(),
+            "/tmp/sibling-b".into(),
+        ];
+        let result = parse_query_command(&args).unwrap();
+        if let Command::Query(opts) = result {
+            assert!(matches!(opts.kind, QueryKind::WhereSymbol));
+            assert_eq!(opts.roots, vec![PathBuf::from("/tmp/sibling-b")]);
+        } else {
+            panic!("Expected Query command");
+        }
+    }
+
+    #[test]
+    fn test_parse_query_limit_and_all_contract() {
+        let limited = parse_query_command(&[
+            "where-symbol".into(),
+            "new".into(),
+            "--limit".into(),
+            "7".into(),
+        ])
+        .unwrap();
+        if let Command::Query(opts) = limited {
+            assert_eq!(opts.limit, Some(7));
+            assert!(!opts.all);
+        } else {
+            panic!("Expected Query command");
+        }
+
+        let all =
+            parse_query_command(&["where-symbol".into(), "new".into(), "--all".into()]).unwrap();
+        if let Command::Query(opts) = all {
+            assert!(opts.all);
+            assert_eq!(opts.limit, None);
+        } else {
+            panic!("Expected Query command");
+        }
+
+        let err = parse_query_command(&[
+            "where-symbol".into(),
+            "new".into(),
+            "--all".into(),
+            "--limit".into(),
+            "2".into(),
+        ])
+        .unwrap_err();
+        assert!(err.contains("mutually exclusive"));
     }
 
     #[test]
@@ -1096,10 +1435,11 @@ mod tests {
 
     #[test]
     fn test_parse_twins_command() {
-        let args = vec!["--dead-only".into()];
+        let args = vec!["--dead-only".into(), "--limit".into(), "4".into()];
         let result = parse_twins_command(&args).unwrap();
         if let Command::Twins(opts) = result {
             assert!(opts.dead_only);
+            assert_eq!(opts.limit, Some(4));
         } else {
             panic!("Expected Twins command");
         }

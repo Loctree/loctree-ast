@@ -5,7 +5,7 @@
 //! so future middleware (bearer auth, OIDC, rate limit, paging endpoints)
 //! can be layered without touching the MCP service itself.
 //!
-//! Vibecrafted with AI Agents by VetCoders (c)2024-2026 LibraxisAI
+//! Vibecrafted with AI Agents by Vetcoders (c)2024-2026 LibraxisAI
 
 pub mod context_pack;
 
@@ -21,7 +21,7 @@ use crate::LoctreeServer;
 /// are managed by `LocalSessionManager` (in-memory, default). On Ctrl-C the
 /// `CancellationToken` returns from the watch loop and `axum::serve` shuts
 /// down gracefully.
-pub async fn serve_http(bind: &str) -> Result<()> {
+pub async fn serve_http(bind: &str, snapshot_cache_capacity: usize) -> Result<()> {
     use rmcp::transport::streamable_http_server::{
         StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
     };
@@ -31,7 +31,7 @@ pub async fn serve_http(bind: &str) -> Result<()> {
 
     let service: StreamableHttpService<LoctreeServer, LocalSessionManager> =
         StreamableHttpService::new(
-            || Ok(LoctreeServer::new()),
+            move || Ok(LoctreeServer::with_cache_capacity(snapshot_cache_capacity)),
             std::sync::Arc::new(LocalSessionManager::default()),
             config,
         );

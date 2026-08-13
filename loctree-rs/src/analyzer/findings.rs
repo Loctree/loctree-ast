@@ -27,6 +27,7 @@ use crate::analyzer::root_scan::ScanResults;
 use crate::analyzer::ts_lint::{TsLintIssue, TsLintSummary, lint_ts_file};
 use crate::analyzer::twins::{
     TwinCategory, categorize_twin, detect_exact_twins, filter_idiom_twins, find_dead_parrots,
+    omit_from_duplicate_groups,
 };
 use crate::semantic::{Classifier as SemClassifier, SemanticFacts};
 use crate::snapshot::{EntrypointDriftSummary, Snapshot};
@@ -242,6 +243,18 @@ pub struct QuickWin {
     pub action: String,
     /// Target file
     pub file: String,
+    /// The declaration this win is about, when the win is symbol-scoped.
+    ///
+    /// Without it a `delete_candidate` for one dead constant renders as
+    /// `delete_candidate: <path>` and reads as a verdict on the whole file —
+    /// a reader who then checks whether the *file* is used finds it very much
+    /// alive and dismisses a true finding. Carrying the symbol keeps the
+    /// proposal at the size it was actually made at. (loctree-feedback 2026-08-12)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub symbol: Option<String>,
+    /// 1-based line of `symbol`, when known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line: Option<usize>,
     /// Human-readable reason
     pub reason: String,
     /// Estimated LOC savings (if applicable)
@@ -270,7 +283,7 @@ impl Findings {
         config: FindingsConfig,
         dist: Option<DistResult>,
     ) -> Self {
-        let version = env!("CARGO_PKG_VERSION").to_string();
+        let version = crate::BUILD_VERSION.to_string();
         let generated_at = time::OffsetDateTime::now_utc()
             .format(&time::format_description::well_known::Iso8601::DEFAULT)
             .unwrap_or_else(|_| "unknown".to_string());
@@ -448,6 +461,15 @@ impl Findings {
                 .map(|c| c.to_string());
         }
 
+        // W1-03: the sensor still lists every namesake group; the count that
+        // feeds `duplicate_groups` / score must read that classification.
+        let skip_score: HashSet<&str> = exact_twins
+            .iter()
+            .filter(|twin| omit_from_duplicate_groups(twin))
+            .map(|twin| twin.name.as_str())
+            .collect();
+        duplicates.retain(|dup| !skip_score.contains(dup.symbol.as_str()));
+
         let quick_wins = generate_quick_wins(
             &dead_parrots,
             &cycles,
@@ -458,15 +480,38 @@ impl Findings {
             &memory_lint,
         );
 
-        // Categorize twins: same-language vs cross-language
+        // Categorize twins: same-language vs cross-language.
+        //
+        // W2-01: the same evidence that keeps a group out of `duplicate_groups`
+        // keeps it out of the SMELL dimension. `text` on two SwiftUI views is a
+        // name the framework dictates; scoring it as a smell scores the parser.
         let (twins_same_language, _twins_cross_language): (Vec<_>, Vec<_>) = exact_twins
             .iter()
+            .filter(|twin| !omit_from_duplicate_groups(twin))
             .partition(|twin| matches!(categorize_twin(twin), TwinCategory::SameLanguage(_)));
 
         // Use twins module's find_dead_parrots for consistency with for_ai.rs
         // (this is different from DeadExport dead_parrots - twins dead_parrots are symbols with 0 imports)
+        //
+        // W2-01: HIGH must not answer "is this symbol unused" twice — once with
+        // evidence and once without. `find_dead_parrots` knows only the import
+        // count, and in a module-scoped language that number carries no signal:
+        // Swift `import` is module-level, so every declaration inside the module
+        // has zero import edges whether it is called on every line or never.
+        // A twin parrot is scored only where the graded detector — which
+        // cross-checks literal occurrences, applies semantic suppression and
+        // fences entry points — independently calls it a defect.
         let twins_result = find_dead_parrots(&analyses_vec, false, false);
-        let twins_dead_parrots = twins_result.dead_parrots.len();
+        let scored_dead: HashSet<&str> = dead_parrots
+            .iter()
+            .filter(|candidate| counts_as_dead_defect(candidate))
+            .map(|candidate| candidate.symbol.as_str())
+            .collect();
+        let twins_dead_parrots = twins_result
+            .dead_parrots
+            .iter()
+            .filter(|symbol| scored_dead.contains(symbol.name.as_str()))
+            .count();
         let twins_same_lang_count = twins_same_language.len();
 
         // Count cascade imports for health score consistency with for_ai.rs
@@ -748,6 +793,12 @@ fn generate_quick_wins(
             wins.push(QuickWin {
                 action: "delete_candidate".to_string(),
                 file: dead.file.clone(),
+                // Carry the declaration: this win is about one symbol, not the
+                // file. Note the dedup above is per-file, so a file with several
+                // dead declarations contributes only its first — one more reason
+                // the entry must not read as a verdict on everything in it.
+                symbol: Some(dead.symbol.clone()),
+                line: dead.line,
                 reason: dead.reason.clone(),
                 saves_loc: None, // TODO: Add LOC info to DeadExport
             });
@@ -762,6 +813,9 @@ fn generate_quick_wins(
             wins.push(QuickWin {
                 action: "break_cycle".to_string(),
                 file: cycle.files.first().cloned().unwrap_or_default(),
+                // A cycle is a property of the edge set, not of one declaration.
+                symbol: None,
+                line: None,
                 reason: suggestion.clone(),
                 saves_loc: None,
             });
@@ -777,6 +831,8 @@ fn generate_quick_wins(
             wins.push(QuickWin {
                 action: "consolidate".to_string(),
                 file: dup.canonical.clone(),
+                symbol: Some(dup.symbol.clone()),
+                line: None,
                 reason: format!(
                     "Consolidate '{}' from {} files",
                     dup.symbol,
@@ -795,6 +851,10 @@ fn generate_quick_wins(
             wins.push(QuickWin {
                 action: "create_barrel".to_string(),
                 file: format!("{}/index.ts", dir),
+                // Directory-scoped: the win creates a file, it does not target
+                // an existing declaration.
+                symbol: None,
+                line: None,
                 reason: chaos.description.clone(),
                 saves_loc: None,
             });
@@ -809,6 +869,10 @@ fn generate_quick_wins(
             wins.push(QuickWin {
                 action: "fix_race_condition".to_string(),
                 file: issue.file.clone(),
+                // The line was already being stringified into `reason`; carrying
+                // it as data too lets a reader jump straight to it.
+                symbol: None,
+                line: Some(issue.line),
                 reason: format!("{} (line {})", issue.message, issue.line),
                 saves_loc: None,
             });
@@ -823,6 +887,8 @@ fn generate_quick_wins(
             wins.push(QuickWin {
                 action: "fix_type_safety".to_string(),
                 file: issue.file.clone(),
+                symbol: None,
+                line: Some(issue.line),
                 reason: format!("{} (line {})", issue.message, issue.line),
                 saves_loc: None,
             });
@@ -837,6 +903,8 @@ fn generate_quick_wins(
             wins.push(QuickWin {
                 action: "fix_memory_leak".to_string(),
                 file: issue.file.clone(),
+                symbol: None,
+                line: Some(issue.line),
                 reason: format!("{} (line {})", issue.message, issue.line),
                 saves_loc: None,
             });
@@ -865,6 +933,23 @@ struct SummaryInput<'a> {
     dist: Option<&'a DistResult>,
 }
 
+/// Does this dead-export verdict belong in the HIGH severity dimension?
+///
+/// The reported `dead_parrots` list is the sensor and keeps every candidate.
+/// The score is an aggregate of *defects*, and two kinds of candidate are not
+/// defects no matter how the list reads:
+///
+/// * `confidence: low` — the detector is telling us it could not resolve the
+///   references, not that there are none. Swift is the sharp case: `import` is
+///   module-level, so a missing import edge carries no information at all.
+/// * `entrypoint: true` — a declared runtime entry (Swift `@main`, Cargo
+///   `[[bin]]`, a shebang script) has no caller *by definition*. The entry-point
+///   fence already keeps these out of delete quick-wins; scoring them would
+///   penalize a repository for having a way to start.
+fn counts_as_dead_defect(candidate: &DeadExport) -> bool {
+    !candidate.entrypoint && matches!(candidate.confidence.as_str(), "high" | "very-high")
+}
+
 /// Calculate summary statistics
 fn calculate_summary(input: &SummaryInput) -> FindingsSummary {
     let files = input.analyses.len();
@@ -887,8 +972,13 @@ fn calculate_summary(input: &SummaryInput) -> FindingsSummary {
     let health_metrics = HealthMetrics {
         // CERTAIN: breaking cycles are critical
         breaking_cycles: cycle_counts.breaking,
-        // HIGH: dead exports, twins_dead_parrots
-        dead_exports: input.dead_parrots.len(),
+        // HIGH: dead exports, twins_dead_parrots. `dead_parrots` below reports
+        // every candidate the sensor found; only the resolved ones are scored.
+        dead_exports: input
+            .dead_parrots
+            .iter()
+            .filter(|candidate| counts_as_dead_defect(candidate))
+            .count(),
         twins_dead_parrots: input.twins_dead_parrots,
         // SMELL: barrel chaos, structural cycles, duplicates, twins_same_language, cascades
         barrel_chaos_count: input.barrel_chaos.len(),
@@ -1071,7 +1161,7 @@ impl Manifest {
         agent_size_kb: usize,
         dist: Option<&DistResult>,
     ) -> Self {
-        let version = env!("CARGO_PKG_VERSION").to_string();
+        let version = crate::BUILD_VERSION.to_string();
         let generated_at = time::OffsetDateTime::now_utc()
             .format(&time::format_description::well_known::Iso8601::DEFAULT)
             .unwrap_or_else(|_| "unknown".to_string());
@@ -1218,6 +1308,8 @@ mod tests {
         let win = QuickWin {
             action: "delete_candidate".to_string(),
             file: "src/dead.ts".to_string(),
+            symbol: Some("unusedExport".to_string()),
+            line: Some(42),
             reason: "Unused export".to_string(),
             saves_loc: Some(100),
         };
@@ -1225,6 +1317,21 @@ mod tests {
         assert!(json.contains("delete_candidate"));
         assert!(json.contains("src/dead.ts"));
         assert!(json.contains("100"));
+        assert!(json.contains("unusedExport"), "symbol must reach the wire");
+        assert!(json.contains("42"), "line must reach the wire");
+
+        // Symbol-less wins (cycles, barrels) must not emit null noise.
+        let cycle_win = QuickWin {
+            action: "break_cycle".to_string(),
+            file: "src/a.ts".to_string(),
+            symbol: None,
+            line: None,
+            reason: "Break the a->b->a cycle".to_string(),
+            saves_loc: None,
+        };
+        let json = serde_json::to_string(&cycle_win).expect("serialize quick win");
+        assert!(!json.contains("symbol"), "absent symbol must be omitted");
+        assert!(!json.contains("line"), "absent line must be omitted");
     }
 
     #[test]
@@ -1284,6 +1391,14 @@ mod tests {
         assert_eq!(wins.len(), 1, "only the clean high-confidence candidate");
         assert_eq!(wins[0].action, "delete_candidate");
         assert_eq!(wins[0].file, "src/dead.ts");
+        // The win is about one declaration; without these a reader checks the
+        // whole file for usage, finds it alive, and dismisses a true finding.
+        assert_eq!(
+            wins[0].symbol.as_deref(),
+            Some("unused"),
+            "a symbol-scoped win must name its declaration"
+        );
+        assert_eq!(wins[0].line, Some(3), "and point at its line");
         assert!(
             !wins.iter().any(|w| w.file == "src/bin/tool.rs"),
             "entry-point files must never get delete_candidate"

@@ -79,6 +79,9 @@ pub enum Command {
     /// Snapshot metadata and project info.
     Info(InfoOptions),
 
+    /// Emit the deterministic `loctree.anchors.v1` catalog.
+    Anchors(AnchorsOptions),
+
     /// Structural lint/policy checks.
     Lint(LintOptions),
 
@@ -177,6 +180,26 @@ pub enum Command {
     /// directories per agent run; without periodic pruning they shadow real
     /// project roots (causing scope-drift bugs) and bloat the repo.
     PruneOldArtifacts(PruneOldArtifactsOptions),
+
+    /// Resolve the on-disk snapshot path and sibling organ artifacts.
+    ///
+    /// Prints a path agents can hand to jq/`loct inventory` without dumping
+    /// the multi-megabyte snapshot body into a prompt.
+    SnapshotPath(SnapshotPathOptions),
+
+    /// Stream compact file inventory as JSONL with a coverage receipt.
+    ///
+    /// Snapshot `files[]` is inventory SoT. First JSONL record is the
+    /// coverage receipt (`record=receipt`); subsequent rows are files.
+    /// `inventory_ratio < 0.95` → exit 3 (STOP).
+    Inventory(InventoryOptions),
+
+    /// Materialize a small `loctree.repo-atlas.v1` pointer pack.
+    ///
+    /// Three organs as paths: sense (repo-view/agent.json), inventory
+    /// (snapshot + inventory command), signals (findings). Never embeds
+    /// the raw snapshot body.
+    Atlas(AtlasOptions),
 }
 
 impl Default for Command {

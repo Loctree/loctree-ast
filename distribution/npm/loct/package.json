@@ -1,0 +1,56 @@
+{
+  "name": "@loctree/loct",
+  "version": "0.14.2",
+  "description": "Loctree — structural code intelligence for AI agents. One runtime (loctree), one npm install. MCP and editor (LSP) modes run through `loct watch`.",
+  "keywords": [
+    "loctree",
+    "loct",
+    "mcp",
+    "lsp",
+    "static-analysis",
+    "dead-code",
+    "imports",
+    "exports",
+    "codebase",
+    "typescript",
+    "javascript",
+    "rust",
+    "circular-dependencies",
+    "dependency-graph"
+  ],
+  "main": "index.js",
+  "types": "index.d.ts",
+  "bin": {
+    "loctree": "bin/loctree",
+    "loct": "bin/loct",
+    "loctree-mcp": "bin/loctree-mcp"
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "bin/loctree",
+    "bin/loct",
+    "bin/loctree-mcp",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Loctree/loctree.git"
+  },
+  "homepage": "https://loct.io",
+  "bugs": {
+    "url": "https://github.com/Loctree/loctree/issues"
+  },
+  "license": "BUSL-1.1",
+  "author": "Loctree <loct@loct.io>",
+  "engines": {
+    "node": ">=14.0.0"
+  },
+  "optionalDependencies": {
+    "@loctree/loct-darwin-arm64": "0.14.2",
+    "@loctree/loct-darwin-x64": "0.14.2",
+    "@loctree/loct-linux-x64-gnu": "0.14.2",
+    "@loctree/loct-win32-x64-msvc": "0.14.2"
+  }
+}

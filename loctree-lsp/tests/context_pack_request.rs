@@ -82,7 +82,7 @@ fn context_pack_walks_all_six_cards() {
             "core",
             "structural",
             "runtime",
-            "memory",
+            "intent",
             "verification",
             "risk"
         ]
@@ -169,8 +169,8 @@ fn context_pack_request_core_page_preserves_suggested_next_action_path() {
 
     assert_eq!(response.card, "core");
     assert!(
-        response.content.contains("\"power_path\""),
-        "contextPack should preserve action/suggested-next guidance: {}",
+        response.content.contains("## Safe Next Commands"),
+        "contextPack should preserve action/suggested-next guidance (dense card grammar): {}",
         response.content
     );
     assert!(
@@ -231,6 +231,9 @@ fn sample_project() -> TempDir {
 fn scan(project: &Path) -> Snapshot {
     let parsed = ParsedArgs {
         ignore_patterns: loctree::fs_utils::load_loctreeignore(project),
+        // Fixtures live in TMPDIR, outside any git checkout; the scan guard
+        // refuses non-git roots unless this is set.
+        force_non_git: true,
         ..ParsedArgs::default()
     };
     loctree::snapshot::run_init_with_options(&[project.to_path_buf()], &parsed, true)

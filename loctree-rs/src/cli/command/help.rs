@@ -41,6 +41,7 @@ impl Command {
             Command::Insights(_) => "insights",
             Command::Manifests(_) => "manifests",
             Command::Info(_) => "info",
+            Command::Anchors(_) => "anchors",
             Command::Lint(_) => "lint",
             Command::Report(_) => "report",
             Command::Prism(_) => "prism",
@@ -72,6 +73,9 @@ impl Command {
             Command::Cache(_) => "cache",
             Command::EnvTruth(_) => "env-truth",
             Command::PruneOldArtifacts(_) => "prune-old-artifacts",
+            Command::SnapshotPath(_) => "snapshot-path",
+            Command::Inventory(_) => "inventory",
+            Command::Atlas(_) => "atlas",
         }
     }
 
@@ -87,7 +91,7 @@ impl Command {
             Command::Slice(_) => "Extract holographic context for a file",
             Command::Context(_) => "Emit an agent-ready ContextPack",
             Command::RepoView(_) => "Repository overview for AI agents",
-            Command::Find(_) => "Search symbols/files with regex filters",
+            Command::Find(_) => "Exact literal search; broad discovery with --discover",
             Command::Occurrences(_) => "Literal exact-identifier scan (truth layer, no fuzz)",
             Command::Dead(_) => "Detect unused exports / dead code",
             Command::Cycles(_) => "Detect circular imports",
@@ -98,6 +102,7 @@ impl Command {
             Command::Insights(_) => "Show AI insights summary",
             Command::Manifests(_) => "Show manifest summaries (package.json/Cargo.toml)",
             Command::Info(_) => "Show snapshot metadata and project info",
+            Command::Anchors(_) => "Emit the deterministic loctree.anchors.v1 catalog",
             Command::Lint(_) => "Structural lint/policy checks",
             Command::Report(_) => "Generate HTML report + cached artifacts",
             Command::Prism(_) => {
@@ -142,6 +147,13 @@ impl Command {
             Command::PruneOldArtifacts(_) => {
                 "Prune old per-branch snapshot artifacts from local `.loctree/` dirs"
             }
+            Command::SnapshotPath(_) => {
+                "Resolve snapshot.json path + sibling organ artifacts (no body dump)"
+            }
+            Command::Inventory(_) => "Stream compact file inventory as JSONL with coverage receipt",
+            Command::Atlas(_) => {
+                "Materialize loctree.repo-atlas.v1 pointer pack (sense/inventory/signals)"
+            }
         }
     }
 
@@ -150,13 +162,13 @@ impl Command {
         let mut help = String::new();
         help.push_str(&format!(
             "loctree {} - codebase map for agents and humans\n\n",
-            env!("CARGO_PKG_VERSION")
+            crate::BUILD_VERSION
         ));
 
         help.push_str("POWER PATH:\n");
         help.push_str("  Map:        loct context --task \"fix auth\" --file src/auth.ts\n");
         help.push_str("              loct focus src/cli/     loct hotspots     loct tree --files --match 'help|cli'\n");
-        help.push_str("  Search:     loct find Auth          loct find --literal Auth\n");
+        help.push_str("  Search:     loct find Auth          loct find --discover Auth\n");
         help.push_str("              loct occurrences Auth   loct tagmap auth   loct query where-symbol Auth\n");
         help.push_str("  Understand: loct body Auth          loct slice src/auth.ts\n");
         help.push_str("              loct impact src/auth.ts loct follow all\n");
@@ -179,8 +191,8 @@ impl Command {
         help.push_str("  loct focus <dir>      Map a directory before editing\n");
         help.push_str("  loct slice <file>     Show file deps + consumers by default\n");
         help.push_str("  loct impact <file>    Show what changes if this file moves\n");
-        help.push_str("  loct find <pattern>   Find symbols and files\n");
-        help.push_str("  loct find --literal X Exact literal truth via find\n");
+        help.push_str("  loct find <identifier> Exact literal truth (default)\n");
+        help.push_str("  loct find --discover X Broad AST/parameter/fuzzy discovery\n");
         help.push_str("  loct tagmap <keyword> Unified keyword map: files + crowd + dead\n");
         help.push_str("  loct occurrences ID   Literal exact-identifier truth scan\n");
         help.push_str("  loct body <symbol>    Show bounded source body/range\n");
@@ -189,15 +201,16 @@ impl Command {
             "  loct health           Aggregates dead/twins/cycles — no additional detectors\n",
         );
         help.push_str("  loct report           Write the full report\n\n");
+        help.push_str("  loct anchors --format json Emit stable file and symbol anchors\n\n");
 
         help.push_str("EXAMPLES:\n");
         help.push_str("  loct context --task \"fix auth\"      Build context for an agent\n");
-        help.push_str("  loct query where-symbol handle_auth Find a definition without grep\n");
+        help.push_str("  loct query where-symbol handle_auth Find precise definition sites\n");
         help.push_str("  loct tree --files --match 'test|api' List matching files from the map\n");
         help.push_str("  loct doctor --cache --scope          Verify cache and snapshot scope\n\n");
 
         help.push_str("OUTPUT MODES:\n");
-        help.push_str("  default              Clean summary, bounded output\n");
+        help.push_str("  default              Human-readable summary with scope and counts\n");
         help.push_str("  --json               Machine-readable stdout\n");
         help.push_str("  --verbose            More progress and supporting detail\n");
         help.push_str("  --quiet              Only essential output\n\n");
@@ -232,6 +245,7 @@ impl Command {
             "insights" => Some(INSIGHTS_HELP),
             "manifests" => Some(MANIFESTS_HELP),
             "info" => Some(INFO_HELP),
+            "anchors" => Some(ANCHORS_HELP),
             "lint" => Some(LINT_HELP),
             "report" => Some(REPORT_HELP),
             "prism" => Some(PRISM_HELP),
@@ -261,6 +275,9 @@ impl Command {
             "plan" | "p" => Some(PLAN_HELP),
             "cache" => Some(CACHE_HELP),
             "env-truth" | "envtruth" => Some(ENV_TRUTH_HELP),
+            "snapshot-path" => Some(SNAPSHOT_PATH_HELP),
+            "inventory" => Some(INVENTORY_HELP),
+            "atlas" => Some(ATLAS_HELP),
             _ => None,
         }
     }
@@ -271,7 +288,7 @@ impl Command {
         let mut help = String::new();
         help.push_str(&format!(
             "loctree {} - AI-oriented codebase analyzer (Full Reference)\n\n",
-            env!("CARGO_PKG_VERSION")
+            crate::BUILD_VERSION
         ));
 
         help.push_str("PHILOSOPHY: Scan once, query everything.\n");
@@ -295,8 +312,12 @@ impl Command {
                 "Aggregates dead/twins/cycles — no additional detectors",
             ),
             ("findings", "Full findings JSON or summary for pipes/CI"),
+            ("anchors", "Deterministic loctree.anchors.v1 catalog"),
             ("context", "Markdown pill + artifacts; --full for full pack"),
             ("repo-view", "Repository overview for AI agents"),
+            ("snapshot-path", "Resolve snapshot.json path (no body dump)"),
+            ("inventory", "JSONL file inventory + coverage receipt"),
+            ("atlas", "Repo atlas pack: sense / inventory / signals"),
             ("prism", "Compare task framings and score conceptual smear"),
             ("slice <file>", "Context for a file (deps + consumers)"),
             ("impact <file>", "What breaks if you modify this file"),
@@ -369,11 +390,8 @@ impl Command {
             ("scan", "Build/update snapshot (supports --watch)"),
             ("watch", "Per-root locked watch loop; --http exposes MCP"),
             ("tree", "Directory tree with LOC counts"),
-            ("find <pattern>", "Search symbols/files with regex"),
-            (
-                "find --literal X",
-                "Exact literal truth, no fuzzy primaries",
-            ),
+            ("find <id>", "Exact literal identifier search"),
+            ("find --discover X", "Broad AST/parameter/fuzzy discovery"),
             ("report", "Generate HTML report + cached artifacts"),
             ("lint", "Structural lint and policy checks"),
         ];
@@ -409,6 +427,13 @@ impl Command {
             "                     marked `ignored`; for find/slice/impact. Ephemeral scan,\n",
         );
         help.push_str("                     does not touch the cache or override .gitignore.\n");
+        help.push_str("  --force-non-git-repository-snapshot\n");
+        help.push_str(
+            "  --force-non-git    Opt-in scan of a directory that is not a git checkout.\n",
+        );
+        help.push_str(
+            "                     Default is refuse. Filesystem root `/` is still refused.\n",
+        );
         help.push_str("  --verbose          Detailed progress\n");
         help.push_str("  --fail             Exit non-zero on issues (CI mode)\n");
         help.push_str("  --sarif            SARIF 2.1.0 output for CI\n\n");
@@ -541,6 +566,47 @@ mod tests {
         assert!(help.contains("loct suppressions"));
         assert!(help.contains("loct prism"));
         assert!(!help.contains("internal command reference"));
+        assert!(!help.contains("without grep"));
+        assert!(!help.contains("bounded output"));
+        assert!(help.contains("scope and counts"));
+    }
+
+    #[test]
+    fn test_truth_surface_help_matches_shipped_contracts() {
+        let find = Command::format_command_help("find").unwrap();
+        assert!(find.contains("Exact literal search by default"));
+        assert!(find.contains("--discover"));
+        assert!(find.contains("identifier-boundary"));
+        assert!(find.contains("--regex"));
+        assert!(find.contains("--count-only"));
+        assert!(find.contains("--offset"));
+        // Advertised flags must stay parseable (loctree-feedback help↔parser drift).
+        for flag in ["--root", "--compact", "--project", "--path"] {
+            assert!(find.contains(flag), "find help missing {flag}");
+        }
+
+        let occurrences = Command::format_command_help("occurrences").unwrap();
+        for flag in [
+            "--root",
+            "--whole-token",
+            "--group-by-file",
+            "--count-only",
+            "--compact",
+            "--limit",
+            "--offset",
+        ] {
+            assert!(occurrences.contains(flag), "missing {flag}");
+        }
+
+        let context = Command::format_command_help("context").unwrap();
+        assert!(!context.contains("filled by later cut"));
+        assert!(context.contains("--aicx-project"));
+
+        let tree = Command::format_command_help("tree").unwrap();
+        assert!(tree.contains("does not filter the rendered tree"));
+
+        let slice = Command::format_command_help("slice").unwrap();
+        assert!(!slice.contains("--json"));
     }
 
     #[test]

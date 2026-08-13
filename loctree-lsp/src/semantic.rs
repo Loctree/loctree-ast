@@ -21,7 +21,7 @@
 //! - Every entry preserves its `AuthorityLabel` so agents can weigh
 //!   `RepoVerified` vs. `LoctreeDerived` vs. `SemanticGuess`.
 //!
-//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by VetCoders ⓒ 2025-2026 VetCoders
+//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders ⓒ 2025-2026 Vetcoders
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -156,6 +156,7 @@ pub fn filter_kinds(slice: RuntimeSlice, kinds: &Option<Vec<String>>) -> Semanti
         tauri_commands,
         tauri_events,
         framework_hints,
+        ..
     } = slice;
 
     SemanticData {

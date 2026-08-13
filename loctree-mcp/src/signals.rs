@@ -9,7 +9,7 @@
 //! `EPIPE` errors that the surrounding code can handle, instead of being
 //! killed by the kernel.
 //!
-//! Vibecrafted with AI Agents by VetCoders (c)2024-2026 LibraxisAI
+//! Vibecrafted with AI Agents by Vetcoders (c)2024-2026 LibraxisAI
 
 use std::io::Write as _;
 use std::panic;

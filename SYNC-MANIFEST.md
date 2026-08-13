@@ -1,12 +1,12 @@
 # Component Sync Manifest
 
 - Component: `engine`
-- Version: `0.13.1`
+- Version: `0.14.2`
 - Target repo: `Loctree/loctree`
-- Source commit: `48a9526de88b`
-- Generated at: `2026-07-12T15:28:49Z`
+- Source commit: `16199c23d39c`
+- Generated at: `2026-08-13T15:04:04Z`
 - Push mode: `disabled`
-- Dependency mode: `crates.io registry`
+- Dependency mode: `local workspace snapshot`
 
 ## Included Payload
 
@@ -14,7 +14,10 @@
 - `loctree-ast` -> `loctree-ast`
 - `loctree-mcp` -> `loctree-mcp`
 - `loctree-lsp` -> `loctree-lsp`
+- `reports` -> `reports`
+- `distribution/npm` -> `distribution/npm`
+- `distribution/macos` -> `distribution/macos`
 
 ## Dependency Note
 
-Engine staging keeps loctree, loctree-ast, loctree-mcp and loctree-lsp as local mirror payloads, while report-leptos is consumed from crates.io at the pinned release version; no reports/ vendor payload in this mirror.
+The engine repo carries the full source workspace - loctree, loctree-ast, loctree-mcp, loctree-lsp and the report-leptos renderer - as path dependencies. It builds standalone, with no wait on crates.io publication.

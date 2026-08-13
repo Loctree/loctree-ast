@@ -34,6 +34,7 @@ mod k8s;
 mod npm_script;
 mod precedence;
 mod sops_marker;
+pub(crate) mod source_reads;
 mod types;
 mod warnings;
 

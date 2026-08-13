@@ -2,16 +2,16 @@
 //!
 //! Provides lifecycle handlers and document synchronization for the LSP server.
 //!
-//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by VetCoders ⓒ 2025-2026 VetCoders
+//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders ⓒ 2025-2026 Vetcoders
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use dashmap::DashMap;
 use loctree::snapshot::Snapshot;
 use notify::{RecursiveMode, Watcher};
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, watch as tokio_watch};
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer};
@@ -45,14 +45,15 @@ use crate::watcher::{
     should_trigger_rescan,
 };
 use crate::workspaces::{
-    self, WorkspaceInfo, WorkspacesParams, WorkspacesResponse, max_depth_from_options,
+    self, WorkspaceInfo, WorkspaceMode, WorkspaceRegistry, WorkspacesParams, WorkspacesResponse,
+    max_depth_from_options,
 };
 use loctree::types::SymbolIdV1;
 
 pub fn server_info() -> ServerInfo {
     ServerInfo {
         name: "Loctree Language Server".to_string(),
-        version: Some(env!("CARGO_PKG_VERSION").to_string()),
+        version: Some(crate::BUILD_VERSION.to_string()),
     }
 }
 
@@ -257,26 +258,24 @@ pub struct Backend {
     /// Plan 13 keeps this as the canonical handle for the LSP root —
     /// every doc-sync, navigation, and diagnostics path that does not
     /// carry a `project` field still goes here. Sub-projects discovered
-    /// under the root live in [`Self::extra_workspaces`] keyed by
-    /// canonical path. There is exactly one snapshot per addressable
-    /// workspace; the root is intentionally not duplicated into the
-    /// extras map.
+    /// under the root live in the bounded [`Self::workspaces`] registry.
+    /// There is exactly one snapshot per addressable workspace; the root
+    /// is intentionally not duplicated into the evictable map.
     snapshot: SnapshotState,
-    /// Per-sub-project snapshots discovered under the root workspace.
-    ///
-    /// Keyed by canonical absolute path (`fs::canonicalize`). Populated
-    /// at `initialized` time when [`workspaces::discover_loctree_dirs`]
-    /// finds `.loctree/` directories below the root. Routing handlers
-    /// look here for `params.project` overrides; misses fall back to
-    /// the root snapshot.
-    extra_workspaces: Arc<RwLock<HashMap<PathBuf, SnapshotState>>>,
+    /// Cheap discovered-path inventory plus bounded LRU snapshot residency.
+    /// The root snapshot stays pinned in [`Self::snapshot`] and is included in
+    /// this registry's count/byte accounting without being evictable.
+    workspaces: Arc<RwLock<WorkspaceRegistry>>,
+    /// Startup classification. Mega-roots never load or watch the container
+    /// root; only routed subprojects become resident.
+    workspace_mode: RwLock<WorkspaceMode>,
     /// Discovery depth honored at `initialized` (Plan 13). Default
     /// [`workspaces::DEFAULT_MAX_DEPTH`]; clamped to
     /// [`workspaces::MAX_DEPTH_CEILING`].
     workspaces_max_depth: RwLock<usize>,
     /// Per-workspace diff history (Plan 11). Keyed by canonical
-    /// project root (the same key as [`Self::extra_workspaces`] plus
-    /// the LSP root). Tracks the previous-scan and last-query
+    /// project root (the same key as [`Self::workspaces`] plus the LSP
+    /// root). Tracks the previous-scan and last-query
     /// snapshots so `loctree/diff` can compute session-local deltas
     /// without re-running the analyzer.
     diff_sessions: Arc<RwLock<HashMap<PathBuf, Arc<RwLock<DiffSession>>>>>,
@@ -288,6 +287,9 @@ pub struct Backend {
     /// Handle to the spawned watcher task (Plan 10). `None` until the
     /// watcher starts, dropped on `shutdown`.
     watcher_task: RwLock<Option<tokio::task::JoinHandle<()>>>,
+    /// Dynamic filesystem subscription control. Used only after the watcher
+    /// task starts; mega-root LRU transitions send their new resident scope.
+    watcher_scope_tx: RwLock<Option<tokio_watch::Sender<BTreeSet<PathBuf>>>>,
     /// Plan 17 MVP: per-URI live tree-sitter cache for open JS/TS/TSX
     /// documents. Populated on `did_open` / `did_change`, drained on
     /// `did_close`. Consumed by [`Self::ast_query`] before it falls
@@ -336,12 +338,16 @@ impl Backend {
             literal_cache: find::LiteralScanCache::new(),
             workspace_root: RwLock::new(root),
             snapshot: SnapshotState::new(),
-            extra_workspaces: Arc::new(RwLock::new(HashMap::new())),
+            workspaces: Arc::new(RwLock::new(WorkspaceRegistry::new(
+                workspaces::residency_config_from_options(None),
+            ))),
+            workspace_mode: RwLock::new(WorkspaceMode::Standard),
             workspaces_max_depth: RwLock::new(workspaces::DEFAULT_MAX_DEPTH),
             diff_sessions: Arc::new(RwLock::new(HashMap::new())),
             default_chunk_size: RwLock::new(crate::protocol::DEFAULT_CHUNK_SIZE),
             watcher_config: RwLock::new(WatcherConfig::default()),
             watcher_task: RwLock::new(None),
+            watcher_scope_tx: RwLock::new(None),
             live_ast: LiveAstStore::new(),
             symbol_tracker: Arc::new(RwLock::new(HashMap::new())),
         }
@@ -359,24 +365,178 @@ impl Backend {
     ///
     /// `None` (or a path that canonicalizes to the LSP's root workspace)
     /// returns the root [`SnapshotState`]. Anything else is looked up
-    /// in [`Self::extra_workspaces`]; misses fall back to the root with
-    /// a debug-log breadcrumb so the operator can see a stale `project`
-    /// param without a 500-class error. Cloning a `SnapshotState` is
-    /// an `Arc` bump — cheap, never blocks.
+    /// in the discovered path inventory. Resident hits refresh LRU recency;
+    /// discovered misses hydrate on demand before the request continues.
+    /// Unknown paths still fall back to the root with a debug breadcrumb.
     async fn routed_snapshot(&self, project: Option<&Path>) -> SnapshotState {
         let Some(target) = self.canonicalize_project(project).await else {
             return self.snapshot.clone();
         };
-        let extras = self.extra_workspaces.read().await;
-        if let Some(state) = extras.get(&target) {
-            return state.clone();
+        let discovered = {
+            let mut registry = self.workspaces.write().await;
+            if let Some(state) = registry.touch(&target) {
+                return state;
+            }
+            registry.contains_discovered(&target)
+        };
+        if discovered {
+            if let Some(state) = self.hydrate_workspace(&target, false).await {
+                return state;
+            }
+            tracing::warn!(
+                "loctree/route: discovered project {:?} could not be hydrated",
+                target
+            );
+            return SnapshotState::new();
         }
-        drop(extras);
         tracing::debug!(
-            "loctree/route: project {:?} not in extras, falling back to root",
+            "loctree/route: project {:?} not in discovered workspaces, falling back to root",
             target
         );
         self.snapshot.clone()
+    }
+
+    /// Load one discovered subproject, insert it into the residency LRU, and
+    /// re-arm mega-root watcher subscriptions after any load/evict transition.
+    async fn hydrate_workspace(&self, target: &Path, eager: bool) -> Option<SnapshotState> {
+        let estimated_before_load = workspaces::estimated_snapshot_bytes(target);
+        if eager
+            && !self
+                .workspaces
+                .read()
+                .await
+                .can_eager_load(estimated_before_load)
+        {
+            return None;
+        }
+
+        let state = SnapshotState::new();
+        if let Err(err) = state.load(target).await {
+            tracing::warn!(
+                "loctree-lsp: sub-workspace {} load failed: {}",
+                target.display(),
+                err
+            );
+            return None;
+        }
+
+        let estimated_bytes = workspaces::estimated_snapshot_bytes(target);
+        let (selected, evicted) = {
+            let mut registry = self.workspaces.write().await;
+            // A concurrent request may have completed the same hydration first.
+            if let Some(existing) = registry.touch(target) {
+                return Some(existing);
+            }
+            let evicted = registry.insert(target.to_path_buf(), state.clone(), estimated_bytes);
+            let selected = registry.resident_state(target);
+            (selected, evicted)
+        };
+
+        self.record_evictions(&evicted);
+        self.sync_watcher_scope().await;
+
+        // A snapshot larger than the whole budget is returned to the current
+        // request but is not retained; the next request may retry after the
+        // operator raises the budget.
+        selected.or(Some(state))
+    }
+
+    fn record_evictions(&self, evicted: &[PathBuf]) {
+        if evicted.is_empty() {
+            return;
+        }
+        for path in evicted {
+            tracing::info!("loctree-lsp: evicted resident workspace {}", path.display());
+        }
+        let released = crate::memory::release_unused_allocator_memory();
+        if released > 0 {
+            tracing::debug!(
+                allocator_bytes_released = released,
+                "released allocator pages after workspace eviction"
+            );
+        }
+    }
+
+    async fn sync_watcher_scope(&self) {
+        let Some(root) = self.workspace_root_path().await else {
+            return;
+        };
+        let desired = {
+            let mode = self.workspace_mode.read().await;
+            let registry = self.workspaces.read().await;
+            workspaces::watcher_scope(&root, &mode, &registry)
+        };
+        if let Some(tx) = self.watcher_scope_tx.read().await.as_ref() {
+            let _ = tx.send(desired);
+        }
+    }
+
+    async fn is_mega_root(&self) -> bool {
+        self.workspace_mode.read().await.is_mega_root()
+    }
+
+    async fn account_root_snapshot(&self, root: &Path) {
+        if !self.snapshot.is_loaded().await {
+            return;
+        }
+        let evicted = self.workspaces.write().await.set_pinned_root(
+            workspaces::canonicalize(root),
+            workspaces::estimated_snapshot_bytes(root),
+        );
+        self.record_evictions(&evicted);
+        self.sync_watcher_scope().await;
+    }
+
+    async fn discover_workspace_paths(&self) -> Vec<PathBuf> {
+        let Some(root) = self.workspace_root_path().await else {
+            return Vec::new();
+        };
+        let depth = *self.workspaces_max_depth.read().await;
+        tokio::task::spawn_blocking(move || workspaces::discover_loctree_dirs(&root, depth))
+            .await
+            .unwrap_or_default()
+    }
+
+    async fn replace_discovered_workspaces(&self, dirs: Vec<PathBuf>) {
+        let removed = self.workspaces.write().await.replace_discovered(dirs);
+        self.record_evictions(&removed);
+        self.sync_watcher_scope().await;
+    }
+
+    async fn eager_hydrate_discovered(&self) {
+        let paths = self.workspaces.read().await.discovered_paths();
+        for path in paths {
+            let _ = self.hydrate_workspace(&path, true).await;
+        }
+    }
+
+    async fn reload_resident_workspaces(&self) {
+        let residents: Vec<(PathBuf, SnapshotState)> = {
+            let registry = self.workspaces.read().await;
+            registry
+                .resident_paths()
+                .into_iter()
+                .filter_map(|path| registry.resident_state(&path).map(|state| (path, state)))
+                .collect()
+        };
+
+        for (path, state) in residents {
+            if let Err(err) = state.load(&path).await {
+                tracing::warn!(
+                    "loctree-lsp: resident workspace {} reload failed: {}",
+                    path.display(),
+                    err
+                );
+                continue;
+            }
+            let evicted = self
+                .workspaces
+                .write()
+                .await
+                .update_estimated_bytes(&path, workspaces::estimated_snapshot_bytes(&path));
+            self.record_evictions(&evicted);
+        }
+        self.sync_watcher_scope().await;
     }
 
     /// Resolve a `project` override to the workspace root path used
@@ -388,11 +548,9 @@ impl Backend {
         let Some(target) = self.canonicalize_project(project).await else {
             return self.workspace_root_path().await;
         };
-        let extras = self.extra_workspaces.read().await;
-        if extras.contains_key(&target) {
+        if self.workspaces.read().await.contains_discovered(&target) {
             return Some(target);
         }
-        drop(extras);
         self.workspace_root_path().await
     }
 
@@ -424,49 +582,6 @@ impl Backend {
             .map(PathBuf::from)
     }
 
-    /// Walk the workspace root for `.loctree/` sub-projects (Plan 13)
-    /// and load their snapshots into [`Self::extra_workspaces`].
-    ///
-    /// Idempotent — re-running it after the watcher reloads picks up
-    /// newly created sub-projects without dropping existing entries.
-    async fn discover_and_load_workspaces(&self) {
-        let Some(root) = self.workspace_root_path().await else {
-            return;
-        };
-        let depth = *self.workspaces_max_depth.read().await;
-        let dirs = tokio::task::spawn_blocking({
-            let root = root.clone();
-            move || workspaces::discover_loctree_dirs(&root, depth)
-        })
-        .await
-        .unwrap_or_default();
-
-        if dirs.is_empty() {
-            return;
-        }
-        tracing::info!(
-            "loctree-lsp: discovered {} sub-project(s) under {}",
-            dirs.len(),
-            root.display()
-        );
-
-        let mut extras = self.extra_workspaces.write().await;
-        for sub in dirs {
-            // Skip if already present — preserve loaded snapshot.
-            let entry = extras.entry(sub.clone()).or_insert_with(SnapshotState::new);
-            // Best-effort load. Failures are logged and skipped — the
-            // sub-project still appears in `loctree/workspaces` with
-            // `has_snapshot: false` so agents can decide.
-            if let Err(err) = entry.load(&sub).await {
-                tracing::warn!(
-                    "loctree-lsp: sub-workspace {} load failed: {}",
-                    sub.display(),
-                    err
-                );
-            }
-        }
-    }
-
     /// Custom request handler for `loctree/workspaces` (Plan 13).
     ///
     /// Returns the root workspace plus every sub-project the daemon
@@ -480,10 +595,22 @@ impl Backend {
             rows.push(workspace_info(&self.snapshot, &root, true).await);
         }
 
-        let extras = self.extra_workspaces.read().await;
-        let mut sub_rows: Vec<WorkspaceInfo> = Vec::with_capacity(extras.len());
-        for (path, state) in extras.iter() {
-            sub_rows.push(workspace_info(state, path, false).await);
+        let discovered = self.workspaces.read().await.discovered_paths();
+        let mut sub_rows: Vec<WorkspaceInfo> = Vec::with_capacity(discovered.len());
+        for path in discovered {
+            let state = self.workspaces.read().await.resident_state(&path);
+            if let Some(state) = state {
+                sub_rows.push(workspace_info(&state, &path, false).await);
+            } else {
+                sub_rows.push(WorkspaceInfo {
+                    root: path.to_string_lossy().to_string(),
+                    is_root: false,
+                    has_snapshot: false,
+                    files: 0,
+                    languages: Vec::new(),
+                    snapshot_age_seconds: workspaces::snapshot_age(&path),
+                });
+            }
         }
         sub_rows.sort_by(|a, b| a.root.cmp(&b.root));
         rows.extend(sub_rows);
@@ -813,14 +940,20 @@ impl Backend {
                     .await;
             }
         }
+        self.account_root_snapshot(&path).await;
     }
 
     /// Refresh snapshot + diagnostics (used by editor integration)
     async fn refresh_snapshot(&self) {
-        self.load_snapshot().await;
-        // Plan 13: also refresh every known sub-project so the routing
-        // map and the root snapshot stay aligned after a manual refresh.
-        self.discover_and_load_workspaces().await;
+        let discovered = self.discover_workspace_paths().await;
+        self.replace_discovered_workspaces(discovered).await;
+        if !self.is_mega_root().await {
+            self.load_snapshot().await;
+        }
+        // Reload only snapshots that are currently resident. Newly discovered
+        // projects remain path-only until routed, so refresh cannot hydrate the
+        // entire workspace tree again.
+        self.reload_resident_workspaces().await;
         let uris: Vec<Url> = self
             .documents
             .iter()
@@ -862,15 +995,18 @@ impl Backend {
 
         let client = self.client.clone();
         let snapshot = self.snapshot.clone();
-        // Plan 13: clone the extras handle so the watcher loop can
-        // reload sub-projects on every successful rescan, keeping
-        // per-workspace freshness in step with the root.
-        let extras = self.extra_workspaces.clone();
+        let workspaces = self.workspaces.clone();
         // Plan 11: the watcher rotates each workspace's last_scan
         // baseline before the reload — the previous "current"
         // snapshot becomes the new lastScan baseline.
         let diff_sessions = self.diff_sessions.clone();
         let root_for_task = root.clone();
+        let initial_scope = {
+            let mode = self.workspace_mode.read().await;
+            let registry = self.workspaces.read().await;
+            workspaces::watcher_scope(&root, &mode, &registry)
+        };
+        let strict_root_watch = !self.is_mega_root().await;
 
         // tokio mpsc carries notify events from the (sync) watcher
         // closure into the async debounce task.
@@ -888,105 +1024,198 @@ impl Backend {
                 return;
             }
         };
-        if let Err(err) = watcher.watch(&root, RecursiveMode::Recursive) {
-            tracing::warn!("loctree watcher.watch failed for {root:?}: {err}");
-            return;
+        let mut active_roots = BTreeSet::new();
+        for watch_root in &initial_scope {
+            match watcher.watch(watch_root, RecursiveMode::Recursive) {
+                Ok(()) => {
+                    active_roots.insert(watch_root.clone());
+                }
+                Err(err) => {
+                    tracing::warn!("loctree watcher.watch failed for {watch_root:?}: {err}");
+                    if strict_root_watch {
+                        return;
+                    }
+                }
+            }
         }
+
+        let (scope_tx, mut scope_rx) = tokio_watch::channel(initial_scope);
+        *self.watcher_scope_tx.write().await = Some(scope_tx.clone());
 
         let task = tokio::spawn(async move {
             // Move the watcher into the task so its lifetime tracks the
             // task. When the task ends (shutdown), the watcher drops and
             // the OS subscription is released.
-            let _watcher_keepalive = watcher;
+            let mut watcher = watcher;
 
-            while let Some(first) = event_rx.recv().await {
-                // Collect everything that arrives within the debounce
-                // window; treat them as a single batch.
-                let deadline = tokio::time::Instant::now() + config.debounce;
-                let mut paths: Vec<PathBuf> = first.paths;
-                while let Ok(Some(event)) = tokio::time::timeout_at(deadline, event_rx.recv()).await
-                {
-                    paths.extend(event.paths);
-                }
+            loop {
+                tokio::select! {
+                    changed = scope_rx.changed() => {
+                        if changed.is_err() {
+                            break;
+                        }
+                        let desired = scope_rx.borrow_and_update().clone();
+                        let removed: Vec<PathBuf> = active_roots
+                            .difference(&desired)
+                            .cloned()
+                            .collect();
+                        for watch_root in removed {
+                            if let Err(err) = watcher.unwatch(&watch_root) {
+                                tracing::warn!(
+                                    "loctree watcher.unwatch failed for {watch_root:?}: {err}"
+                                );
+                            }
+                            active_roots.remove(&watch_root);
+                        }
+                        let added: Vec<PathBuf> = desired
+                            .difference(&active_roots)
+                            .cloned()
+                            .collect();
+                        for watch_root in added {
+                            match watcher.watch(&watch_root, RecursiveMode::Recursive) {
+                                Ok(()) => {
+                                    active_roots.insert(watch_root);
+                                }
+                                Err(err) => tracing::warn!(
+                                    "loctree watcher.watch failed for {watch_root:?}: {err}"
+                                ),
+                            }
+                        }
+                    }
+                    first = event_rx.recv() => {
+                        let Some(first) = first else {
+                            break;
+                        };
+                        // Collect everything that arrives within the debounce
+                        // window; treat them as a single batch.
+                        let deadline = tokio::time::Instant::now() + config.debounce;
+                        let mut paths: Vec<PathBuf> = first.paths;
+                        while let Ok(Some(event)) =
+                            tokio::time::timeout_at(deadline, event_rx.recv()).await
+                        {
+                            paths.extend(event.paths);
+                        }
 
-                // Drop noise: events from `target/`, `.git/` etc. shouldn't
-                // trigger a rescan. If nothing in the batch is relevant,
-                // skip the whole iteration.
-                if !paths.iter().any(|p| should_trigger_rescan(p, &config)) {
-                    continue;
-                }
+                        let relevant: Vec<&PathBuf> = paths
+                            .iter()
+                            .filter(|path| should_trigger_rescan(path, &config))
+                            .collect();
+                        if relevant.is_empty() {
+                            continue;
+                        }
 
-                client
-                    .send_notification::<LoctreeScanProgress>(ScanProgress::phase_only(
-                        ScanPhase::Scanning,
-                    ))
-                    .await;
+                        let affected: BTreeSet<PathBuf> = active_roots
+                            .iter()
+                            .filter(|watch_root| {
+                                relevant.iter().any(|path| path.starts_with(watch_root))
+                            })
+                            .cloned()
+                            .collect();
+                        if affected.is_empty() {
+                            continue;
+                        }
 
-                let scan_root = root_for_task.clone();
-                match run_scan(&scan_root).await {
-                    Ok(scan_stats) => {
                         client
-                            .send_notification::<LoctreeScanProgress>(ScanProgress::with_counts(
-                                ScanPhase::Composing,
-                                scan_stats,
+                            .send_notification::<LoctreeScanProgress>(ScanProgress::phase_only(
+                                ScanPhase::Scanning,
                             ))
                             .await;
 
-                        // Plan 11: capture the root's previous snapshot
-                        // before the reload so it can serve as the
-                        // `lastScan` baseline.
-                        rotate_last_scan(&snapshot, &diff_sessions, &scan_root).await;
+                        let mut combined = ScanStats {
+                            files_processed: 0,
+                            total_files: 0,
+                        };
+                        let mut successes = 0usize;
+                        let mut last_error = None;
+                        let mut scope_changed = false;
 
-                        if let Err(err) = snapshot.load(&scan_root).await {
+                        for scan_root in affected {
+                            let state = if scan_root == root_for_task {
+                                Some(snapshot.clone())
+                            } else {
+                                workspaces.read().await.resident_state(&scan_root)
+                            };
+                            let Some(state) = state else {
+                                continue;
+                            };
+
+                            match run_scan(&scan_root).await {
+                                Ok(stats) => {
+                                    combined.files_processed = combined
+                                        .files_processed
+                                        .saturating_add(stats.files_processed);
+                                    combined.total_files =
+                                        combined.total_files.saturating_add(stats.total_files);
+                                }
+                                Err(err) => {
+                                    tracing::warn!(
+                                        "loctree-lsp: workspace rescan failed for {}: {err}",
+                                        scan_root.display()
+                                    );
+                                    last_error = Some(err.to_string());
+                                    continue;
+                                }
+                            }
+
+                            rotate_last_scan(&state, &diff_sessions, &scan_root).await;
+                            if let Err(err) = state.load(&scan_root).await {
+                                tracing::warn!(
+                                    "loctree-lsp: workspace reload failed for {}: {err}",
+                                    scan_root.display()
+                                );
+                                last_error = Some(err.to_string());
+                                continue;
+                            }
+                            successes = successes.saturating_add(1);
+
+                            if scan_root != root_for_task {
+                                let evicted = workspaces.write().await.update_estimated_bytes(
+                                    &scan_root,
+                                    workspaces::estimated_snapshot_bytes(&scan_root),
+                                );
+                                if !evicted.is_empty() {
+                                    scope_changed = true;
+                                    for path in evicted {
+                                        tracing::info!(
+                                            "loctree-lsp: evicted resident workspace {}",
+                                            path.display()
+                                        );
+                                    }
+                                }
+                            }
+                        }
+
+                        if scope_changed {
+                            let desired: BTreeSet<PathBuf> = workspaces
+                                .read()
+                                .await
+                                .resident_paths()
+                                .into_iter()
+                                .collect();
+                            let _ = scope_tx.send(desired);
+                            let _ = crate::memory::release_unused_allocator_memory();
+                        }
+
+                        if successes == 0 {
                             client
                                 .send_notification::<LoctreeScanProgress>(ScanProgress::failed(
-                                    format!("snapshot reload failed: {err}"),
+                                    last_error.unwrap_or_else(|| {
+                                        "no resident workspace remained for this event".into()
+                                    }),
                                 ))
                                 .await;
                             continue;
                         }
-
-                        // Plan 13: refresh every sub-project the daemon
-                        // knows about. Best-effort — a single failing
-                        // reload should not abort the whole batch (the
-                        // sub-project simply keeps its previous state).
-                        let extra_handles: Vec<(PathBuf, SnapshotState)> = {
-                            let guard = extras.read().await;
-                            guard.iter().map(|(p, s)| (p.clone(), s.clone())).collect()
-                        };
-                        for (sub_root, sub_state) in extra_handles {
-                            // Same rotation discipline as the root path
-                            // — capture lastScan before reload.
-                            rotate_last_scan(&sub_state, &diff_sessions, &sub_root).await;
-
-                            // We rescan each sub-project independently —
-                            // its own `.loctree/` is the source of truth.
-                            if let Err(err) = run_scan(&sub_root).await {
-                                tracing::warn!(
-                                    "loctree-lsp: sub-workspace rescan failed for {}: {err}",
-                                    sub_root.display()
-                                );
-                                continue;
-                            }
-                            if let Err(err) = sub_state.load(&sub_root).await {
-                                tracing::warn!(
-                                    "loctree-lsp: sub-workspace reload failed for {}: {err}",
-                                    sub_root.display()
-                                );
-                            }
-                        }
-
+                        client
+                            .send_notification::<LoctreeScanProgress>(ScanProgress::with_counts(
+                                ScanPhase::Composing,
+                                combined,
+                            ))
+                            .await;
                         client
                             .send_notification::<LoctreeScanProgress>(ScanProgress::with_counts(
                                 ScanPhase::Done,
-                                scan_stats,
-                            ))
-                            .await;
-                    }
-                    Err(err) => {
-                        client
-                            .send_notification::<LoctreeScanProgress>(ScanProgress::failed(
-                                format!("rescan failed: {err}"),
+                                combined,
                             ))
                             .await;
                     }
@@ -1226,10 +1455,25 @@ impl Backend {
                     file: params.file.as_deref(),
                 },
             );
-            let fuzzy = loctree::analyzer::search::literal_fuzzy_suggestions(
-                params.query.trim(),
-                &loaded.snapshot.files,
+            // Multi-literal pipe-OR: fuzzy hints per simple segment (never evidence).
+            let patterns = loctree::analyzer::occurrences::expand_literal_patterns(
+                std::slice::from_ref(&params.query),
             );
+            let fuzzy = if patterns.len() > 1 {
+                let mut all = Vec::new();
+                for pattern in &patterns {
+                    all.extend(loctree::analyzer::search::literal_fuzzy_suggestions(
+                        pattern,
+                        &loaded.snapshot.files,
+                    ));
+                }
+                all
+            } else {
+                loctree::analyzer::search::literal_fuzzy_suggestions(
+                    params.query.trim(),
+                    &loaded.snapshot.files,
+                )
+            };
             return Ok(find::build_literal_response(literal, fuzzy, &params));
         }
 
@@ -1650,6 +1894,16 @@ impl LanguageServer for Backend {
         *self.workspaces_max_depth.write().await = depth;
         tracing::debug!("workspaces config: max_depth={}", depth);
 
+        let residency =
+            workspaces::residency_config_from_options(params.initialization_options.as_ref());
+        let evicted = self.workspaces.write().await.set_config(residency);
+        self.record_evictions(&evicted);
+        tracing::debug!(
+            "workspaces residency: max={} memory_budget_bytes={}",
+            residency.max_resident_workspaces,
+            residency.memory_budget_bytes
+        );
+
         // Plan 12: read default chunk size for paginated handlers.
         let chunk = chunk_size_from_options(params.initialization_options.as_ref());
         *self.default_chunk_size.write().await = chunk;
@@ -1669,18 +1923,46 @@ impl LanguageServer for Backend {
     async fn initialized(&self, _: InitializedParams) {
         tracing::info!("loctree-lsp server initialized");
 
-        // Load snapshot from workspace
-        self.load_snapshot().await;
+        let discovered = self.discover_workspace_paths().await;
+        let root = self.workspace_root_path().await;
+        let mode = root
+            .as_deref()
+            .map(|root| workspaces::classify_workspace(root, &discovered))
+            .unwrap_or(WorkspaceMode::Standard);
+        tracing::info!(
+            "loctree-lsp: discovered {} sub-project(s)",
+            discovered.len()
+        );
+        self.replace_discovered_workspaces(discovered).await;
+        *self.workspace_mode.write().await = mode.clone();
 
-        // Plan 13: discover sub-project `.loctree/` directories and
-        // load their snapshots into the routing map. Single-workspace
-        // setups produce an empty map and stay on the fast path.
-        self.discover_and_load_workspaces().await;
+        match mode {
+            WorkspaceMode::Standard => {
+                // Preserve the original single-repo path, then eagerly fill
+                // only the remaining count/byte budget. All other discovered
+                // projects stay cheap and hydrate on their first routed call.
+                self.load_snapshot().await;
+                self.eager_hydrate_discovered().await;
+            }
+            WorkspaceMode::MegaRoot {
+                subproject_count,
+                recommended_root,
+            } => {
+                self.workspaces.write().await.clear_pinned_root();
+                let message = format!(
+                    "loctree-lsp mega-root degraded mode: root contains {subproject_count} sub-projects; sub-workspace snapshots load on demand and the container root is not watched. Prefer a per-repo root such as {}",
+                    recommended_root.display()
+                );
+                tracing::warn!("{message}");
+                self.client.log_message(MessageType::WARNING, message).await;
+            }
+        }
 
         // Plan 10: kick off the background watcher once the initial
-        // snapshot is available.
-        if let Some(root) = self.workspace_root.read().await.clone() {
-            self.start_watcher(PathBuf::from(root)).await;
+        // routing inventory is available. Mega-roots begin with an empty
+        // subscription set and are re-armed by lazy hydration.
+        if let Some(root) = root {
+            self.start_watcher(root).await;
         }
 
         self.client
@@ -1693,6 +1975,7 @@ impl LanguageServer for Backend {
         if let Some(handle) = self.watcher_task.write().await.take() {
             handle.abort();
         }
+        self.watcher_scope_tx.write().await.take();
         // Plan 17 MVP: drop every cached live tree on shutdown so the
         // process exit doesn't leak the parser arenas.
         self.live_ast.clear();
@@ -2076,10 +2359,20 @@ async fn run_scan(project: &Path) -> anyhow::Result<ScanStats> {
         let snapshot = loctree::snapshot::Snapshot::load(&project)
             .map_err(|e| anyhow::anyhow!("Scan completed but snapshot reload failed: {}", e))?;
         let total_files = snapshot.metadata.file_count.max(snapshot.files.len());
-        Ok(ScanStats {
+        let stats = ScanStats {
             files_processed: total_files,
             total_files,
-        })
+        };
+        drop(snapshot);
+
+        let released = crate::memory::release_unused_allocator_memory();
+        if released > 0 {
+            tracing::debug!(
+                allocator_bytes_released = released,
+                "released unused allocator pages after workspace scan"
+            );
+        }
+        Ok(stats)
     })
     .await?
 }

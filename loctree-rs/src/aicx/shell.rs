@@ -45,7 +45,7 @@ fn invocation_timeout() -> Duration {
 }
 
 /// Resolve which binary to invoke for `aicx`.
-fn aicx_binary() -> PathBuf {
+pub(super) fn aicx_binary() -> PathBuf {
     std::env::var(AICX_BINARY_ENV)
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("aicx"))

@@ -5,11 +5,55 @@
 use std::path::PathBuf;
 
 use super::super::command::{
-    Command, DiffOptions, FindingsOptions, GlobalOptions, HelpOptions, InfoOptions,
+    AnchorsOptions, Command, DiffOptions, FindingsOptions, GlobalOptions, HelpOptions, InfoOptions,
     InsightsOptions, JqQueryOptions, LintOptions, ManifestsOptions, ParsedCommand,
     PipelinesOptions, ReportOptions, SuppressionsOptions,
 };
 use super::helpers::is_jq_filter;
+
+/// Parse `loct anchors --format json [PATH]`.
+pub(super) fn parse_anchors_command(args: &[String]) -> Result<Command, String> {
+    if args
+        .iter()
+        .any(|arg| matches!(arg.as_str(), "--help" | "-h"))
+    {
+        return Err("loct anchors - Emit the deterministic loctree.anchors.v1 catalog\n\nUSAGE:\n    loct anchors --format json [PATH]\n\nOPTIONS:\n    --format json   Emit the frozen JSON contract (required format)\n    --help, -h      Show this help message"
+            .to_string());
+    }
+
+    let mut opts = AnchorsOptions::default();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--format" => {
+                let value = args
+                    .get(i + 1)
+                    .ok_or_else(|| "--format requires a value (json)".to_string())?;
+                if value != "json" {
+                    return Err(format!(
+                        "unsupported anchors format '{value}'; expected json"
+                    ));
+                }
+                i += 2;
+            }
+            value if value.starts_with("--format=") => {
+                let format = value.trim_start_matches("--format=");
+                if format != "json" {
+                    return Err(format!(
+                        "unsupported anchors format '{format}'; expected json"
+                    ));
+                }
+                i += 1;
+            }
+            value if !value.starts_with('-') && opts.root.is_none() => {
+                opts.root = Some(PathBuf::from(value));
+                i += 1;
+            }
+            value => return Err(format!("Unknown option '{value}' for 'anchors' command.")),
+        }
+    }
+    Ok(Command::Anchors(opts))
+}
 
 /// Parse `loct info [path]` command - show snapshot metadata.
 pub(super) fn parse_info_command(args: &[String]) -> Result<Command, String> {

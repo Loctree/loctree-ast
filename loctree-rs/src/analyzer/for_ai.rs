@@ -2485,6 +2485,9 @@ mod tests {
                 name: "UserType".to_string(),
                 classification: crate::analyzer::twins::TwinClassification::Duplicate,
                 class: crate::analyzer::twins::TwinClass::NameCollision,
+                shape_match: false,
+                single_module_target: false,
+                exclude_from_score: false,
                 locations: vec![
                     TwinLocation {
                         file_path: "src/types/user.ts".to_string(),
@@ -2549,6 +2552,9 @@ mod tests {
                 name: "Message".to_string(),
                 classification: crate::analyzer::twins::TwinClassification::Duplicate,
                 class: crate::analyzer::twins::TwinClass::NameCollision,
+                shape_match: false,
+                single_module_target: false,
+                exclude_from_score: false,
                 locations: vec![
                     TwinLocation {
                         file_path: "src/types/message.ts".to_string(),

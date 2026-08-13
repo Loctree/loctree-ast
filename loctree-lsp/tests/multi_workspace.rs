@@ -6,7 +6,7 @@
 //! over JSON-RPC live in the daemon smoke harness; these ensure the
 //! pure functions and the WorkspaceInfo serialization are stable.
 //!
-//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by VetCoders ⓒ 2025-2026 VetCoders
+//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders ⓒ 2025-2026 Vetcoders
 
 use loctree::snapshot::Snapshot;
 use loctree::types::FileAnalysis;

@@ -14,9 +14,14 @@ use serde_json::Value;
 use tempfile::TempDir;
 
 /// Command pointing at the `loct` binary with browser side effects disabled.
+/// Every invocation writes into a binary-wide temp cache so fixture scans
+/// never land in the operator-global cache (`~/Library/Caches/loctree`).
 fn loct() -> Command {
+    static CACHE: std::sync::LazyLock<TempDir> =
+        std::sync::LazyLock::new(|| TempDir::new().expect("shared test cache dir"));
     let mut cmd = cargo_bin_cmd!("loct");
     cmd.env("LOCT_OPEN_BROWSER", "0");
+    cmd.env("LOCT_CACHE_DIR", CACHE.path());
     cmd
 }
 

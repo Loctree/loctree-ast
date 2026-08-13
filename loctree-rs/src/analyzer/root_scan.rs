@@ -881,10 +881,33 @@ fn scan_single_root(
                     .map(|export| (export.name.clone(), analysis.path.clone()))
             })
             .collect();
+        // A bare-name usage is only trustworthy when exactly one file exports
+        // that type name. With two or more exporters (nested `enum Error` in
+        // several files, same type name across Xcode targets) the edge target
+        // is a guess, and guessing wrong floods fan-in with module-sized
+        // clusters (loctree-feedback.md 2026-07-25, blinksh/blink).
+        let mut implicit_exporter_count: HashMap<&str, usize> = HashMap::new();
+        for (name, _) in &implicit_symbol_exports {
+            *implicit_exporter_count.entry(name.as_str()).or_default() += 1;
+        }
         let mut implicit_edges = HashSet::new();
         for analysis in &analyses {
             if analysis.language == "swift" {
                 for usage in &analysis.symbol_usages {
+                    // Bare usages of stdlib/framework-shadowed names (Error,
+                    // State, Task, ...) resolve to the framework symbol, never
+                    // to a repo file that happens to export the same name.
+                    if crate::analyzer::swift::is_swift_shadowed_stdlib_name(&usage.name) {
+                        continue;
+                    }
+                    if implicit_exporter_count
+                        .get(usage.name.as_str())
+                        .copied()
+                        .unwrap_or(0)
+                        != 1
+                    {
+                        continue;
+                    }
                     if let Some(target_files) = export_index.get(&usage.name) {
                         for target in target_files {
                             if target != &analysis.path
@@ -895,7 +918,7 @@ fn scan_single_root(
                                 graph_edges.push((
                                     analysis.path.clone(),
                                     target.clone(),
-                                    "implicit_symbol".to_string(),
+                                    crate::snapshot::IMPLICIT_SYMBOL_EDGE_LABEL.to_string(),
                                 ));
                             }
                         }
@@ -1574,7 +1597,11 @@ fn extract_crate_root(path: &str) -> String {
     "root".to_string()
 }
 
-fn is_implicit_symbol_export(export: &crate::types::ExportSymbol) -> bool {
+/// True when an export is eligible to act as an implicit (module-scope)
+/// symbol target: a type-like declaration with an uppercase name. Shared with
+/// `query::query_who_imports`, which must apply the same eligibility when
+/// verifying implicit edges against real symbol usages.
+pub fn is_implicit_symbol_export(export: &crate::types::ExportSymbol) -> bool {
     matches!(
         export.kind.as_str(),
         "class" | "struct" | "enum" | "trait" | "type" | "union" | "interface"

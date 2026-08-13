@@ -10,7 +10,7 @@
 //!   - `medium` → 5..=20 consumers AND max_depth <= 3
 //!   - `high`   → more than 20 consumers OR max_depth > 3
 //!
-//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by VetCoders ⓒ 2025-2026 VetCoders
+//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders ⓒ 2025-2026 Vetcoders
 
 use std::path::PathBuf;
 
@@ -74,13 +74,22 @@ impl ImpactResponse {
 
         let total = direct.len() + transitive.len();
         let blast_severity = severity_label(total, result.max_depth).to_string();
-        let warnings = collect_warnings(result.direct_consumers.iter().chain(
+        let mut warnings = collect_warnings(result.direct_consumers.iter().chain(
             if transitive_requested {
                 result.transitive_consumers.iter()
             } else {
                 [].iter()
             },
         ));
+        // Fail closed on zero consumers: the import graph alone cannot prove
+        // removal safety, so absence must surface as unknown, not as safety.
+        if result.total_affected == 0 && !result.coverage.is_complete() {
+            warnings.push(format!(
+                "{} — unaccounted surfaces: {}",
+                loctree::impact::COVERAGE_INCOMPLETE_DIAGNOSTIC,
+                result.coverage.gaps().join(", ")
+            ));
+        }
 
         ImpactResponse {
             direct,

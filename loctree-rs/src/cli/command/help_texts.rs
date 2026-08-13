@@ -129,8 +129,8 @@ DESCRIPTION:
                   streamable-http. The MCP child binds on
                   `127.0.0.1:<--port>` (default 5174) and exposes the
                   full MCP tool surface at `/mcp` for HTTP-capable
-                  agent clients. Child is killed automatically on
-                  parent exit.
+                  agent clients. A private supervision pipe stops the
+                  child when its watcher parent exits.
       --report    Foreground watcher + in-process HTTP server on
                   `127.0.0.1:<--port>` (default 5075) serving
                   `.loctree/report.html`. The report is re-rendered
@@ -184,7 +184,8 @@ OPTIONS:
     --depth <N>, -L <N>    Maximum depth (default: unlimited)
     --summary [N]          Show top N largest items (default: 5)
     --top [N]              Only show top N largest items (default: 50)
-    --loc <N>              Only show items with LOC >= N
+    --loc <N>              Mark items >= N LOC in size summaries/highlights;
+                           does not filter the rendered tree
     --min-loc <N>          Alias for --loc
     --show-hidden, -H      Include hidden files/directories
     --find-artifacts       Highlight build/generated artifacts
@@ -200,7 +201,7 @@ EXAMPLES:
     loct tree                       # Full tree
     loct tree --depth 3             # Limit depth
     loct tree --summary 10          # Top 10 largest
-    loct tree --loc 100             # LOC threshold
+    loct tree --loc 100             # Highlight/summarize items >=100 LOC
     loct tree src/ --show-hidden    # Include dotfiles
     loct tree server --files --match 'test|route' # Exact file list for report/gate work";
 
@@ -229,7 +230,6 @@ EXAMPLES:
     loct slice src/main.rs              # File + deps + consumers
     loct slice src/utils.ts --no-consumers # Dependency-only view
     loct slice lib/api.ts --depth 2     # Limit to 2 levels
-    loct slice src/app.tsx --json       # JSON output for AI tools
     loct slice src/new-file.ts --rescan # Slice a newly created file
 
 RELATED COMMANDS:
@@ -245,11 +245,13 @@ USAGE:
 OPTIONS:
     --file <PATH>      Focus the context pack on a specific file
     --scope <SELECTOR> Deterministic structural filter (repeatable; multiple = AND)
-    --changed          Limit to changed files (filled by later cut)
+    --changed          Limit to files changed in the current git worktree
     --task <TEXT>      Semantic task hint; ranks within --scope when scope is present
     --with-aicx        Request AICX memory overlay (default; kept for scripts)
     --no-aicx          Disable the default AICX memory overlay
     --project <PATH>   Project root for identity and snapshot scope
+    --aicx-project <ID> Override AICX project identity used by the memory overlay
+    --aicx-bucket <ID> Alias for --aicx-project
     --full             Output the full ContextPack (JSON by default)
     --json             Output full ContextPack JSON
     --markdown         Output Markdown (pill by default; full Markdown with --full)
@@ -321,7 +323,7 @@ SCOPES:
 
 OPTIONS:
     --handler <NAME>     Handler name for trace scope
-    --limit <N>          Limit results where the underlying scope supports it
+    --limit <N>          Global result bound across aggregate output families
     --help, -h           Show this help message
 
 EXAMPLES:
@@ -331,26 +333,32 @@ EXAMPLES:
     loct follow events
     loct follow trace --handler my_command";
 
-pub(super) const FIND_HELP: &str = "loct find - Semantic search for symbols and parameters
+pub(super) const FIND_HELP: &str =
+    "loct find - Exact literal search by default; broad discovery on request
 
 USAGE:
     loct find [QUERY...] [OPTIONS]
 
 DESCRIPTION:
-    Semantic search for symbols (functions, classes, types) AND function parameters.
-    Uses regex patterns to match names in your codebase.
+    Plain `loct find QUERY` scans source bytes for exact identifier-boundary
+    occurrences. This is the truth layer and the same substrate as
+    `loct occurrences`. Use `--discover` for the broad AST/parameter/fuzzy
+    engine described below.
 
-    Query modes:
-    - Split-mode (multiple args): `loct find Foo Bar Baz`
+    Discovery query forms using the explicit --discover switch:
+    - Split-mode (multiple args): `loct find --discover Foo Bar Baz`
         Runs separate searches per term and prints a cross-match summary of files
         that match 2+ queries.
-    - AND-mode (single arg with spaces): `loct find \"Foo Bar Baz\"`
+    - AND-mode (single arg with spaces): `loct find --discover \"Foo Bar Baz\"`
         Treats whitespace as AND and prints only the intersection (files matching
         all terms). This avoids the legacy \"auto-OR\" behavior.
-    - Regex OR (explicit `|`): `loct find \"Foo|Bar|Baz\"`
+    - Regex OR (explicit `|`): `loct find --discover \"Foo|Bar|Baz\"`
         Preserves regex OR and enables built-in cross-match output.
-    - Legacy OR: `loct find --or Foo Bar Baz`
+    - Legacy OR: `loct find --discover --or Foo Bar Baz`
         Forces old behavior (combines terms with `|`).
+
+    Mode selectors such as --symbol, --similar, --dead, --exported, and a
+    discovery-only --lang filter also select the discovery engine implicitly.
 
     Returns three types of matches:
     - Symbol Matches: exported functions, classes, types
@@ -360,47 +368,61 @@ DESCRIPTION:
     NOT impact analysis - for dependency impact, use 'loct impact'.
     NOT dead code detection - use 'loct dead' or 'loct twins'.
 
-DEFAULT vs --literal (exact identifier-boundary occurrences over the indexed universe; coverage stated per query):
-    Default 'find' is AST/fuzzy-aware — it matches symbols, parameters, and
-    similar names. Powerful for discovery, but it can miss local variables
-    buried in a function body and it surfaces fuzzy 'did you mean' candidates.
-
-    '--literal <IDENT>' switches to exact identifier-boundary occurrences over the indexed universe (coverage stated per query): it scans raw source bytes
-    for exact identifier-boundary occurrences (the same substrate as
-    'loct occurrences'). Primary results are LITERAL ONLY — any fuzzy
-    suggestions are returned in a separate, explicitly-labeled section
-    ('fuzzy_suggestions') and are NEVER mixed into the literal matches.
-    With '--literal', 'not found' means not found.
+DEFAULT vs --discover:
+    Default `find` is literal truth. Primary results are LITERAL ONLY; fuzzy
+    suggestions stay in a separate labeled section and never become matches.
+    `--literal` remains an explicit, backward-compatible spelling of the default.
+    Multi-pattern OR is first-class on the literal substrate:
+      loct find A B                  # exact OR of identifiers
+      loct find 'A|B'                # same (simple segments — not regex)
+    Use `--regex` for real patterns (metacharacters). `--discover` opts into
+    the broad symbol/parameter/semantic candidate engine.
 
 OPTIONS:
-    --literal            Literal exact-identifier truth scan (no fuzzy primaries)
+    --literal            Explicit alias for default literal truth mode
+    --discover           Broad AST/parameter/fuzzy candidate search
+    --regex              Regex over raw file text with coverage accounting
     --where-symbol       Symbol definition lookup via symbol_graph (incl. Swift/ObjC/C/C++)
     --who-imports        Reverse dependency lookup (same graph path as query who-imports)
-    --or                Force legacy OR for multi-arg queries (Foo|Bar|Baz)
+    --whole-token        In literal mode, treat '-' as token-internal
+    --group-by-file      In literal mode, include a per-file rollup
+    --count-only, --slim In literal mode, return counters without occurrences
+    --compact            In literal mode, terse path:line human output
+    --offset <N>         In literal mode, zero-based page offset
+    --root <PATH>        Project root to scan (default: current directory)
+    --project <PATH>     Alias for --root (parity with context --project)
+    --path <PATTERN>     Alias for --file (path/suffix scope in literal mode)
+    --mode <NAME>        literal|regex|where-symbol|who-imports|dead|exported|discover
+    --or                 Force legacy OR for multi-arg discovery (Foo|Bar|Baz)
     --symbol <PATTERN>   Search for symbols matching regex
     --file <PATTERN>     Search for files matching regex
     --similar <SYMBOL>   Find symbols with similar names (fuzzy)
     --dead               Only show dead/unused symbols
     --exported           Only show exported symbols
     --lang <LANG>        Filter by language (ts, rs, js, py, etc.)
-    --limit <N>          Maximum results to show
+    --limit <N>          Maximum results in this page/section
+    --all                Emit every literal/where-symbol result
     --help, -h           Show this help message
 
 EXAMPLES:
-    loct find request                   # Find 'request' in symbols AND params
-    loct find Props Options ViewModel   # Split-mode + cross-match summary
-    loct find \"Props Options\"          # AND-mode (intersection)
-    loct find \"Props|Options|ViewModel\" # Regex OR (explicit)
-    loct find --or Props Options        # Legacy OR (Props|Options)
+    loct find request                   # Every exact identifier occurrence
+    loct find global_async_runtime get_tokio_runtime  # Multi-literal OR
+    loct find 'global_async_runtime|get_tokio_runtime'  # Same (agent pipe form)
+    loct find --discover request        # Symbols, params and semantic candidates
+    loct find --discover Props Options ViewModel # Split + cross-match
+    loct find --discover \"Props Options\" # AND-mode intersection
+    loct find --discover --or Props Options # Legacy OR discovery
     loct find --symbol \".*Config$\"      # Regex: symbols ending with Config
     loct find --file \"utils\"            # Files containing \"utils\" in path
     loct find --dead --exported         # Dead exported symbols
     loct find --literal utterance_id    # Literal truth: every exact occurrence
     loct find --literal utterance_id --json  # Literal matches as JSON
+    loct find --regex 'TODO|FIXME' --count-only --json
+    loct find agent --limit 50 --offset 100 --json
     loct find WorkspaceSubstrate --where-symbol  # Where is the symbol defined?
     loct find src/utils.ts --who-imports  # What imports this file?
 
-OUTPUT (default):
+OUTPUT (--discover):
     === Symbol Matches (10) ===
       src/auth.py:45 - export def login
     === Parameter Matches (34) ===
@@ -408,7 +430,7 @@ OUTPUT (default):
     === Semantic Matches (5) ===
       loginUser (score: 0.85) in src/users.py
 
-OUTPUT (--literal --json):
+OUTPUT (default --json):
     {
       \"mode\": \"literal\",
       \"query\": \"utterance_id\",
@@ -418,7 +440,7 @@ OUTPUT (--literal --json):
     }
 
 RELATED COMMANDS:
-    loct occurrences <ident>  Literal-only scan (same substrate as --literal)
+    loct occurrences <ident>  Literal-only scan (same substrate as default find)
     loct dead              Find unused exports / dead code
     loct twins             Find duplicate exports and dead parrots
     loct slice <file>      Extract file dependencies
@@ -431,7 +453,7 @@ USAGE:
     loct occurrences <IDENT> [OPTIONS]
 
 DESCRIPTION:
-    Walks raw source bytes of every snapshot file and reports EVERY
+    Walks source bytes of every file in the current snapshot and reports every
     identifier-boundary occurrence of <IDENT>. This provides exact
     identifier-boundary occurrences over the indexed universe (coverage stated per query)
     beneath 'find': it does not consult the AST/tagmap, so it sees local
@@ -442,15 +464,27 @@ DESCRIPTION:
     searching 'id' will NOT match inside 'utterance_id' or 'valid'.
 
     Results are literal only. No fuzzy suggestions are promoted as primary
-    results — a suggestion is not evidence. 'Not found' means not found.
+    results — a suggestion is not evidence. 'Not found' means no match in the
+    stated snapshot scope; it is not proof about ignored, generated, unsupported,
+    or otherwise unindexed files.
 
 OPTIONS:
+    --root <PATH>        Project root to scan (default: current directory)
+    --project <PATH>     Alias for --root (parity with find and context)
+    --whole-token        Treat '-' as token-internal for stricter matching
+    --group-by-file      Include a per-file occurrence rollup
+    --count-only, --slim Return counters without the occurrence list
+    --compact            Human output: terse path:line plus one context line
+    --limit <N>          Maximum occurrences in this page
+    --offset <N>         Zero-based offset for paged output
     --json               Emit JSON (file, line, column, matched_text, context, source)
     --help, -h           Show this help message
 
 EXAMPLES:
     loct occurrences utterance_id            # All literal occurrences
     loct occurrences utterance_id --json     # JSON for tooling/agents
+    loct occurrences agent --limit 50 --offset 100 --json
+    loct occurrences -- \"--config-dir\"       # Dash-prefixed query
 
 OUTPUT (JSON):
     {
@@ -465,7 +499,8 @@ OUTPUT (JSON):
     }
 
 RELATED COMMANDS:
-    loct find              Semantic/symbol search (AST-backed, fuzzy-aware)
+    loct find <ident>      Same literal truth surface with richer presentation
+    loct find --discover X Broad AST/parameter/fuzzy candidate discovery
     loct query where-symbol  Find where a symbol is defined";
 
 pub(super) const DEAD_HELP: &str = "loct dead - Detect unused exports / dead code
@@ -618,6 +653,7 @@ DESCRIPTION:
     Analyzes event emit/listen pairs, ghost events, and race conditions.
 
 OPTIONS:
+    --limit <N>         Maximum event groups across all output families
     --races             Enable race detection (async/await gaps)
     --no-duplicates     Hide duplicate sections in CLI output
     --no-dynamic-imports Hide dynamic import sections in CLI output
@@ -817,7 +853,7 @@ USAGE:
 
 DESCRIPTION:
     Once `where-symbol` locates a symbol, `body` shows the actual source
-    lines of its definition without ever shelling out to grep/sed.
+    lines of its definition directly from indexed source.
     Body extraction is brace-balanced (Rust, TS/JS, C-family) with a
     fixed-window fallback for brace-less languages (e.g. Python). Output
     is always bounded by a line cap with explicit truncation metadata.
@@ -843,16 +879,17 @@ USAGE:
 
 DESCRIPTION:
     Shows \"what breaks if you modify or remove this file\" by traversing
-    the reverse dependency graph. Finds all direct and transitive consumers.
+    the reverse dependency graph. Finds direct and transitive consumers that
+    are represented in the current snapshot graph.
 
     This is different from 'query who-imports':
     - who-imports: Finds direct importers only
-    - impact: Finds ALL affected files (direct + transitive)
+    - impact: Traverses represented affected files (direct + transitive)
 
     Useful for:
     - Understanding change impact before refactoring
     - Identifying critical files (high fan-out)
-    - Safe deletion analysis
+    - Building deletion evidence before independent runtime/manifest checks
 
 OPTIONS:
     --depth <N>          Limit traversal depth (default: unlimited)
@@ -879,7 +916,11 @@ OUTPUT FORMAT:
       [depth 2] src/page.tsx (import)
       ...
 
-    Warning: Removing this file would break 28 files (max depth: 3)";
+    Warning: Removing this file would break 28 represented files (max depth: 3)
+
+    A zero-consumer result is not by itself permission to delete: manifests,
+    generated wiring, reflection, dynamic loading, and unsupported languages
+    may sit outside the dependency graph.";
 
 pub(super) const DIFF_HELP: &str = "loct diff - Compare snapshots between branches/commits
 
@@ -1004,6 +1045,7 @@ DESCRIPTION:
 
 OPTIONS:
     --path <DIR>           Root directory to analyze
+    --limit <N>            Maximum findings across all output families
     --dead-only            Show only dead parrots (0 imports)
     --include-tests        Include test files (excluded by default)
     --include-suppressed   Show suppressed findings too
@@ -1287,7 +1329,7 @@ USAGE:
 DESCRIPTION:
     Like 'slice' but for directories. Extracts a holographic view of a directory:
 
-    Core:       All files within the target directory
+    Core:       Indexed files within the target directory
     Internal:   Import edges between files inside the directory
     Deps:       External files imported by core (outside the directory)
     Consumers:  Files outside the directory that import core files
@@ -1756,7 +1798,8 @@ USAGE:
 DESCRIPTION:
     List and clean snapshot caches. Each project gets a cached snapshot
     in the global cache directory (~/Library/Caches/loctree/ on macOS,
-    $XDG_CACHE_HOME/loctree/ on Linux).
+    $XDG_CACHE_HOME/loctree/ on Linux). Incomplete inventories and size
+    walks are reported as lower bounds.
 
 SUBCOMMANDS:
     list                   List cached buckets grouped by repo, path, size, and scan metadata
@@ -1764,16 +1807,20 @@ SUBCOMMANDS:
     prune|gc|clear-stale   Alias for clean, intended for quota/ENOSPC recovery
 
 CLEAN OPTIONS:
+    --all                  Target every project bucket (requires --force to delete)
     --project <DIR>        Only clean cache for a specific project
     --older-than <DAYS>d   Only remove entries older than N days (e.g., 7d, 30d)
     --max-size <SIZE>      Cap total cache size; evict oldest buckets first
-                           (e.g., 1GB, 500MB, 250M, or plain bytes)
+                           (e.g., 1GB, 500MB, 250M, or plain bytes); fails
+                           closed if inventory, recency, or size is incomplete,
+                           or if a bucket lock cannot be acquired while a
+                           concurrent scan/write holds the snapshot cache lock
     --force, -f            Skip confirmation prompt
 
 EXAMPLES:
     loct cache list                        # Show grouped cached buckets
-    loct cache clean                       # Remove all (with confirmation)
-    loct cache clean --force               # Remove all without asking
+    loct cache clean --all                 # Preview removal of every bucket
+    loct cache clean --all --force         # Remove every bucket
     loct cache clean --project .           # Clean cache for current project
     loct cache clean --older-than 30d      # Remove entries older than 30 days
     loct cache prune --max-size 1GB --force # Agent-safe ENOSPC recovery";
@@ -1851,3 +1898,121 @@ PRECEDENCE OVERRIDE:
 RELATED COMMANDS:
     loct findings    Full structural findings; env-truth is a separate channel
     loct doctor      Cache/scope diagnostics (similar UX/exit-code shape)";
+pub const ANCHORS_HELP: &str = "loct anchors - Emit deterministic code anchors\n\nUSAGE:\n    loct anchors --format json [PATH]\n\nThe output conforms to docs/contracts/loctree.anchors.v1.schema.json.\n";
+
+pub(super) const SNAPSHOT_PATH_HELP: &str =
+    "loct snapshot-path - Resolve snapshot.json path (no body dump)
+
+USAGE:
+    loct snapshot-path [PROJECT] [OPTIONS]
+
+DESCRIPTION:
+    Prints the on-disk path of the project snapshot without loading or
+    dumping its multi-megabyte body. With --json also reports sibling
+    organ artifacts (agent.json, findings.json, analysis.json, …).
+
+    Snapshot is inventory SoT. Do not `cat` it into an LLM — stream rows
+    with `loct inventory --jsonl` or query with `loct '.files[] | .path'`.
+
+OPTIONS:
+    --json             Structured JSON (path + artifacts + git context)
+    --verbose, -v      Human mode: also list sibling artifact existence
+    --project <PATH>   Project root (default: current directory)
+    --help, -h         Show this help message
+
+EXIT CODES:
+    0   Snapshot file exists
+    2   Path resolved but snapshot missing (run `loct` first)
+    1   Root resolution / other error
+
+EXAMPLES:
+    loct snapshot-path
+    loct snapshot-path --json
+    loct snapshot-path /path/to/repo --json
+
+RELATED COMMANDS:
+    loct inventory --jsonl     Stream compact file rows + coverage receipt
+    loct atlas                 Materialize repo-atlas pointer pack
+    loct cache list            List all cached project buckets";
+
+pub(super) const INVENTORY_HELP: &str = "loct inventory - Stream compact file inventory as JSONL
+
+USAGE:
+    loct inventory [PROJECT] [OPTIONS]
+
+DESCRIPTION:
+    Streams the snapshot file inventory as JSONL. First record is a
+    coverage receipt (`record=receipt`); subsequent records are files
+    (`record=file`) with compact fields only (path, loc, language, kind,
+    flags, symbol/import counts) — not the full FileAnalysis blob.
+
+    Coverage receipt computes `inventory_ratio = files_in_snapshot / git HEAD
+    file count`. When ratio < 0.95 the command exits 3 (STOP): agents must
+    not treat the inventory as complete.
+
+OPTIONS:
+    --receipt-only         Pretty-print only the coverage receipt
+    --no-receipt           Skip the leading receipt on the JSONL stream
+    --include-tests        Include test files (excluded by default)
+    --include-generated    Include generated files (excluded by default)
+    --units-only           Only production code units (kind=code)
+    --prefix <PATH>        Restrict rows to this path prefix
+    --project <PATH>       Project root (default: current directory)
+    --help, -h             Show this help message
+
+EXIT CODES:
+    0   Receipt ok (or ratio unknown) and snapshot loaded
+    2   No snapshot found
+    3   Coverage STOP (inventory_ratio < 0.95)
+    1   Other error
+
+EXAMPLES:
+    loct inventory --receipt-only
+    loct inventory --jsonl                 # alias: default is JSONL
+    loct inventory --units-only | head
+    loct inventory --prefix loctree-rs/src/
+    loct inventory --no-receipt | jq -r .path
+
+RELATED COMMANDS:
+    loct snapshot-path --json   Where the snapshot lives
+    loct atlas                  Pointer pack for sense/inventory/signals
+    loct repo-view              Sense organ (hubs/health — not full list)";
+
+pub(super) const ATLAS_HELP: &str = "loct atlas - Materialize loctree.repo-atlas.v1 pointer pack
+
+USAGE:
+    loct atlas [PROJECT] [OPTIONS]
+
+DESCRIPTION:
+    Writes a small on-disk pack under `.loctree/repo-atlas/` that points at
+    the three organs without embedding snapshot bodies:
+
+      sense      repo-view / agent.json (hubs, health, languages)
+      inventory  snapshot.json files[] via `loct inventory --jsonl`
+      signals    findings.json / loct follow / loct health
+
+    Coverage receipt is included. If verdict is `stop`, agents should
+    rescan before trusting inventory.
+
+OPTIONS:
+    --out <DIR>        Output directory (default: <project>/.loctree/repo-atlas)
+    --json             Machine-readable pointer summary on stdout
+    --project <PATH>   Project root (default: current directory)
+    --help, -h         Show this help message
+
+EXIT CODES:
+    0   Pack written; coverage ok or unknown
+    2   Pack written but snapshot missing
+    3   Pack written; coverage STOP (ratio < 0.95)
+    1   Write / resolve error
+
+EXAMPLES:
+    loct atlas
+    loct atlas --json
+    loct atlas --out /tmp/my-atlas
+
+RELATED COMMANDS:
+    loct inventory --receipt-only
+    loct snapshot-path --json
+    loct context --full          Context atlas (hubs/cards) — different organ
+    loct repo-view               Sense overview";

@@ -29,6 +29,16 @@ pub struct AuditFindings {
     /// `main`/`bin`, shebang scripts, detected main markers) — no importers
     /// by design. Roots, not orphans to review.
     pub entrypoint_orphans: Vec<OrphanFile>,
+    /// Test-role files (`Tests/`, `*Tests/`, `*Tests.swift`, `*Spec.swift`,
+    /// plus the existing JS/TS/Rust/Python conventions). Graph roots, not
+    /// orphans to review.
+    pub test_orphans: Vec<OrphanFile>,
+    /// Script-role files (`scripts/`, `*.sh`). Graph roots, not orphans.
+    pub script_orphans: Vec<OrphanFile>,
+    /// Doc-role files (markdown/rst/txt). Graph roots, not orphans.
+    pub doc_orphans: Vec<OrphanFile>,
+    /// Manifest-role files (`Package.swift`, `Cargo.toml`, `package.json`, …).
+    pub manifest_orphans: Vec<OrphanFile>,
     pub shadow_exports: Vec<ShadowExport>,
     pub crowds: Vec<Crowd>,
     pub total_files: usize,
@@ -48,6 +58,26 @@ pub struct ShadowExport {
     pub name: String,
     pub total_locations: usize,
     pub dead_locations: usize,
+}
+
+fn write_role_orphan_section(
+    out: &mut String,
+    title: &str,
+    blurb: &str,
+    files: &[OrphanFile],
+    limit: Option<usize>,
+    display_limit: usize,
+) {
+    if files.is_empty() {
+        return;
+    }
+    writeln!(out, "### {title} ({} files — not orphans)\n", files.len()).unwrap();
+    writeln!(out, "_{blurb}_\n").unwrap();
+    for orphan in files.iter().take(display_limit) {
+        writeln!(out, "- `{}` ({} LOC)", orphan.path, orphan.loc).unwrap();
+    }
+    write_limit_notice(out, files.len(), limit, "--limit");
+    writeln!(out).unwrap();
 }
 
 fn write_limit_notice(out: &mut String, total_items: usize, limit: Option<usize>, reason: &str) {
@@ -230,6 +260,10 @@ pub fn generate_markdown_report(findings: &AuditFindings, limit: Option<usize>) 
         || !findings.crowds.is_empty()
         || !findings.artifact_orphans.is_empty()
         || !findings.entrypoint_orphans.is_empty()
+        || !findings.test_orphans.is_empty()
+        || !findings.script_orphans.is_empty()
+        || !findings.doc_orphans.is_empty()
+        || !findings.manifest_orphans.is_empty()
     {
         writeln!(out, "## [INFO] For Reference\n").unwrap();
 
@@ -273,6 +307,39 @@ pub fn generate_markdown_report(findings: &AuditFindings, limit: Option<usize>) 
             );
             writeln!(out).unwrap();
         }
+
+        write_role_orphan_section(
+            &mut out,
+            "Test Role Roots",
+            "XCTest / `Tests/` / `*Tests.swift` / `*Spec.swift` and the JS/TS/Rust/Python test conventions. Nothing imports a test bundle — they are roots.",
+            &findings.test_orphans,
+            limit,
+            display_limit,
+        );
+        write_role_orphan_section(
+            &mut out,
+            "Script Role Roots",
+            "`scripts/` and `*.sh` files. Nothing imports a release script — they are roots.",
+            &findings.script_orphans,
+            limit,
+            display_limit,
+        );
+        write_role_orphan_section(
+            &mut out,
+            "Doc Role Roots",
+            "Markdown/rst/txt documentation. Unimported by design.",
+            &findings.doc_orphans,
+            limit,
+            display_limit,
+        );
+        write_role_orphan_section(
+            &mut out,
+            "Manifest Role Roots",
+            "`Package.swift`, `Cargo.toml`, `package.json` and sibling manifests. Graph roots.",
+            &findings.manifest_orphans,
+            limit,
+            display_limit,
+        );
 
         if !findings.artifact_orphans.is_empty() {
             writeln!(
@@ -804,6 +871,9 @@ mod tests {
                 _ => TwinClassification::Namesake,
             },
             class,
+            shape_match: false,
+            single_module_target: false,
+            exclude_from_score: false,
         }
     }
 

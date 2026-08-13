@@ -334,7 +334,8 @@ OPTIONS:
     --depth <N>, -L <N>    Maximum depth to display (default: unlimited)
     --summary [N]          Show summary of top N largest items (default: 5)
     --top [N]              Show only top N largest items (default: 50)
-    --loc <N>              Only show items with LOC >= N
+    --loc <N>              Mark items >= N LOC in size summaries/highlights;
+                           does not filter the rendered tree
     --min-loc <N>          Alias for --loc
     --show-hidden, -H      Include hidden files/directories
     --find-artifacts       Highlight build artifacts and generated files
@@ -351,7 +352,7 @@ EXAMPLES:
     loct tree --depth 3             # Limit to 3 levels deep
     loct tree --summary             # Show top 5 largest items
     loct tree --summary 10          # Show top 10 largest items
-    loct tree --loc 100             # Only show files/dirs with 100+ LOC
+    loct tree --loc 100             # Highlight/summarize items >=100 LOC
     loct tree src/ --show-hidden    # Include hidden files in src
     loct tree server --files --match 'test|route' # Exact file list for report/gate work"
             .to_string());

@@ -47,4 +47,10 @@ pub struct GlobalOptions {
     /// (--include-ignored). Uses an ephemeral scan; the persisted snapshot and
     /// all default commands stay unaffected. Does not override `.gitignore`.
     pub include_ignored: bool,
+
+    /// Explicit opt-in to scan a directory that is not a git checkout
+    /// (`--force-non-git-repository-snapshot` / `--force-non-git`).
+    /// Default is refuse. Filesystem root `/` is still refused even with this
+    /// flag. Pair of `LOCT_ALLOW_NON_GIT_ROOT` for tests.
+    pub force_non_git: bool,
 }

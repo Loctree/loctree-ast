@@ -33,7 +33,7 @@ TOP_LEVEL_ROUTES = {
         "priority": "0.9",
     },
     "/agents-os": {
-        "title": "VetCoders Agents OS — Operating surface for AI agent work",
+        "title": "Vetcoders Agents OS — Operating surface for AI agent work",
         "description": "Agents OS pairs loctree context, structured implementation, convergence loops, and shipping discipline so agent sessions end in real product movement.",
         "schema": "page",
         "changefreq": "weekly",
@@ -119,7 +119,7 @@ def build_schema(route: str, meta: dict[str, str]) -> dict[str, object]:
             "url": url,
             "downloadUrl": f"{SITE_ORIGIN}/install.sh",
             "softwareVersion": "0.8.16",
-            "creator": {"@type": "Organization", "name": "VetCoders"},
+            "creator": {"@type": "Organization", "name": "vetcoders"},
         }
     if meta["schema"] == "collection":
         return {
@@ -137,8 +137,8 @@ def build_schema(route: str, meta: dict[str, str]) -> dict[str, object]:
             "headline": meta["title"].replace(" | Loctree Blog", ""),
             "description": meta["description"],
             "url": url,
-            "author": {"@type": "Organization", "name": "VetCoders"},
-            "publisher": {"@type": "Organization", "name": "VetCoders"},
+            "author": {"@type": "Organization", "name": "vetcoders"},
+            "publisher": {"@type": "Organization", "name": "vetcoders"},
             "isPartOf": {"@type": "Blog", "name": "Loctree Blog", "url": f"{SITE_ORIGIN}/blog"},
         }
 
