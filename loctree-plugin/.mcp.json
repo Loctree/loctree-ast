@@ -1,0 +1,24 @@
+{
+  "mcpServers": {
+    "loctree-mcp": {
+      "type": "stdio",
+      "command": "loctree-mcp",
+      "args": []
+    },
+    "loctree-lsp": {
+      "type": "stdio",
+      "command": "loctree-lsp",
+      "args": [],
+      "extensionToLanguage": {
+        "js": "javascript",
+        "cjs": "javascript",
+        "mjs": "javascript",
+        "jsx": "javascript",
+        "ts": "typescript",
+        "cts": "typescript",
+        "mts": "typescript",
+        "tsx": "tsx"
+      }
+    }
+  }
+}

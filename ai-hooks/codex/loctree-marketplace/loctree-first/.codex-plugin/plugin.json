@@ -1,0 +1,19 @@
+{
+  "name": "loctree-first",
+  "version": "0.2.0",
+  "description": "Loctree-first repo mapping with explicit operator-grade grep fallbacks.",
+  "author": {
+    "name": "VetCoders"
+  },
+  "interface": {
+    "displayName": "Loctree First",
+    "shortDescription": "Route working-repo mapping through Loctree.",
+    "longDescription": "Pauses first-choice grep and rg mapping of the active repository, teaches the sharper Loctree path, and permits explicit command grep or command rg fallbacks with feedback to the Loctree factory.",
+    "developerName": "VetCoders",
+    "category": "Productivity",
+    "capabilities": [
+      "Hooks"
+    ],
+    "defaultPrompt": "Use Loctree before mapping the active repository."
+  }
+}

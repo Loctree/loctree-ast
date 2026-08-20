@@ -1,0 +1,29 @@
+{
+  "hooks": {
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "AICX_HOOK_AGENT=codex bash \"$PLUGIN_ROOT/scripts/aicx-precompact.sh\"",
+            "timeout": 30,
+            "statusMessage": "aicx extract before compact..."
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "AICX_HOOK_AGENT=codex bash \"$PLUGIN_ROOT/scripts/aicx-postcompact.sh\"",
+            "timeout": 15,
+            "statusMessage": "Restoring AICX recall after compact..."
+          }
+        ]
+      }
+    ]
+  }
+}

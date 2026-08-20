@@ -1,0 +1,66 @@
+{
+  "description": "Loctree perception layer — auto-injects structural context on session start, after Read, after Edit, after Grep/rg. PreToolUse: zero-fallback guard (blocks repo-mapping grep/rg with a loct find recipe; LOCTREE_FIRST_GUARD=0 disables) plus optional hint mode for Bash. All hooks fail open (skip silently) when loct/jq are missing or repo lacks .loctree/ snapshot.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/loct-context-card.sh\"",
+            "async": false
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Grep|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/loct-grep-augment.sh\"",
+            "async": false
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/loct-edit-warning.sh\"",
+            "async": false
+          }
+        ]
+      },
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/loct-read-context.sh\"",
+            "async": false
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/loctree-first-guard.py\"",
+            "async": false
+          },
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/loct-smart-suggest.sh\"",
+            "async": false
+          }
+        ]
+      }
+    ]
+  }
+}

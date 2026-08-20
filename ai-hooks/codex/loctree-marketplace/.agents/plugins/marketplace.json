@@ -1,0 +1,20 @@
+{
+  "name": "loctree-local",
+  "interface": {
+    "displayName": "Loctree Local Runtime"
+  },
+  "plugins": [
+    {
+      "name": "loctree-first",
+      "source": {
+        "source": "local",
+        "path": "./loctree-first"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

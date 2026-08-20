@@ -1,0 +1,26 @@
+{
+  "name": "loctree",
+  "version": "0.14.1",
+  "description": "CANONICAL loctree agent plugin (suite). Structural perception — slice before edit, impact before delete, find before create (incl. multi-literal OR A|B on MCP/LSP/CLI), prism before vc-polarize. Powered by loctree-mcp + loctree-lsp. Deprecated peer path: suite ./plugin/ (redirect only).",
+  "author": {
+    "name": "VetCoders",
+    "email": "agents@vetcoders.io",
+    "url": "https://vetcoders.io"
+  },
+  "homepage": "https://github.com/Loctree/loctree-suite",
+  "repository": "https://github.com/Loctree/loctree-suite",
+  "license": "MIT",
+  "keywords": [
+    "lsp",
+    "tree-sitter",
+    "structural-analysis",
+    "perception",
+    "code-intelligence",
+    "rust-analyzer-for-agents",
+    "impact-analysis",
+    "polyglot",
+    "prism",
+    "vc-polarize",
+    "vibecrafted"
+  ]
+}
