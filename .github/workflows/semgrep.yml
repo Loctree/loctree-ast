@@ -30,8 +30,19 @@ jobs:
       - name: Install Semgrep
         run: python -m pip install --upgrade pip && pip install semgrep
 
+      # Rule exclusions, each with its reason:
+      # - rust.actix.path-traversal.tainted-path: an actix-web rule. Loctree has
+      #   no HTTP handler that maps request input to the filesystem; every
+      #   flagged site is a CLI command (`loct slice <file>`, cache paths)
+      #   taking a path from the operator on argv, which is the tool's job.
+      # - html.security.audit.missing-integrity: same exclusion as `make semgrep`
+      #   (the local gate); static report templates, no CDN scripts.
       - name: Run Semgrep
-        run: semgrep scan --config auto --config p/rust --config p/typescript --sarif --output semgrep.sarif .
+        run: >-
+          semgrep scan --config auto --config p/rust --config p/typescript
+          --exclude-rule rust.actix.path-traversal.tainted-path.tainted-path
+          --exclude-rule html.security.audit.missing-integrity.missing-integrity
+          --sarif --output semgrep.sarif .
         env:
           SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
 

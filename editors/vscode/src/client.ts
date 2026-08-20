@@ -122,8 +122,7 @@ async function probeRuntimeVersion(command: string): Promise<string> {
     return await new Promise<string>((resolve) => {
         // `executableCommand` is either a canonical executable file or the exact
         // platform binary name. `spawn` receives a fixed argv and never a shell.
-        // nosemgrep: javascript.lang.security.detect-child-process.detect-child-process
-        const child = spawn(executableCommand, ['--version'], { stdio: ['ignore', 'pipe', 'pipe'] });
+        const child = spawn(executableCommand, ['--version'], { stdio: ['ignore', 'pipe', 'pipe'] }); // nosemgrep: javascript.lang.security.detect-child-process.detect-child-process
         let output = '';
         const timer = setTimeout(() => child.kill(), 5_000);
         child.stdout?.on('data', (chunk: Buffer) => { output += chunk.toString(); });
