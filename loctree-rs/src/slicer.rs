@@ -916,17 +916,12 @@ pub fn run_slice(
     // Host-safety: never auto-scan just because a relative target is missing
     // outside a snapshot. Missing target + no snapshot ⇒ refuse before scan.
     if !Snapshot::exists(&effective_root) {
-        // `target` is a path supplied by the same local CLI user. This statement
-        // only constructs it for the existence guard below; it performs no I/O
-        // with elevated authority and the scan root was validated above.
-        // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path
-        let candidate = if Path::new(target).is_absolute() {
-            // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path
-            PathBuf::from(target)
-        } else {
-            effective_root.join(target)
-        };
-        if !candidate.exists() {
+        // `join` keeps an absolute target as-is and anchors a relative one at
+        // the root; `SanitizedPath::within` then requires it to exist AND to
+        // canonicalize underneath the root — which is exactly what the error
+        // below promises ("under <root>").
+        let candidate = effective_root.join(target);
+        if crate::fs_utils::SanitizedPath::within(&effective_root, &candidate).is_err() {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
                 format!(

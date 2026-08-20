@@ -344,11 +344,14 @@ fn collect_cache_bucket_entries(
     }
 }
 
-fn read_cache_bucket_entries(projects_dir: &Path) -> std::io::Result<CacheBucketEnumeration> {
-    // `projects_dir` is derived from Loctree's own cache root, not request data;
-    // this local CLI read does not cross a remote-user privilege boundary.
-    // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path
-    Ok(collect_cache_bucket_entries(fs::read_dir(projects_dir)?))
+/// Enumerate `<cache base>/projects` through the validated-root gate: the
+/// directory must canonicalize underneath `cache_base`, so a symlinked or
+/// relocated cache can never steer the walk outside Loctree's own cache.
+fn read_cache_bucket_entries(cache_base: &Path) -> std::io::Result<CacheBucketEnumeration> {
+    let projects_dir = cache_base.join("projects");
+    Ok(collect_cache_bucket_entries(
+        crate::fs_utils::read_dir_within(cache_base, &projects_dir)?,
+    ))
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -468,7 +471,7 @@ fn handle_clean(
         return DispatchResult::Exit(0);
     }
 
-    let enumeration = match read_cache_bucket_entries(&projects_dir) {
+    let enumeration = match read_cache_bucket_entries(&base) {
         Ok(enumeration) => enumeration,
         Err(err) => {
             eprintln!(

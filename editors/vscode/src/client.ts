@@ -12,7 +12,7 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as https from 'https';
 import * as crypto from 'crypto';
-import { spawn } from 'child_process';
+import { execFile, spawn } from 'child_process';
 import type { IncomingMessage } from 'http';
 import {
     LanguageClient,
@@ -121,20 +121,21 @@ async function probeRuntimeVersion(command: string): Promise<string> {
     }
     return await new Promise<string>((resolve) => {
         // `executableCommand` is either a canonical executable file or the exact
-        // platform binary name. `spawn` receives a fixed argv and never a shell.
-        const child = spawn(executableCommand, ['--version'], { stdio: ['ignore', 'pipe', 'pipe'] }); // nosemgrep: javascript.lang.security.detect-child-process.detect-child-process
-        let output = '';
-        const timer = setTimeout(() => child.kill(), 5_000);
-        child.stdout?.on('data', (chunk: Buffer) => { output += chunk.toString(); });
-        child.stderr?.on('data', (chunk: Buffer) => { output += chunk.toString(); });
-        child.on('error', () => {
-            clearTimeout(timer);
-            resolve('version unavailable');
-        });
-        child.on('close', () => {
-            clearTimeout(timer);
-            resolve(output.trim().split(/\r?\n/, 1)[0] || 'version unavailable');
-        });
+        // platform binary name. `execFile` takes a fixed argv and by construction
+        // never goes through a shell; the timeout replaces a hand-rolled kill timer.
+        execFile(
+            executableCommand,
+            ['--version'],
+            { timeout: 5_000, windowsHide: true },
+            (error, stdout, stderr) => {
+                const output = `${stdout ?? ''}${stderr ?? ''}`.trim();
+                if (error && !output) {
+                    resolve('version unavailable');
+                    return;
+                }
+                resolve(output.split(/\r?\n/, 1)[0] || 'version unavailable');
+            },
+        );
     });
 }
 

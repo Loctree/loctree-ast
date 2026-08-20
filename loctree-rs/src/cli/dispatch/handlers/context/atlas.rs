@@ -3,6 +3,8 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use crate::fs_utils::{SanitizedPath, StaticAssetName, copy_static_asset_within, copy_within};
+
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -484,10 +486,7 @@ fn load_retained_atlases(atlas_root: &Path) -> io::Result<Vec<ContextAtlasRefere
     if !manifest_path.exists() {
         return Ok(Vec::new());
     }
-    // Filename is the literal "manifest.json" joined onto the caller-owned atlas
-    // root; no component of this path comes from request data.
-    // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path
-    let raw = fs::read_to_string(&manifest_path)?;
+    let raw = crate::fs_utils::read_to_string_within(atlas_root, &manifest_path)?;
     let manifest: ContextAtlasManifest = serde_json::from_str(&raw).map_err(io::Error::other)?;
     if !manifest.atlases.is_empty() {
         return Ok(manifest.atlases);
@@ -540,30 +539,17 @@ fn atlas_reference(manifest: &ContextAtlasManifest) -> ContextAtlasReference {
 ///
 /// `atlas_dir` is read back out of a manifest on disk, so it is data, not a
 /// trusted path. A stale, hand-edited, or hostile manifest must not be able to
-/// steer the mirror copy at a directory outside the atlas root. Rejected
-/// lexically (no filesystem walk, no symlink resolution needed) by refusing any
-/// `..` component and then requiring the `atlas_root` prefix.
+/// steer the mirror copy at a directory outside the atlas root. Routed through
+/// the crate's validated-root gate: `..` refused, canonicalized, and required to
+/// resolve underneath `atlas_root` (symlinks included).
 fn contained_atlas_dir(raw: &str, atlas_root: &Path) -> io::Result<PathBuf> {
-    // Wrapping the untrusted string in a Path is the first step of validating it;
-    // both rejection arms below run before any filesystem access.
-    // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path
-    let candidate = Path::new(raw);
-    if candidate
-        .components()
-        .any(|component| matches!(component, std::path::Component::ParentDir))
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("atlas_dir must not traverse upward: {raw}"),
-        ));
-    }
-    if !candidate.starts_with(atlas_root) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("atlas_dir must stay under {}: {raw}", atlas_root.display()),
-        ));
-    }
-    Ok(candidate.to_path_buf())
+    // `join` keeps an absolute `raw` as-is and anchors a relative one at the
+    // atlas root; `SanitizedPath::within` then rejects `..`, NUL bytes and —
+    // after resolving symlinks — anything that does not live under the root.
+    let candidate = atlas_root.join(raw);
+    let sanitized = SanitizedPath::within(atlas_root, &candidate)
+        .map_err(|err| io::Error::new(err.kind(), format!("atlas_dir rejected ({raw}): {err}")))?;
+    Ok(sanitized.as_path().to_path_buf())
 }
 
 fn mirror_current_atlas(
@@ -594,17 +580,13 @@ fn copy_atlas_payload(
             copy_flat_atlas_file(source_dir, destination_dir, full_path)?;
         }
     }
-    if source_dir.join("receipt.json").exists() {
-        // Both sides are the literal "receipt.json" joined onto directories the
-        // caller already owns (and, for the mirror path, onto a root proven by
-        // contained_atlas_dir).
-        // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path
-        fs::copy(
-            // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path
-            source_dir.join("receipt.json"),
-            destination_dir.join("receipt.json"),
-        )?;
-    }
+    // `copy_static_asset_within` is a no-op when the receipt is absent and
+    // routes the read through `SanitizedPath` anchored at `source_dir`.
+    copy_static_asset_within(
+        source_dir,
+        destination_dir,
+        StaticAssetName::new("receipt.json"),
+    )?;
     for legacy in ["03-memory-trail.md", "03-memory-trail.full.json"] {
         let _ = fs::remove_file(destination_dir.join(legacy));
     }
@@ -617,23 +599,22 @@ fn copy_atlas_payload(
 /// name must be exactly one `Normal` path component, which rejects `..`, an
 /// absolute root, and any nested path before it ever reaches the filesystem.
 fn copy_flat_atlas_file(source_dir: &Path, destination_dir: &Path, name: &str) -> io::Result<()> {
-    // `name` is validated to a single Normal component immediately below; that
-    // check is this function's whole purpose.
-    // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path
-    let path = Path::new(name);
-    let mut components = path.components();
-    let flat = matches!(components.next(), Some(std::path::Component::Normal(_)))
-        && components.next().is_none();
+    // Lexical gate on the raw string, before it ever becomes a path: exactly
+    // one non-empty component, no separators, no `.`/`..`, no NUL.
+    let flat = !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\\', '\0']);
     if !flat {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!("atlas artifact path must be one flat component: {name}"),
         ));
     }
-    // Unreachable unless `path` is a single Normal component (guarded above), so
-    // neither join can escape its directory.
-    // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path
-    fs::copy(source_dir.join(path), destination_dir.join(path))?;
+    // Filesystem gate next to the sink: `copy_within` requires the source to
+    // canonicalize underneath `source_dir` (symlinks included) before copying.
+    copy_within(
+        source_dir,
+        &source_dir.join(name),
+        &destination_dir.join(name),
+    )?;
     Ok(())
 }
 

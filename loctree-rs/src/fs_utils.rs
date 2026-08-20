@@ -186,6 +186,16 @@ pub fn copy_static_asset_within(
     Ok(())
 }
 
+/// Sanitize the source against `src_root`, then copy it to `dst`. This is
+/// the one copy sink for runtime-named artifacts (names that are validated
+/// at the call site but are not compile-time literals): the boundary check
+/// and the `fs::copy` share this call site, so the taint analysis sees the
+/// gate regardless of which file the caller lives in.
+pub fn copy_within(src_root: &Path, src: &Path, dst: &Path) -> io::Result<u64> {
+    let sanitized = SanitizedPath::within(src_root, src)?;
+    fs::copy(sanitized.as_path(), dst)
+}
+
 /// Read a static-named artifact from a sanitized src directory under
 /// `allowed_root`. The static-string name guarantees the filename
 /// component cannot be derived from untrusted input.
