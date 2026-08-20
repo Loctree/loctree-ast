@@ -93,6 +93,12 @@ pub fn uses_new_syntax(args: &[String]) -> bool {
         {
             return true;
         }
+        // jq-only value flag: skip the pair so the filter behind it is still
+        // reached by the positional check below.
+        if arg == "--artifact" {
+            i += 2;
+            continue;
+        }
         // If we hit a flag, it's likely legacy syntax
         if arg.starts_with('-') {
             return false;
@@ -133,6 +139,16 @@ pub fn parse_command(args: &[String]) -> Result<Option<ParsedCommand>, String> {
     let mut legacy_findings_alias = false;
     let mut legacy_summary_only = false;
     let mut unknown_subcommand: Option<String> = None;
+
+    // `loct --artifact findings '.dead_parrots'` reads naturally with the flag
+    // in front, but every other jq option is parsed after the filter. Rotate
+    // that one pair to the back here instead of teaching the global option
+    // loop about a jq-only flag.
+    if args.len() >= 3 && args[0] == "--artifact" && is_jq_filter(&args[2]) {
+        let mut rotated = vec![args[2].clone(), args[0].clone(), args[1].clone()];
+        rotated.extend(args[3..].iter().cloned());
+        return parse_jq_query_command(&rotated, &global).map(Some);
+    }
 
     // Check for jq-style query before extracting global options
     // This allows: loct '.metadata' to work without conflicts

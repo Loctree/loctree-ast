@@ -19,16 +19,14 @@ use crate::analyzer::dead_parrots::{
     DeadExport, DeadFilterConfig, ShadowExport, canonical_dead_filter, compute_dead_truth_with,
 };
 use crate::analyzer::dist::DistResult;
-use crate::analyzer::health_score::{HealthMetrics, calculate_health_score};
+use crate::analyzer::health_inputs::structural_defects;
+use crate::analyzer::health_score::calculate_health_score;
 use crate::analyzer::memory_lint::{MemoryLintIssue, MemoryLintSummary, lint_memory_file};
 use crate::analyzer::react_lint::{ReactLintIssue, ReactLintSummary, analyze_react_file};
 use crate::analyzer::report::RankedDup;
 use crate::analyzer::root_scan::ScanResults;
 use crate::analyzer::ts_lint::{TsLintIssue, TsLintSummary, lint_ts_file};
-use crate::analyzer::twins::{
-    TwinCategory, categorize_twin, detect_exact_twins, filter_idiom_twins, find_dead_parrots,
-    omit_from_duplicate_groups,
-};
+use crate::analyzer::twins::{detect_exact_twins, filter_idiom_twins, omit_from_duplicate_groups};
 use crate::semantic::{Classifier as SemClassifier, SemanticFacts};
 use crate::snapshot::{EntrypointDriftSummary, Snapshot};
 use crate::types::FileAnalysis;
@@ -480,40 +478,6 @@ impl Findings {
             &memory_lint,
         );
 
-        // Categorize twins: same-language vs cross-language.
-        //
-        // W2-01: the same evidence that keeps a group out of `duplicate_groups`
-        // keeps it out of the SMELL dimension. `text` on two SwiftUI views is a
-        // name the framework dictates; scoring it as a smell scores the parser.
-        let (twins_same_language, _twins_cross_language): (Vec<_>, Vec<_>) = exact_twins
-            .iter()
-            .filter(|twin| !omit_from_duplicate_groups(twin))
-            .partition(|twin| matches!(categorize_twin(twin), TwinCategory::SameLanguage(_)));
-
-        // Use twins module's find_dead_parrots for consistency with for_ai.rs
-        // (this is different from DeadExport dead_parrots - twins dead_parrots are symbols with 0 imports)
-        //
-        // W2-01: HIGH must not answer "is this symbol unused" twice — once with
-        // evidence and once without. `find_dead_parrots` knows only the import
-        // count, and in a module-scoped language that number carries no signal:
-        // Swift `import` is module-level, so every declaration inside the module
-        // has zero import edges whether it is called on every line or never.
-        // A twin parrot is scored only where the graded detector — which
-        // cross-checks literal occurrences, applies semantic suppression and
-        // fences entry points — independently calls it a defect.
-        let twins_result = find_dead_parrots(&analyses_vec, false, false);
-        let scored_dead: HashSet<&str> = dead_parrots
-            .iter()
-            .filter(|candidate| counts_as_dead_defect(candidate))
-            .map(|candidate| candidate.symbol.as_str())
-            .collect();
-        let twins_dead_parrots = twins_result
-            .dead_parrots
-            .iter()
-            .filter(|symbol| scored_dead.contains(symbol.name.as_str()))
-            .count();
-        let twins_same_lang_count = twins_same_language.len();
-
         // Count cascade imports for health score consistency with for_ai.rs
         let cascade_imports: usize = scan_results
             .contexts
@@ -523,6 +487,7 @@ impl Findings {
 
         // Calculate summary
         let summary = calculate_summary(&SummaryInput {
+            snapshot,
             analyses: &analyses,
             dead_parrots: &dead_parrots,
             shadow_exports: &shadow_exports,
@@ -532,8 +497,6 @@ impl Findings {
             react_lint: &react_lint,
             ts_lint: &ts_lint,
             memory_lint: &memory_lint,
-            twins_dead_parrots,
-            twins_same_language: twins_same_lang_count,
             cascade_imports,
             dist: dist.as_ref(),
         });
@@ -918,6 +881,9 @@ fn generate_quick_wins(
 
 /// Bundled input for [`calculate_summary`] to stay under the 7-argument clippy limit.
 struct SummaryInput<'a> {
+    /// The scanned snapshot — the single source the canonical health vector is
+    /// built from (`health_inputs::structural_defects`).
+    snapshot: &'a Snapshot,
     analyses: &'a [&'a FileAnalysis],
     dead_parrots: &'a [DeadExport],
     shadow_exports: &'a [ShadowExport],
@@ -927,27 +893,8 @@ struct SummaryInput<'a> {
     react_lint: &'a [ReactLintIssue],
     ts_lint: &'a [TsLintIssue],
     memory_lint: &'a [MemoryLintIssue],
-    twins_dead_parrots: usize,
-    twins_same_language: usize,
     cascade_imports: usize,
     dist: Option<&'a DistResult>,
-}
-
-/// Does this dead-export verdict belong in the HIGH severity dimension?
-///
-/// The reported `dead_parrots` list is the sensor and keeps every candidate.
-/// The score is an aggregate of *defects*, and two kinds of candidate are not
-/// defects no matter how the list reads:
-///
-/// * `confidence: low` — the detector is telling us it could not resolve the
-///   references, not that there are none. Swift is the sharp case: `import` is
-///   module-level, so a missing import edge carries no information at all.
-/// * `entrypoint: true` — a declared runtime entry (Swift `@main`, Cargo
-///   `[[bin]]`, a shebang script) has no caller *by definition*. The entry-point
-///   fence already keeps these out of delete quick-wins; scoring them would
-///   penalize a repository for having a way to start.
-fn counts_as_dead_defect(candidate: &DeadExport) -> bool {
-    !candidate.entrypoint && matches!(candidate.confidence.as_str(), "high" | "very-high")
 }
 
 /// Calculate summary statistics
@@ -967,30 +914,22 @@ fn calculate_summary(input: &SummaryInput) -> FindingsSummary {
         }
     }
 
-    // Vector-based health score with log-normalization (unified with for_ai.rs)
-    // Now includes twins metrics for consistency with for_ai.rs health score
-    let health_metrics = HealthMetrics {
-        // CERTAIN: breaking cycles are critical
-        breaking_cycles: cycle_counts.breaking,
-        // HIGH: dead exports, twins_dead_parrots. `dead_parrots` below reports
-        // every candidate the sensor found; only the resolved ones are scored.
-        dead_exports: input
-            .dead_parrots
-            .iter()
-            .filter(|candidate| counts_as_dead_defect(candidate))
-            .count(),
-        twins_dead_parrots: input.twins_dead_parrots,
-        // SMELL: barrel chaos, structural cycles, duplicates, twins_same_language, cascades
-        barrel_chaos_count: input.barrel_chaos.len(),
-        structural_cycles: cycle_counts.structural,
-        duplicate_exports: input.duplicates.len(),
-        twins_same_language: input.twins_same_language,
-        cascade_imports: input.cascade_imports,
-        // Context
-        files,
-        loc,
-        ..Default::default()
-    };
+    // One health vector, one number: the metrics are built by
+    // `health_inputs::structural_defects`, never inline here. Inlining is what
+    // let every later defect gate land on this surface only, while `--for-ai`
+    // kept scoring the ungated sensor rows (85 vs 72 on df35a677).
+    let duplicate_symbols: Vec<String> = input
+        .duplicates
+        .iter()
+        .map(|dup| dup.symbol.clone())
+        .collect();
+    let health_metrics = structural_defects(
+        input.snapshot,
+        input.dead_parrots,
+        &duplicate_symbols,
+        input.cascade_imports,
+    )
+    .metrics();
 
     let health = calculate_health_score(&health_metrics);
     let health_score = health.health;
@@ -1198,10 +1137,10 @@ impl Manifest {
                 query_with: {
                     let mut queries = vec![
                         "loct findings".to_string(),
-                        "loct '.dead_parrots'".to_string(),
+                        "loct '.dead_parrots' --artifact findings".to_string(),
                     ];
                     if dist.is_some() {
-                        queries.push("loct '.dist'".to_string());
+                        queries.push("loct '.dist' --artifact findings".to_string());
                     }
                     queries
                 },
@@ -1216,7 +1155,7 @@ impl Manifest {
                 query_with: {
                     let mut queries = vec!["loct --for-ai".to_string()];
                     if dist.is_some() {
-                        queries.push("loct '.bundle.dist'".to_string());
+                        queries.push("loct '.bundle.dist' --artifact agent".to_string());
                     }
                     queries
                 },
@@ -1235,11 +1174,11 @@ impl Manifest {
         let examples = vec![
             ManifestExample {
                 task: "Get health score".to_string(),
-                cmd: "loct '.summary.health_score'".to_string(),
+                cmd: "loct '.summary.health_score' --artifact agent".to_string(),
             },
             ManifestExample {
                 task: "List dead exports".to_string(),
-                cmd: "loct '.dead_parrots'".to_string(),
+                cmd: "loct '.dead_parrots' --artifact findings".to_string(),
             },
             ManifestExample {
                 task: "Context for file".to_string(),
@@ -1251,18 +1190,18 @@ impl Manifest {
             },
             ManifestExample {
                 task: "Count cycles".to_string(),
-                cmd: "loct '.cycles | length'".to_string(),
+                cmd: "loct '.cycles | length' --artifact findings".to_string(),
             },
         ];
         let mut examples = examples;
         if dist.is_some() {
             examples.push(ManifestExample {
                 task: "Show bundle coverage".to_string(),
-                cmd: "loct '.dist.coveragePct'".to_string(),
+                cmd: "loct '.dist.coveragePct' --artifact findings".to_string(),
             });
             examples.push(ManifestExample {
                 task: "List tree-shaken exports".to_string(),
-                cmd: "loct '.dist.deadExports'".to_string(),
+                cmd: "loct '.dist.deadExports' --artifact findings".to_string(),
             });
         }
 

@@ -1,7 +1,7 @@
 //! End-to-End CLI Tests for loctree
 //!
 //! Following TDD principles - tests define expected behavior.
-//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents ⓒ 2025-2026 Loctree Team
+//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI
 
 use assert_cmd::Command;
 use assert_cmd::cargo::cargo_bin_cmd;
@@ -2661,7 +2661,7 @@ mod auto_scan {
 // ============================================
 // Instant Commands Tests (<100ms)
 // ============================================
-// 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents ⓒ 2025-2026 Loctree Team
+// 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI
 
 mod instant_commands {
     use super::*;
@@ -3214,7 +3214,7 @@ mod instant_commands {
 // ============================================
 // Analysis Commands Tests
 // ============================================
-// 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents ⓒ 2025-2026 Loctree Team
+// 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI
 
 mod analysis_commands {
     use super::*;
@@ -3809,7 +3809,7 @@ mod analysis_commands {
 // ============================================
 // Management & Core Workflow Commands Tests
 // ============================================
-// 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents ⓒ 2025-2026 Loctree Team
+// 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI
 
 mod management_commands {
     use super::*;
@@ -4733,7 +4733,7 @@ mod management_commands {
 // ============================================
 // Framework-Specific Command Tests
 // ============================================
-// 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents ⓒ 2025-2026 Loctree Team
+// 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI
 
 mod framework_commands {
     use super::*;
@@ -5590,8 +5590,8 @@ mod env_truth {
         let value = json_value(&stdout);
         assert_eq!(
             value["schema_version"].as_str(),
-            Some("1.1"),
-            "schema version pinned at 1.1 (W2-c additive template_drift)"
+            Some("1.2"),
+            "schema version pinned at 1.2 (additive source_reads coverage)"
         );
         let names: Vec<&str> = value["declarations"]
             .as_array()
@@ -5960,7 +5960,7 @@ mod env_truth {
 // ============================================
 // Occurrences Command Tests (W1-A literal truth layer)
 // ============================================
-// 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents ⓒ 2025-2026 Loctree Team
+// 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI
 
 mod occurrences_cli {
     use super::*;
@@ -6835,7 +6835,7 @@ mod occurrences_cli {
 // ============================================
 // find --literal Tests (W1-B literal mode wired into find)
 // ============================================
-// 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents ⓒ 2025-2026 Loctree Team
+// 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI
 
 mod find_literal_cli {
     use super::*;
@@ -8578,5 +8578,119 @@ mod dead_truth {
             "occurrences -- <dashed> must not treat dash as option: {}",
             stdout2
         );
+    }
+}
+
+// ============================================
+// Answer-instead-of-dead-end surfaces (cut w1-a-body-redirect)
+// ============================================
+
+/// Two surfaces used to know the answer and refuse to say it: `body` on a
+/// module name printed "(no source body found)" and exited 1, and `trace`
+/// printed two coordinates for a healthy bridge without ever stating the
+/// wiring verdict. Both are asserted here at the CLI boundary, because the
+/// defect that got refuted twice lived in the exit code and the rendered
+/// text — neither is reachable from a library-level unit test.
+mod answers_not_dead_ends {
+    use super::*;
+
+    /// `loct body <module>` must exit 0: the redirect IS the answer. Exiting
+    /// non-zero told every caller and every verifier that the query failed
+    /// while the payload was full.
+    #[test]
+    fn body_on_a_module_exits_zero_and_names_the_symbols_inside() {
+        let temp = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
+        let src = temp.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(
+            src.join("lib.rs"),
+            "pub mod gadget_shop;\n\npub fn unrelated() -> u8 {\n    7\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            src.join("gadget_shop.rs"),
+            "pub struct GadgetShop {\n    pub open: bool,\n}\n\n\
+             pub fn assemble_gadget(n: u8) -> u8 {\n    n + 1\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            temp.path().join("Cargo.toml"),
+            "[package]\nname = \"gadget\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+
+        let mut scan = loct();
+        scan.current_dir(temp.path())
+            .env("LOCT_CACHE_DIR", cache.path())
+            .args(["scan", "--full-scan"])
+            .assert()
+            .success();
+
+        let mut body = loct();
+        body.current_dir(temp.path())
+            .env("LOCT_CACHE_DIR", cache.path())
+            .args(["body", "gadget_shop"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("MODULE"))
+            .stdout(predicate::str::contains("assemble_gadget"))
+            .stdout(predicate::str::contains("gadget_shop.rs"));
+    }
+
+    /// A name that genuinely has no body must still fail — the redirect must
+    /// not soften a real miss into a success.
+    #[test]
+    fn body_on_a_genuine_miss_still_exits_nonzero() {
+        let temp = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
+        let src = temp.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(
+            src.join("lib.rs"),
+            "pub fn only_thing() -> u8 {\n    1\n}\n",
+        )
+        .unwrap();
+
+        let mut scan = loct();
+        scan.current_dir(temp.path())
+            .env("LOCT_CACHE_DIR", cache.path())
+            .args(["scan", "--full-scan"])
+            .assert()
+            .success();
+
+        let mut body = loct();
+        body.current_dir(temp.path())
+            .env("LOCT_CACHE_DIR", cache.path())
+            .args(["body", "definitely_not_here_xyzzy"])
+            .assert()
+            .failure();
+    }
+
+    /// The broken bridges (`MISSING`, `UNUSED`) always spelled out their
+    /// verdict; the healthy one printed `[OK]` plus two file:line pairs and
+    /// left the reader to infer the wiring. State it.
+    #[test]
+    fn trace_states_the_wiring_verdict_for_a_healthy_bridge() {
+        let temp = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
+        copy_dir_all(&fixtures_path().join("tauri_app"), temp.path()).unwrap();
+
+        let mut scan = loct();
+        scan.current_dir(temp.path())
+            .env("LOCT_CACHE_DIR", cache.path())
+            .args(["scan", "--full-scan"])
+            .assert()
+            .success();
+
+        let mut trace = loct();
+        trace
+            .current_dir(temp.path())
+            .env("LOCT_CACHE_DIR", cache.path())
+            .args(["trace", "greet"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("handler"))
+            .stdout(predicate::str::contains("invoke('greet')"));
     }
 }

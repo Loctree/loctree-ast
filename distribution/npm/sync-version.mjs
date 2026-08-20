@@ -6,11 +6,11 @@
  * package set in distribution/npm — ONE user-facing wrapper plus its technical
  * platform packages (esbuild/swc pattern):
  *
- *   distribution/npm/loct/package.json                                   (wrapper @loctree/loct)
- *   distribution/npm/loct/platform-packages/{4 platforms}/package.json   (@loctree/loct-<platform>)
+ *   distribution/npm/loct/package.json                                   (wrapper @loctree/loctree)
+ *   distribution/npm/loct/platform-packages/{4 platforms}/package.json   (@loctree/loctree-<platform>)
  *
  * That is 5 package.json files, not 15. The wrapper's optionalDependencies
- * (its @loctree/loct-* platform set) are kept in lockstep with the same version.
+ * (its @loctree/loctree-* platform set) are kept in lockstep with the same version.
  *
  *
  * Usage:

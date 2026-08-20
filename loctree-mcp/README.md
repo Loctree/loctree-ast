@@ -45,7 +45,7 @@ from source:
 curl -fsSL https://loct.io/install.sh | bash
 
 # or the npm runtime package (includes sibling loctree-mcp / loctree-lsp binaries)
-npm install -g @loctree/loct
+npm install -g @loctree/loctree
 ```
 
 This crate is also published on crates.io:
@@ -85,14 +85,14 @@ a repository on the client's laptop.
 
 ### One-shot npm execution
 
-`@loctree/loct` remains the single public npm package. It now exposes the MCP
+`@loctree/loctree` remains the single public npm package. It now exposes the MCP
 co-process for package runners without creating a second npm product:
 
 ```bash
-npx -y --package=@loctree/loct loctree-mcp
+npx -y --package=@loctree/loctree loctree-mcp
 ```
 
-`npx -y @loctree/loct` still launches the `loct` CLI by design.
+`npx -y @loctree/loctree` still launches the `loct` CLI by design.
 
 ## Client configuration
 

@@ -1,7 +1,7 @@
 # Loctree Build System
 # Includes comprehensive MCP server management
 #
-# Created by M&K ⓒ 2025-2026 The Loctree Team
+# 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI
 
 .PHONY: all build install clean test check precheck fmt help setup-protoc
 .PHONY: version version-show version-check publish

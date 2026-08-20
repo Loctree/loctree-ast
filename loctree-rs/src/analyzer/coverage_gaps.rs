@@ -10,7 +10,7 @@
 //! - Events emitted but no test coverage (MEDIUM RISK)
 //! - Tested code that's not used in production (potential dead code)
 //!
-//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents ⓒ 2025-2026 Loctree Team
+//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI
 
 use super::classify::{ArtifactFenceStats, artifact_class, is_test_path};
 use crate::snapshot::{CommandBridge, EventBridge, Snapshot};

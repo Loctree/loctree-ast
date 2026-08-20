@@ -5,7 +5,7 @@
 //! - `where-symbol <symbol>` - Find where a symbol is defined
 //! - `component-of <file>` - Show what component/module a file belongs to
 //!
-//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents ⓒ 2025-2026 Loctree Team
+//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI
 
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -544,7 +544,93 @@ pub fn query_where_symbol(snapshot: &Snapshot, symbol: &str) -> QueryResult {
     });
     results.dedup_by(|a, b| a.file == b.file && a.line == b.line);
 
+    // A module name is a symbol too. `mod health_score;` is not an export, a
+    // local symbol, an impl method or a graph node, so without this the query
+    // answered "(no results)" for a name the snapshot fully knows — and `body`
+    // inherited the dead end (its hint pointed here).
+    for decl in module_declarations(snapshot, symbol) {
+        let already_known = results
+            .iter()
+            .any(|m| m.file == decl.declared_in && m.line == decl.line);
+        if already_known {
+            continue;
+        }
+        results.push(QueryMatch {
+            file: decl.declared_in.clone(),
+            line: decl.line,
+            context: Some(decl.context()),
+        });
+    }
+
     QueryResult::complete("where-symbol", symbol, results, snapshot)
+}
+
+// ============================================================================
+// Module declarations
+// ============================================================================
+
+/// A `mod <name>;` declaration site.
+///
+/// In Rust a module name is a real symbol, and `mod health_score;` is where it
+/// enters the namespace — but it is not an export, a local symbol, an impl
+/// method or a symbol-graph node, so every definition surface used to answer
+/// "no results" for it. The declaration is recorded on the declaring file as an
+/// import entry flagged `is_mod_declaration`; this type lifts it back out as
+/// the definition site it is, together with the file the module resolves to.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModuleDeclaration {
+    /// Module name as declared (`health_score`).
+    pub module: String,
+    /// File carrying the `mod <name>;` declaration.
+    pub declared_in: String,
+    /// 1-based line of the declaration, when the analyzer anchored one.
+    pub line: Option<usize>,
+    /// File the module resolves to, when the analyzer resolved it.
+    pub module_file: Option<String>,
+}
+
+impl ModuleDeclaration {
+    /// Context string used when this declaration is rendered as a
+    /// `where-symbol` match.
+    pub fn context(&self) -> String {
+        match &self.module_file {
+            Some(path) => format!("module declaration `mod {};` -> {}", self.module, path),
+            None => format!("module declaration `mod {};`", self.module),
+        }
+    }
+}
+
+/// Every `mod <name>;` declaration of `name` across the snapshot.
+///
+/// Pure snapshot read: the mod declarations were already indexed at scan time
+/// (as `is_mod_declaration` import entries), so this neither re-parses sources
+/// nor guesses from file names.
+pub fn module_declarations(snapshot: &Snapshot, name: &str) -> Vec<ModuleDeclaration> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Vec::new();
+    }
+    let mut declarations = Vec::new();
+    for file in &snapshot.files {
+        for import in &file.imports {
+            if !import.is_mod_declaration {
+                continue;
+            }
+            let declares = import.symbols.iter().any(|s| s.name == name);
+            if !declares {
+                continue;
+            }
+            declarations.push(ModuleDeclaration {
+                module: name.to_string(),
+                declared_in: file.path.clone(),
+                line: import.line,
+                module_file: import.resolved_path.clone(),
+            });
+        }
+    }
+    declarations.sort_by(|a, b| a.declared_in.cmp(&b.declared_in).then(a.line.cmp(&b.line)));
+    declarations.dedup_by(|a, b| a.declared_in == b.declared_in && a.line == b.line);
+    declarations
 }
 
 /// Language-native where-symbol labels for Rust.

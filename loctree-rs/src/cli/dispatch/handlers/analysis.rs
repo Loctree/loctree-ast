@@ -956,6 +956,18 @@ pub fn handle_trace_command(opts: &TraceOptions, global: &GlobalOptions) -> Disp
                     "    Consider: Remove if unused, or add invoke('{}') call.",
                     bridge.name
                 );
+            } else if bridge.has_handler && bridge.is_called {
+                // The broken cases spelled out their verdict; the healthy one
+                // printed two coordinates and left the reader to infer the
+                // wiring. State it — that verdict is the whole point of trace.
+                // Scope note: CommandBridge proves handler-exists + frontend
+                // -invokes, NOT presence in invoke_handler![]; unregistered
+                // handlers are a separate finding, so we do not claim it here.
+                println!(
+                    "    [OK] wired end-to-end: backend handler defined and reached by \
+frontend invoke('{}').",
+                    bridge.name
+                );
             }
             println!();
         }
@@ -2086,7 +2098,7 @@ pub fn handle_zombie_command(opts: &ZombieOptions, global: &GlobalOptions) -> Di
     use std::path::Path;
 
     // Deprecation warning (goes to stderr, won't break piped output)
-    warn_deprecated("zombie", "loct '.dead_parrots'");
+    warn_deprecated("zombie", "loct '.dead_parrots' --artifact findings");
 
     // Show spinner unless in quiet/json mode
     let spinner = if !global.quiet && !global.json {
@@ -2680,21 +2692,49 @@ pub fn handle_audit_command(opts: &AuditOptions, global: &GlobalOptions) -> Disp
         }
 
         // Print colored summary to terminal
-        let total_issues = findings.cycles.len()
-            + findings.dead_exports.len()
-            + findings.twins.len()
+        let scored_twins = findings
+            .twins
+            .iter()
+            .filter(|twin| {
+                matches!(
+                    twin.class,
+                    crate::analyzer::twins::TwinClass::Exact
+                        | crate::analyzer::twins::TwinClass::ShapeSimilar
+                )
+            })
+            .count();
+        let name_collisions = findings.twins.len().saturating_sub(scored_twins);
+        let total_issues = findings
+            .cycles
+            .iter()
+            .filter(|cycle| {
+                matches!(
+                    cycle.compilability,
+                    CycleCompilability::Breaking | CycleCompilability::Structural
+                )
+            })
+            .count()
+            + findings
+                .dead_exports
+                .iter()
+                .filter(|dead| dead.confidence == "high" && !dead.entrypoint)
+                .count()
+            + scored_twins
+            + findings.orphan_files.len()
             + findings.shadow_exports.len();
 
         println!("\n{}\n", p.header("Audit Summary"));
+        let health = crate::analyzer::audit_report::audit_health(&findings);
         println!(
-            "  Files: {}  |  LOC: {}  |  Issues: {}",
+            "  Files: {}  |  LOC: {}  |  Actionable: {}  |  Health: {}/100",
             p.number(findings.total_files),
             p.number(findings.total_loc),
             if total_issues > 0 {
                 p.warn(&total_issues.to_string())
             } else {
                 p.ok(&total_issues.to_string())
-            }
+            },
+            p.number(health.health as usize)
         );
 
         if high_risk_cycles > 0 {
@@ -2711,11 +2751,18 @@ pub fn handle_audit_command(opts: &AuditOptions, global: &GlobalOptions) -> Disp
                 p.warn(&high_confidence.to_string())
             );
         }
-        if !findings.twins.is_empty() {
+        if scored_twins > 0 {
             println!(
-                "  {} {} duplicate symbol groups",
+                "  {} {} shape-similar twin groups",
                 p.info("[i]"),
-                p.info(&findings.twins.len().to_string())
+                p.info(&scored_twins.to_string())
+            );
+        }
+        if name_collisions > 0 {
+            println!(
+                "  {} {} name collisions (not scored)",
+                p.dim("[i]"),
+                p.dim(&name_collisions.to_string())
             );
         }
 

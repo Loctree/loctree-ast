@@ -2,7 +2,7 @@
 
 const { execFileSync } = require('child_process');
 const { existsSync } = require('fs');
-const { basename, dirname, isAbsolute, normalize, relative, sep } = require('path');
+const { basename, dirname, isAbsolute, join, normalize, relative, sep } = require('path');
 const { fileURLToPath, pathToFileURL } = require('url');
 
 // Loctree is one runtime. The npm wrapper exposes `loctree` (with `loct` as a
@@ -13,17 +13,19 @@ const { fileURLToPath, pathToFileURL } = require('url');
 //   loct watch --lsp    -> loctree co-spawns `loctree-lsp`  (editor language server)
 //
 // The runtime resolves those co-processes as SIBLINGS of its own executable,
-// so the platform package must ship all three binaries side by side.
+// so the platform package must ship the suite binaries side by side. They all
+// live under bin/ inside the platform package (`loct` is the same runtime as
+// `loctree` under its short name).
 const RUNTIME_BINARY = 'loctree';
-const BUNDLED_BINARIES = ['loctree', 'loctree-mcp', 'loctree-lsp'];
+const BUNDLED_BINARIES = ['loct', 'loctree', 'loctree-mcp', 'loctree-lsp'];
 
 // Platform key -> the technical platform package that delivers the binaries.
 // These are a delivery mechanism only; users never install them directly.
 const PLATFORM_PACKAGES = {
-  'darwin-arm64': '@loctree/loct-darwin-arm64',
-  'darwin-x64': '@loctree/loct-darwin-x64',
-  'linux-x64-gnu': '@loctree/loct-linux-x64-gnu',
-  'win32-x64-msvc': '@loctree/loct-win32-x64-msvc',
+  'darwin-arm64': '@loctree/loctree-darwin-arm64',
+  'darwin-x64': '@loctree/loctree-darwin-x64',
+  'linux-x64-gnu': '@loctree/loctree-linux-x64-gnu',
+  'win32-x64-msvc': '@loctree/loctree-win32-x64-msvc',
 };
 
 function getPlatformKey() {
@@ -88,9 +90,9 @@ function childPathInsidePackage(pkgDir, fileName) {
 /**
  * Resolve the absolute path to one bundled binary inside the installed platform
  * package. Uses node module resolution (so it respects npm/pnpm/yarn hoisting),
- * then validates the file exists. The three bundled binaries always live in the
- * same directory, which is what lets `loctree` find `loctree-mcp` / `loctree-lsp`
- * as siblings at runtime.
+ * then validates the file exists. The bundled binaries always live together in
+ * the platform package's bin/ directory, which is what lets `loctree` find
+ * `loctree-mcp` / `loctree-lsp` as siblings at runtime.
  */
 function getBinaryPath(name = RUNTIME_BINARY) {
   if (!BUNDLED_BINARIES.includes(name)) {
@@ -107,17 +109,17 @@ function getBinaryPath(name = RUNTIME_BINARY) {
 
   let pkgDir;
   try {
-    // Resolve via the platform package's manifest, then sit the binary next to it.
+    // Resolve via the platform package's manifest; the binaries sit in bin/.
     pkgDir = dirname(require.resolve(`${packageName}/package.json`));
   } catch (err) {
     throw new Error(
       `Loctree platform package "${packageName}" is not installed. ` +
       `This usually means optionalDependencies were disabled ` +
-      `(--no-optional / --ignore-optional). Reinstall @loctree/loct with optional deps enabled.`
+      `(--no-optional / --ignore-optional). Reinstall @loctree/loctree with optional deps enabled.`
     );
   }
 
-  const binaryPath = childPathInsidePackage(pkgDir, binaryFileName(name));
+  const binaryPath = childPathInsidePackage(join(pkgDir, 'bin'), binaryFileName(name));
   if (!existsSync(binaryPath)) {
     throw new Error(
       `Loctree binary "${binaryFileName(name)}" not found in "${packageName}" ` +

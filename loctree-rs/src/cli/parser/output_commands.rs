@@ -317,8 +317,9 @@ DESCRIPTION:
     entrypoint drift, quick wins, and related health signals.
 
 OPTIONS:
-    --summary          Emit health score + counts only
-    --help, -h         Show this help message
+    --summary                Emit health score + counts only
+    --root, --project <PATH> Project root (alias pair; default: current directory)
+    --help, -h               Show this help message
 
 ARGUMENTS:
     [PATHS...]         Root directories to analyze (default: current directory)
@@ -326,6 +327,7 @@ ARGUMENTS:
 EXAMPLES:
     loct findings
     loct findings --summary
+    loct findings --project /path/to/repo --summary
     loct findings . | jq '.dead_parrots | length'"
             .to_string());
     }
@@ -339,6 +341,14 @@ EXAMPLES:
             "--summary" => {
                 opts.summary = true;
                 i += 1;
+            }
+            "--root" | "--project" => {
+                let flag = arg.as_str();
+                let value = args
+                    .get(i + 1)
+                    .ok_or_else(|| format!("{flag} requires a path"))?;
+                opts.roots.push(PathBuf::from(value));
+                i += 2;
             }
             _ if !arg.starts_with('-') => {
                 opts.roots.push(PathBuf::from(arg));
@@ -667,6 +677,25 @@ pub(super) fn parse_jq_query_command(
                 opts.snapshot_path = Some(PathBuf::from(path));
                 i += 2;
             }
+            "--artifact" => {
+                let name = args.get(i + 1).ok_or_else(|| {
+                    format!(
+                        "--artifact requires an artifact name ({})",
+                        crate::cli::dispatch::handlers::query::QUERYABLE_ARTIFACTS.join(", ")
+                    )
+                })?;
+                if !crate::cli::dispatch::handlers::query::QUERYABLE_ARTIFACTS
+                    .contains(&name.as_str())
+                {
+                    return Err(format!(
+                        "unknown artifact '{}' — available: {}",
+                        name,
+                        crate::cli::dispatch::handlers::query::QUERYABLE_ARTIFACTS.join(", ")
+                    ));
+                }
+                opts.artifact = Some(name.clone());
+                i += 2;
+            }
             "--help" | "-h" => {
                 return Ok(ParsedCommand::new(
                     Command::Help(HelpOptions {
@@ -744,6 +773,20 @@ mod tests {
             assert_eq!(opts.roots, vec![PathBuf::from("src/")]);
         } else {
             panic!("Expected Findings command");
+        }
+    }
+
+    #[test]
+    fn test_parse_findings_command_accepts_project_alias() {
+        for flag in ["--project", "--root"] {
+            let args = vec![flag.into(), "/tmp/repo".into(), "--summary".into()];
+            let result = parse_findings_command(&args).unwrap();
+            if let Command::Findings(opts) = result {
+                assert!(opts.summary, "{flag}");
+                assert_eq!(opts.roots, vec![PathBuf::from("/tmp/repo")], "{flag}");
+            } else {
+                panic!("Expected Findings command for {flag}");
+            }
         }
     }
 

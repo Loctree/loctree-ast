@@ -6,7 +6,7 @@
 //! `--include-ignored` they are surfaced for a single ephemeral read and
 //! explicitly marked `ignored`, without polluting the persisted snapshot.
 //!
-//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents ⓒ 2025-2026 Loctree Team
+//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI
 
 use assert_cmd::Command;
 use assert_cmd::cargo::cargo_bin_cmd;

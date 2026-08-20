@@ -11,7 +11,7 @@
 //! - In-band ENC markers: `ENC[AES256_GCM,...]` substrings (used for
 //!   in-place encryption of individual fields).
 //!
-//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents ⓒ 2025-2026 Loctree Team
+//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI
 
 use std::io::Read;
 use std::path::Path;

@@ -1,6 +1,6 @@
 //! Help text generation for CLI commands.
 //!
-//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents ⓒ 2025-2026 Loctree Team
+//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI
 
 use super::help_texts::*;
 use super::types::Command;
@@ -411,10 +411,29 @@ impl Command {
 
         // === JQ QUERIES ===
         help.push_str("=== JQ QUERIES ===\n\n");
+        help.push_str("  loct '. | keys'               Snapshot surface — what you can query\n");
         help.push_str("  loct '.metadata'              Extract metadata from snapshot\n");
         help.push_str("  loct '.files | length'        Count analyzed files\n");
-        help.push_str("  loct '.dead_parrots[]'        List dead exports\n");
-        help.push_str("  loct '.cycles[]'              List circular imports\n\n");
+        help.push_str("  loct '.edges | length'        Count import edges\n\n");
+        help.push_str(
+            "  Dead exports, cycles and health are findings, not snapshot keys. Point the\n",
+        );
+        help.push_str("  same filters at the sibling artifacts with --artifact:\n\n");
+        help.push_str(
+            "  loct '.summary.health_score' --artifact agent       Health score (0-100)\n",
+        );
+        help.push_str("  loct '.dead_parrots | length' --artifact findings   Dead export count\n");
+        help.push_str(
+            "  loct '.cycles | length' --artifact findings         Import cycle count\n\n",
+        );
+        help.push_str("  Artifacts: snapshot (default), agent, findings, analysis, manifest,\n");
+        help.push_str(
+            "             handlers, dead, circular — materialized by a full `loct` run.\n",
+        );
+        help.push_str(
+            "  A missing top-level key exits non-zero and names the keys that ARE there;\n",
+        );
+        help.push_str("  `.foo?` and `.foo // x` still answer quietly, as jq intends.\n\n");
 
         // === GLOBAL OPTIONS ===
         help.push_str("=== GLOBAL OPTIONS ===\n\n");

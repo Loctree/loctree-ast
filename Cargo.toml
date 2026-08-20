@@ -13,7 +13,7 @@ version = "0.14.2"
 edition = "2024"
 rust-version = "1.93.0"
 license = "BUSL-1.1"
-authors = ["Loctree <loct@loct.io>"]
+authors = ["LibraxisAI <support@loctree.com>"]
 
 [workspace.dependencies]
 tokio = { version = "1.52", features = ["full"] }

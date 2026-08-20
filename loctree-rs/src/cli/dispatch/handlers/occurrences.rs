@@ -5,6 +5,9 @@
 //! Identifier-like queries stay token-boundary aware; phrase/punctuation queries
 //! behave as fixed strings. Primary matches are never AST/fuzzy hits. Zero-hit
 //! output may add separate symbol-table near-match hints, never evidence.
+//!
+//! `--regex` switches the same command to pattern evaluation over raw file
+//! text, sharing the engine, coverage line and paging with `find --regex`.
 
 use std::path::{Path, PathBuf};
 
@@ -28,6 +31,10 @@ pub fn handle_occurrences_command(
     } else {
         opts.roots.clone()
     };
+
+    if opts.regex {
+        return handle_occurrences_regex(opts, &roots, global);
+    }
 
     let patterns = expand_literal_patterns(std::slice::from_ref(&opts.ident));
     if patterns.is_empty() {
@@ -80,6 +87,81 @@ pub fn handle_occurrences_command(
             .near_matches
             .dedup_by(|a, b| a.symbol == b.symbol && a.file == b.file);
     }
+    results.declare_snapshot_universe(&snapshot, FileScope::default());
+    results.apply_report(ReportOptions {
+        group_by_file: opts.group_by_file,
+        count_only: opts.count_only,
+        offset: opts.offset,
+        limit: opts.limit,
+    });
+
+    if global.json {
+        match serde_json::to_string_pretty(&results) {
+            Ok(json) => println!("{}", json),
+            Err(e) => {
+                eprintln!("[loct][error] Failed to serialize results: {}", e);
+                return DispatchResult::Exit(1);
+            }
+        }
+    } else {
+        print_human(&results, opts.compact);
+    }
+
+    DispatchResult::Exit(0)
+}
+
+/// Handle `loct occurrences <pattern> --regex` — pattern mode of the literal
+/// oracle.
+///
+/// Flag parity with `find --regex`, not a second implementation: same
+/// `scan_files_with_regex` engine, same snapshot universe, same coverage line,
+/// same `--limit/--offset` paging. Before this existed, an agent that had just
+/// run `loct find --regex 'PAT'` and reached for `loct occurrences 'PAT'
+/// --regex` to cross-check it got "Unknown option" — which on the surface
+/// whose whole job is confirming the other one is indistinguishable from the
+/// tool disagreeing.
+///
+/// Like `find --regex`, this deliberately skips `enrich_with_snapshot`: a
+/// pattern is not a symbol name, so resolving it against the symbol table would
+/// invent structure the match never had.
+fn handle_occurrences_regex(
+    opts: &OccurrencesOptions,
+    roots: &[PathBuf],
+    global: &GlobalOptions,
+) -> DispatchResult {
+    let pattern = opts.ident.trim();
+    if pattern.is_empty() {
+        eprintln!(
+            "[loct][error] 'occurrences --regex' requires a pattern. Usage: loct occurrences <pattern> --regex"
+        );
+        return DispatchResult::Exit(1);
+    }
+    let re = match regex::Regex::new(pattern) {
+        Ok(re) => re,
+        Err(e) => {
+            // Loud by design, exactly as in `find --regex`: a malformed pattern
+            // must never pass as a trustworthy "0 matches".
+            eprintln!("[loct][error] invalid --regex pattern '{}': {}", pattern, e);
+            return DispatchResult::Exit(1);
+        }
+    };
+
+    let query_global = query_global_options(global);
+    let snapshot = match load_or_create_query_snapshot_for_roots(roots, &query_global) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("[loct][error] {}", e);
+            return DispatchResult::Exit(1);
+        }
+    };
+
+    let base = roots.first().cloned().unwrap_or_else(|| PathBuf::from("."));
+    let contents = read_snapshot_contents(&snapshot, &base);
+    let borrowed = contents
+        .iter()
+        .map(|(p, c)| (p.as_str(), c.as_str()))
+        .collect::<Vec<_>>();
+    let mut results = scan_files_with_regex(borrowed, &re, FileScope::default());
     results.declare_snapshot_universe(&snapshot, FileScope::default());
     results.apply_report(ReportOptions {
         group_by_file: opts.group_by_file,
@@ -729,16 +811,33 @@ fn print_human(results: &OccurrenceResults, compact: bool) {
         print_compact(results);
         return;
     }
+    // The header names the mode the scan actually ran in. Calling a `--regex`
+    // hit set "literal occurrences" would undo the very parity the flag adds.
+    let regex_mode = results.source == "regex";
     println!(
-        "Literal occurrences of '{}' ({} in {} file(s)) [source: {}]",
-        results.query, results.total, results.files_matched, results.source
+        "{} of '{}' ({} in {} file(s)) [source: {}]",
+        if regex_mode {
+            "Regex occurrences"
+        } else {
+            "Literal occurrences"
+        },
+        results.query,
+        results.total,
+        results.files_matched,
+        results.source
     );
     if !results.coverage_line.is_empty() {
         println!("  {}", results.coverage_line);
     }
     print_file_scope(results);
     if results.total == 0 {
-        print_no_exact_occurrences(results, "  ");
+        if regex_mode {
+            // A compiled pattern that matched nothing is a trustworthy absence;
+            // the literal wording ("no exact occurrences") would understate it.
+            print_zero_hit_absence(results, AbsenceMode::Regex, false);
+        } else {
+            print_no_exact_occurrences(results, "  ");
+        }
         print_suggested_next(results);
         return;
     }

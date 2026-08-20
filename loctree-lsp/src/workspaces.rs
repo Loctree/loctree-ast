@@ -347,6 +347,17 @@ impl WorkspaceRegistry {
         }
         evicted
     }
+
+    /// Drop EVERY resident parsed snapshot (the pinned root's accounting
+    /// entry included is untouched — only the evictable map is cleared).
+    /// Used by the RSS sentinel's soft-limit relief: residency is a
+    /// rebuildable cache, and a workspace touched again after relief
+    /// re-hydrates through the normal routed-load path.
+    pub(crate) fn evict_all_resident(&mut self) -> usize {
+        let evicted = self.resident.len();
+        self.resident.clear();
+        evicted
+    }
 }
 
 /// Compute actual filesystem subscriptions. Standard roots keep the original

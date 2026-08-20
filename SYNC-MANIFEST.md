@@ -3,9 +3,9 @@
 - Component: `engine`
 - Version: `0.14.2`
 - Target repo: `Loctree/loctree`
-- Source commit: `16199c23d39c`
-- Generated at: `2026-08-13T15:04:04Z`
-- Push mode: `disabled`
+- Source commit: `archive:suite-develop`
+- Generated at: `2026-08-20T20:11:58Z`
+- Push mode: `enabled`
 - Dependency mode: `local workspace snapshot`
 
 ## Included Payload
@@ -17,6 +17,11 @@
 - `reports` -> `reports`
 - `distribution/npm` -> `distribution/npm`
 - `distribution/macos` -> `distribution/macos`
+
+## Paths Removed From The Mirror
+
+- `.github/workflows/publish.yml`
+- `.github/workflows/release-bundles.yml`
 
 ## Dependency Note
 

@@ -23,7 +23,8 @@ use super::for_ai::{
     find_hub_files,
 };
 use super::graph::{MAX_GRAPH_EDGES, MAX_GRAPH_NODES, build_graph_data};
-use super::health_score::{HealthMetrics, calculate_health_score};
+use super::health_inputs::structural_defects;
+use super::health_score::calculate_health_score;
 use super::html::render_html_report;
 use super::insights::collect_ai_insights;
 use super::open_server::current_open_base;
@@ -878,6 +879,44 @@ pub fn process_root_context(
         Vec::new()
     };
 
+    // The snapshot shape the structural analyses read: files, import edges and
+    // barrels. `process_root_context` works from a scan rather than from a
+    // persisted snapshot, so this is assembled here — once. Barrel chaos and
+    // the health vector both read it, which is what keeps them from drifting
+    // apart the way the health number itself did (see the scoring block below).
+    let structural_snapshot = crate::snapshot::Snapshot {
+        metadata: crate::snapshot::SnapshotMetadata {
+            roots: vec![root_path.display().to_string()],
+            languages: languages.clone(),
+            file_count: analyses.len(),
+            total_loc: analyses.iter().map(|a| a.loc).sum(),
+            ..Default::default()
+        },
+        files: analyses.clone(),
+        edges: graph_edges
+            .iter()
+            .map(|(from, to, label)| crate::snapshot::GraphEdge {
+                from: from.clone(),
+                to: to.clone(),
+                label: label.clone(),
+            })
+            .collect(),
+        export_index: std::collections::HashMap::new(),
+        command_bridges: Vec::new(),
+        event_bridges: Vec::new(),
+        barrels: barrels
+            .iter()
+            .map(|b| crate::snapshot::BarrelFile {
+                path: b.path.clone(),
+                module_id: b.module_id.clone(),
+                reexport_count: b.reexport_count,
+                targets: b.targets.clone(),
+            })
+            .collect(),
+        semantic_facts: None,
+        symbol_graph: None,
+    };
+
     // Run twins analysis (dead parrots, exact twins, barrel chaos)
     let twins_data = if !parsed.skip_dead_symbols {
         // Find dead parrots (0 imports)
@@ -888,42 +927,7 @@ pub fn process_root_context(
         let exact_twins = detect_exact_twins(&analyses, false);
 
         // Analyze barrel chaos (missing barrels, deep chains, inconsistent paths)
-        // Build snapshot from analyses for barrel analysis
-        let snapshot_barrels: Vec<crate::snapshot::BarrelFile> = barrels
-            .iter()
-            .map(|b| crate::snapshot::BarrelFile {
-                path: b.path.clone(),
-                module_id: b.module_id.clone(),
-                reexport_count: b.reexport_count,
-                targets: b.targets.clone(),
-            })
-            .collect();
-
-        let snapshot = crate::snapshot::Snapshot {
-            metadata: crate::snapshot::SnapshotMetadata {
-                roots: vec![root_path.display().to_string()],
-                languages: languages.clone(),
-                file_count: analyses.len(),
-                total_loc: analyses.iter().map(|a| a.loc).sum(),
-                ..Default::default()
-            },
-            files: analyses.clone(),
-            edges: graph_edges
-                .iter()
-                .map(|(from, to, label)| crate::snapshot::GraphEdge {
-                    from: from.clone(),
-                    to: to.clone(),
-                    label: label.clone(),
-                })
-                .collect(),
-            export_index: std::collections::HashMap::new(),
-            command_bridges: Vec::new(),
-            event_bridges: Vec::new(),
-            barrels: snapshot_barrels,
-            semantic_facts: None,
-            symbol_graph: None,
-        };
-        let barrel_analysis = analyze_barrel_chaos(&snapshot);
+        let barrel_analysis = analyze_barrel_chaos(&structural_snapshot);
 
         // Use the types directly from twins and barrels modules
         Some(TwinsData {
@@ -1517,63 +1521,35 @@ Top duplicate exports (showing {} actionable, {} cross-lang silenced):",
             find_coverage_gaps(&snapshot)
         };
 
-        // Calculate health score from available metrics
+        // One health vector, one number.
+        //
+        // This surface built its own `HealthMetrics` from the raw section
+        // counters, which is exactly the shape that made `--for-ai` read 13
+        // points below `findings --summary` before ffc13063's successor fixed
+        // those two. It was never fixed here, so on 257a5f82 the HTML gauge
+        // showed 71 while both CLI surfaces said 84 — the silent third number
+        // the one-scorer rule exists to prevent. Every disagreeing field was
+        // an ungated counter: every strict cycle scored as breaking, lazy
+        // cycles scored as structural (the canonical vector never scores
+        // them), raw dead-export sensor rows instead of graded defects, and
+        // ungated twin/duplicate groups.
+        //
+        // The vector is built by `health_inputs::structural_defects` now, from
+        // the same snapshot material, with the same gates. Handler dimensions
+        // stay out of the score for the same reason they do on the other two
+        // surfaces — `findings.rs` has no command-bridge data, and scoring
+        // them here alone would re-open the split in a new dimension. They
+        // remain reported as counts above.
         let health_score = {
-            // Count breaking cycles (hard bidirectional cycles)
-            let breaking_cycles = circular_imports.len();
-            // Count structural cycles (lazy/dynamic cycles)
-            let structural_cycles = lazy_circular_imports.len();
-
-            // Count dead exports (HIGH confidence)
-            let dead_exports_count = dead_exports_for_report.len();
-
-            // Count twins data if available
-            let (twins_dead_parrots, twins_same_language, barrel_chaos_count) =
-                if let Some(ref twins) = twins_data {
-                    (
-                        twins.dead_parrots.len(),
-                        twins.exact_twins.len(),
-                        twins.barrel_chaos.missing_barrels.len()
-                            + twins.barrel_chaos.deep_chains.len()
-                            + twins.barrel_chaos.inconsistent_paths.len(),
-                    )
-                } else {
-                    (0, 0, 0)
-                };
-
-            // Count duplicate exports
-            let duplicate_exports = filtered_ranked.len();
-
-            // Count cascade imports
-            let cascade_imports = cascades.len();
-
-            let metrics = HealthMetrics {
-                // CERTAIN severity
-                missing_handlers: missing_sorted.len(),
-                unregistered_handlers: unregistered_sorted.len(),
-                breaking_cycles,
-
-                // HIGH severity
-                unused_high_confidence: unused_sorted.len(),
-                dead_exports: dead_exports_count,
-                twins_dead_parrots,
-
-                // SMELL severity
-                twins_same_language,
-                barrel_chaos_count,
-                structural_cycles,
-                cascade_imports,
-                duplicate_exports,
-
-                // Project context
-                files: analyses.len(),
-                loc: total_loc,
-
-                // Optional: issue details (not populated for now)
-                certain_items: Vec::new(),
-                high_items: Vec::new(),
-                smell_items: Vec::new(),
-            };
+            let raw_duplicate_symbols: Vec<String> =
+                filtered_ranked.iter().map(|dup| dup.name.clone()).collect();
+            let metrics = structural_defects(
+                &structural_snapshot,
+                &dead_exports_for_report,
+                &raw_duplicate_symbols,
+                cascades.len(),
+            )
+            .metrics();
 
             let score = calculate_health_score(&metrics);
             Some(score.health)

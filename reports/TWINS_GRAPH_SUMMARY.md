@@ -300,7 +300,7 @@ Interactive Graph
 
 ## Credits
 
-**Created by**: M&K ⓒ 2025-2026 The Loctree Team
+**Created by**: 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI
 **Technology**: Cytoscape.js v3.28.1
 **Inspired by**: Dead Parrot Spaghetti Protocol
 **Project**: loctree - Code relationship analyzer

@@ -4,7 +4,7 @@
 //! `env_file:` (one or many .env paths). For env_file references we record a
 //! `EnvFrom` source so the orchestrator can chain into the dotenv parser.
 //!
-//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents ⓒ 2025-2026 Loctree Team
+//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI
 
 use std::path::Path;
 

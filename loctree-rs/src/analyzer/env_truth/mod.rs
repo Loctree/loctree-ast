@@ -11,7 +11,7 @@
 //!
 //! See `docs/env-truth-precedence.md` for the precedence-rank doctrine.
 //!
-//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents ⓒ 2025-2026 Loctree Team
+//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -41,8 +41,8 @@ mod warnings;
 pub use precedence::EnvTruthConfig;
 pub use types::{
     ENV_TRUTH_SCHEMA_VERSION, EnvDeclaration, EnvReadSite, EnvSource, EnvSourceKind,
-    EnvTruthReport, EnvTruthSummary, EnvWarning, FailOnKind, OrphanRead, ScanRoot, TemplateDrift,
-    ValuePresence,
+    EnvTruthReport, EnvTruthSummary, EnvWarning, FailOnKind, OrphanRead, ScanRoot,
+    SourceReadCoverage, TemplateDrift, ValuePresence,
 };
 pub use warnings::DEFAULT_STALE_THRESHOLD_DAYS;
 
@@ -229,10 +229,51 @@ pub fn compute_env_truth(config: &ComputeConfig, snapshot: Option<&Snapshot>) ->
     for (name, sites) in workflow_shell_reads {
         read_index.entry(name).or_default().extend(sites);
     }
+
+    // Named reads straight from source files. `semantic_facts.env_contracts`
+    // only ever covered the shell / Python / Make readers, so a repo whose
+    // live contract is consumed by Rust (`std::env::var`, `effective_env_*`
+    // wrappers, promoted-key registries) had an entirely invisible read side:
+    // live keys got no heading at all, and keys that *were* declared were
+    // libelled `orphan-declaration`. Source reads close that hole and carry
+    // line numbers the semantic contracts never had.
+    let source_inventory =
+        snapshot.map(|snap| source_reads::collect_source_env_reads(&scan_root, snap));
+    if let Some(inventory) = &source_inventory {
+        for read in &inventory.reads {
+            read_index
+                .entry(read.name.clone())
+                .or_default()
+                .push(EnvReadSite {
+                    file: read.file.clone(),
+                    line: Some(read.line),
+                    symbol: Some(read.access_kind.clone()),
+                    required_for: Vec::new(),
+                });
+        }
+    }
+    let source_read_coverage = source_inventory.as_ref().map(|inventory| {
+        let names: std::collections::BTreeSet<&str> = inventory
+            .reads
+            .iter()
+            .map(|read| read.name.as_str())
+            .collect();
+        SourceReadCoverage {
+            classes: inventory.classes.clone(),
+            files_scanned: inventory.files_scanned,
+            read_sites: inventory.reads.len(),
+            names: names.len(),
+        }
+    });
+
+    // The orphan-declaration gate asks "did the read-side scanner run at all?"
+    // — answering it from `env_contracts` alone made every Rust-only repo look
+    // like a repo with no readers.
     let has_env_contracts = snapshot
         .and_then(|s| s.semantic_facts.as_ref())
         .map(|f| !f.env_contracts.is_empty())
-        .unwrap_or(false);
+        .unwrap_or(false)
+        || source_inventory.is_some();
 
     // Assemble declarations (sorted by name for stable output).
     let mut declarations: Vec<EnvDeclaration> = Vec::new();
@@ -365,6 +406,7 @@ pub fn compute_env_truth(config: &ComputeConfig, snapshot: Option<&Snapshot>) ->
         declarations,
         orphan_reads,
         template_drift,
+        source_reads: source_read_coverage,
         summary,
     }
 }
@@ -495,6 +537,8 @@ pub fn render_markdown(report: &EnvTruthReport, opts: &RenderOptions) -> String 
         }
     }
 
+    render_source_read_coverage(report, &mut md);
+
     if opts.all {
         render_declarations_full(report, opts, &mut md);
     } else {
@@ -537,6 +581,36 @@ pub fn render_markdown(report: &EnvTruthReport, opts: &RenderOptions) -> String 
     }
 
     md
+}
+
+/// State the read-scan surface explicitly.
+///
+/// "No reader found" is only actionable next to "here is where we looked".
+/// Without this line an operator reads an empty `Reads:` block as proof that a
+/// key is dead and deletes a live flag — the exact failure the 2026-08-16
+/// Codescribe hak recorded.
+fn render_source_read_coverage(report: &EnvTruthReport, md: &mut String) {
+    md.push_str("\n### Read-side coverage\n\n");
+    match &report.source_reads {
+        Some(coverage) => {
+            md.push_str(&format!(
+                "- Source files scanned: **{}** · read sites: **{}** · names with a reader: **{}**\n",
+                coverage.files_scanned, coverage.read_sites, coverage.names
+            ));
+            md.push_str(&format!(
+                "- Access classes recognised: `{}`\n",
+                coverage.classes.join("`, `")
+            ));
+            md.push_str(
+                "- Readers outside these classes (dynamic lookups, generated code) stay invisible — absence of a read is not proof of absence.\n",
+            );
+        }
+        None => {
+            md.push_str(
+                "- **Source read scan did not run** (no snapshot to enumerate source files). Every `Reads:` block below is declaration-side only — run `loct scan` before concluding a key is unread.\n",
+            );
+        }
+    }
 }
 
 /// Conflict kinds that earn a place in the default "Top problems" view.
@@ -629,7 +703,19 @@ fn render_declaration(decl: &EnvDeclaration, opts: &RenderOptions, md: &mut Stri
     if !decl.reads.is_empty() {
         md.push_str("\n**Reads:**\n");
         for r in &decl.reads {
-            md.push_str(&format!("- `{}`\n", r.file));
+            // Source-derived reads carry a line and the accessor that performed
+            // the read; semantic contracts only ever knew the file. Render what
+            // each site actually has instead of flattening to the weakest shape.
+            let location = match r.line {
+                Some(line) => format!("`{}:{}`", r.file, line),
+                None => format!("`{}`", r.file),
+            };
+            let accessor = r
+                .symbol
+                .as_ref()
+                .map(|symbol| format!(" — `{symbol}`"))
+                .unwrap_or_default();
+            md.push_str(&format!("- {location}{accessor}\n"));
         }
     }
     if !decl.precedence_warnings.is_empty() {
@@ -821,6 +907,217 @@ spec:
         assert_eq!(decl.sources.len(), 2);
         // Highest-precedence (SealedSecret) should be first.
         assert!(decl.sources[0].precedence_rank > decl.sources[1].precedence_rank);
+    }
+
+    /// Write a Rust source file into the temp repo and register it in the
+    /// snapshot, so `collect_source_env_reads` has something to open.
+    fn stage_rust_file(tmp: &TempDir, snapshot: &mut Snapshot, rel_path: &str, body: &str) {
+        let absolute = tmp.path().join(rel_path);
+        if let Some(parent) = absolute.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(&absolute, body).unwrap();
+        snapshot.files.push(crate::types::FileAnalysis {
+            path: rel_path.to_string(),
+            language: "rust".to_string(),
+            kind: "code".to_string(),
+            ..Default::default()
+        });
+    }
+
+    fn compute_for(tmp: &TempDir, snapshot: &Snapshot) -> EnvTruthReport {
+        let cfg = ComputeConfig {
+            roots: vec![tmp.path().to_path_buf()],
+            ..ComputeConfig::default()
+        };
+        compute_env_truth(&cfg, Some(snapshot))
+    }
+
+    /// Regression for the 2026-08-16 Codescribe hak, lie #1: the live STT
+    /// contract keys had no heading at all. `semantic_facts.env_contracts`
+    /// only ever carried shell / Python / Make readers, so a contract consumed
+    /// exclusively by Rust looked like a contract nobody consumes — and a
+    /// catalogue that omits a live key invites an agent to delete it.
+    #[test]
+    fn rust_only_readers_earn_their_own_declaration() {
+        let tmp = fresh_repo();
+        let mut snap = make_empty_snapshot();
+        stage_rust_file(
+            &tmp,
+            &mut snap,
+            "core/stt/router.rs",
+            "fn endpoint() -> Option<String> { std::env::var(\"STT_ENDPOINT\").ok() }\n",
+        );
+        stage_rust_file(
+            &tmp,
+            &mut snap,
+            "bridge/src/config.rs",
+            "let stt_engine = effective_env_string(\"CODESCRIBE_STT_ENGINE\", saved, &env_file);\n\
+             let final_pass = effective_env_string(\"FINAL_PASS_MODE\", saved, &env_file);\n",
+        );
+        stage_rust_file(
+            &tmp,
+            &mut snap,
+            "core/config/settings.rs",
+            "pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[\n\
+             \x20   \"CODESCRIBE_ASR_MODE\",\n\
+             \x20   \"CODESCRIBE_CLOUD_CONSENT\",\n\
+             ];\n",
+        );
+
+        let report = compute_for(&tmp, &snap);
+        let names: Vec<&str> = report
+            .declarations
+            .iter()
+            .map(|decl| decl.name.as_str())
+            .collect();
+        for expected in [
+            "STT_ENDPOINT",
+            "CODESCRIBE_STT_ENGINE",
+            "FINAL_PASS_MODE",
+            "CODESCRIBE_ASR_MODE",
+            "CODESCRIBE_CLOUD_CONSENT",
+        ] {
+            assert!(
+                names.contains(&expected),
+                "`{expected}` is read by Rust but missing from the catalogue: {names:?}"
+            );
+        }
+
+        // The accessor that performed the read travels with the site, so the
+        // operator can tell a direct `env::var` from a promoted-key registry.
+        let engine = report
+            .declarations
+            .iter()
+            .find(|decl| decl.name == "CODESCRIBE_STT_ENGINE")
+            .expect("engine declaration");
+        assert_eq!(
+            engine.reads[0].symbol.as_deref(),
+            Some("effective_env_string()")
+        );
+        assert_eq!(engine.reads[0].line, Some(1));
+    }
+
+    /// Lie #2: `CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS` was declared in a dotenv
+    /// and read by `std::env::var` in Rust, yet the report libelled it
+    /// `orphan-declaration: declared but never read`.
+    #[test]
+    fn rust_read_suppresses_orphan_declaration() {
+        let tmp = fresh_repo();
+        fs::write(
+            tmp.path().join(".env"),
+            "CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS=300\n",
+        )
+        .unwrap();
+        let mut snap = make_empty_snapshot();
+        stage_rust_file(
+            &tmp,
+            &mut snap,
+            "core/stt/whisper/singleton.rs",
+            "let secs = std::env::var(\"CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS\").ok();\n",
+        );
+
+        let report = compute_for(&tmp, &snap);
+        let decl = report
+            .declarations
+            .iter()
+            .find(|decl| decl.name == "CODESCRIBE_WHISPER_IDLE_UNLOAD_SECS")
+            .expect("declaration present");
+        assert!(
+            !decl.reads.is_empty(),
+            "the Rust reader must land on the declaration"
+        );
+        assert!(
+            !decl
+                .precedence_warnings
+                .iter()
+                .any(|w| matches!(w, EnvWarning::OrphanDeclaration { .. })),
+            "orphan-declaration fired despite a live Rust reader: {:?}",
+            decl.precedence_warnings
+        );
+    }
+
+    /// Lie #3: `CODESCRIBE_LAYERED_TRANSCRIPTION` was reported as read only by
+    /// a shell e2e script, hiding the promoted-settings reader that makes it a
+    /// product-facing toggle. Both readers must appear side by side.
+    #[test]
+    fn promoted_key_reader_joins_the_script_reader() {
+        let tmp = fresh_repo();
+        let mut snap = make_empty_snapshot();
+        snap.semantic_facts = Some(SemanticFacts {
+            env_contracts: vec![crate::semantic::EnvContract {
+                name: "CODESCRIBE_LAYERED_TRANSCRIPTION".into(),
+                used_in_files: vec!["scripts/e2e-blackhole-dictation.sh".into()],
+                required_for: vec!["layered transcription gate".into()],
+                occurrences: vec![],
+            }],
+            ..SemanticFacts::default()
+        });
+        stage_rust_file(
+            &tmp,
+            &mut snap,
+            "core/config/settings.rs",
+            "pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[\n\
+             \x20   \"CODESCRIBE_LAYERED_TRANSCRIPTION\",\n\
+             ];\n",
+        );
+
+        let report = compute_for(&tmp, &snap);
+        let decl = report
+            .declarations
+            .iter()
+            .find(|decl| decl.name == "CODESCRIBE_LAYERED_TRANSCRIPTION")
+            .expect("declaration present");
+        let files: Vec<&str> = decl.reads.iter().map(|r| r.file.as_str()).collect();
+        assert!(
+            files.contains(&"scripts/e2e-blackhole-dictation.sh"),
+            "script reader lost: {files:?}"
+        );
+        assert!(
+            files.contains(&"core/config/settings.rs"),
+            "promoted-key reader missing — the key still reads as script-only: {files:?}"
+        );
+    }
+
+    /// Absence of a read is only meaningful against a stated scan surface.
+    #[test]
+    fn read_scan_coverage_is_stated_or_declared_absent() {
+        let tmp = fresh_repo();
+        let mut snap = make_empty_snapshot();
+        stage_rust_file(
+            &tmp,
+            &mut snap,
+            "src/main.rs",
+            "let _ = std::env::var(\"APP_MODE\");\n",
+        );
+
+        let report = compute_for(&tmp, &snap);
+        let coverage = report
+            .source_reads
+            .as_ref()
+            .expect("coverage stated when the scan ran");
+        assert_eq!(coverage.files_scanned, 1);
+        assert_eq!(coverage.read_sites, 1);
+        assert_eq!(coverage.names, 1);
+        assert!(coverage.classes.contains(&"rust_std_env".to_string()));
+        assert!(
+            coverage
+                .classes
+                .contains(&"rust_key_registry_const".to_string())
+        );
+        let md = render_markdown(&report, &RenderOptions::default());
+        assert!(md.contains("Read-side coverage"));
+
+        // No snapshot: the scan could not run, and the report must say so
+        // rather than presenting an empty read side as a finding.
+        let cfg = ComputeConfig {
+            roots: vec![tmp.path().to_path_buf()],
+            ..ComputeConfig::default()
+        };
+        let blind = compute_env_truth(&cfg, None);
+        assert!(blind.source_reads.is_none());
+        let blind_md = render_markdown(&blind, &RenderOptions::default());
+        assert!(blind_md.contains("Source read scan did not run"));
     }
 
     fn make_empty_snapshot() -> Snapshot {

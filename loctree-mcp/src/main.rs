@@ -17,7 +17,7 @@
 //! loctree-mcp
 //! ```
 //!
-//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents ⓒ 2025-2026 Loctree Team
+//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI
 
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::fs;
@@ -42,7 +42,8 @@ mod http;
 mod security;
 mod signals;
 
-use args::{Args, TransportKind};
+use args::{Args, Command, TransportKind};
+use http::auth::AuthSettings;
 use signals::{ignore_sigpipe, install_panic_hook, safe_stderr_log};
 
 use loctree::analyzer::classify::{detect_language, detect_language_from_filename};
@@ -4113,6 +4114,11 @@ async fn run_server() -> Result<()> {
         )
         .init();
 
+    // Maintenance subcommands run instead of serving.
+    if let Some(Command::Token { action }) = &args.command {
+        return auth::cli::run(action, args.token_store.as_deref()).await;
+    }
+
     info!(
         "Starting loctree-mcp v{} (git {}) (universal, snapshot cache capacity {})",
         BUILD_VERSION, GIT_DESCRIBE, args.snapshot_cache_capacity
@@ -4121,15 +4127,20 @@ async fn run_server() -> Result<()> {
         info!("Default project root pinned to {}", default_project());
     }
 
+    let auth_settings = AuthSettings::from_args(&args);
+
     match args.transport {
         TransportKind::Stdio if args.exit_on_stdin_eof => Err(anyhow::anyhow!(
             "--exit-on-stdin-eof is only valid with --transport http"
         )),
         TransportKind::Stdio => serve_stdio(args.snapshot_cache_capacity).await,
         TransportKind::Http if args.exit_on_stdin_eof => {
-            serve_http_until_stdin_eof(&args.bind, args.snapshot_cache_capacity).await
+            serve_http_until_stdin_eof(&args.bind, args.snapshot_cache_capacity, &auth_settings)
+                .await
         }
-        TransportKind::Http => http::serve_http(&args.bind, args.snapshot_cache_capacity).await,
+        TransportKind::Http => {
+            http::serve_http(&args.bind, args.snapshot_cache_capacity, &auth_settings).await
+        }
     }
 }
 
@@ -4137,7 +4148,11 @@ async fn run_server() -> Result<()> {
 /// its private stdin pipe. EOF is a kernel-owned parent-death signal: it still
 /// arrives when the watcher is killed before any Rust `Drop` implementation
 /// can run.
-async fn serve_http_until_stdin_eof(bind: &str, snapshot_cache_capacity: usize) -> Result<()> {
+async fn serve_http_until_stdin_eof(
+    bind: &str,
+    snapshot_cache_capacity: usize,
+    auth_settings: &AuthSettings,
+) -> Result<()> {
     use tokio::io::AsyncReadExt;
 
     let stdin_eof = async {
@@ -4153,7 +4168,7 @@ async fn serve_http_until_stdin_eof(bind: &str, snapshot_cache_capacity: usize) 
     };
 
     tokio::select! {
-        result = http::serve_http(bind, snapshot_cache_capacity) => result,
+        result = http::serve_http(bind, snapshot_cache_capacity, auth_settings) => result,
         result = stdin_eof => {
             result.map_err(anyhow::Error::from)?;
             info!("supervisor stdin closed; stopping HTTP companion");

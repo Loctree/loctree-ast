@@ -3,7 +3,7 @@
 //! This module handles detection of function calls, event handlers, bindings,
 //! and component usage within Svelte and Vue template syntax.
 //!
-//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents ⓒ 2025-2026 Loctree Team
+//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI
 
 use regex::Regex;
 

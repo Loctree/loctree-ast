@@ -261,6 +261,10 @@ fn materialize_context_atlas_at(
     let snapshot = snapshot_label(pack);
     let generated_at = current_iso_timestamp();
 
+    // Cards 00 and 03 read the same intent layer — card 00 for the identity
+    // revisions, card 03 for the theses — so it is resolved once here.
+    let intent_source = resolve_intent_card_source(pack, project_root);
+
     let specs = vec![
         CardSpec {
             id: "core",
@@ -268,7 +272,7 @@ fn materialize_context_atlas_at(
             filename: "00-core-map.md",
             why: "Repo identity, current risk, authority labels, safe next commands.",
             saves: "wrong project state, stale assumptions, unsafe first actions",
-            body: render_card_body(pack, "core", "00-core-map.md", "Core Map"),
+            body: render_core_card(pack, &intent_source),
         },
         CardSpec {
             id: "structural",
@@ -292,7 +296,7 @@ fn materialize_context_atlas_at(
             filename: "03-intent-map.md",
             why: "Formative decisions, intents, anti-recommendations, and superseded history pinned to structure (aicx overlay).",
             saves: "repeated work, re-decided decisions, revived refuted approaches",
-            body: render_intent_card(pack, &resolve_intent_card_source(pack, project_root)),
+            body: render_intent_card(pack, &intent_source),
         },
         CardSpec {
             id: "verification",
@@ -811,11 +815,11 @@ fn card_line_label(card: &ContextAtlasCard) -> String {
 /// Dispatch a card kind to its dense-markdown renderer. Unknown kinds fall
 /// back to the generic JSON card so a future card never ships silently empty
 /// (kanon v4: `render_json_card` stays as fallback, zero calls for 00-05).
-/// Card 03 (intent) is rendered directly by `materialize_context_atlas` —
-/// its data source is the I1-01 overlay cache, not the pack alone.
+/// Cards 00 (core) and 03 (intent) are rendered directly by
+/// `materialize_context_atlas` — both read the I1-01 overlay layer, not the
+/// pack alone.
 fn render_card_body(pack: &ContextPack, kind: &str, filename: &str, title: &str) -> CardBody {
     match kind {
-        "core" => render_core_card(pack),
         "structural" => render_structural_card(pack),
         "runtime" => render_runtime_card(pack),
         "verification" => render_verification_card(pack),
@@ -958,7 +962,7 @@ fn finish_card(
     }
 }
 
-fn render_core_card(pack: &ContextPack) -> CardBody {
+fn render_core_card(pack: &ContextPack, source: &IntentCardSource) -> CardBody {
     // Core is a projection card (identity + risk summary) — its facts are
     // owned by the structural/runtime/risk domains, so its receipt is empty.
     let mut md = card_frame_header(
@@ -991,15 +995,48 @@ fn render_core_card(pack: &ContextPack) -> CardBody {
             .as_deref()
             .unwrap_or("unavailable — pack composed without a snapshot id")
     ));
-    md.push_str(
-        "store_revision: unavailable — ContextPack v1 does not carry an AICX store revision\n",
-    );
-    md.push_str(
-        "overlay_revision: unavailable — loctree.overlay.intent.v1 is not wired into the pack (M1-01)\n",
-    );
-    md.push_str(
-        "anchor_catalog_revision: unavailable — anchor catalog is emitted by `loct anchors`; the pack does not carry it\n",
-    );
+    // Intent-layer revisions. The pack's own overlay state is the richest
+    // source — it is judged against full local truth and carries the anchor
+    // catalog revision too. Compositions that carry no overlay state (LSP,
+    // --with-aicx) still have the cached producer document behind card 03,
+    // which knows the store and overlay revisions. Only when both are absent
+    // is the layer genuinely cold, and the card says so in those words.
+    let state = pack
+        .memory
+        .overlay
+        .as_ref()
+        .filter(|state| !state.store_revision.is_empty());
+    let cold = "unavailable — no overlay document (cold store); refresh with `aicx overlay`";
+    md.push_str(&format!(
+        "store_revision: {}\n",
+        state
+            .map(|state| short_revision(&state.store_revision))
+            .or_else(|| source
+                .doc
+                .as_ref()
+                .map(|doc| short_revision(&doc.store_revision)))
+            .unwrap_or_else(|| cold.to_string())
+    ));
+    md.push_str(&format!(
+        "overlay_revision: {}\n",
+        state
+            .map(|state| short_revision(&state.overlay_revision))
+            .or_else(|| source
+                .doc
+                .as_ref()
+                .map(|doc| short_revision(&doc.overlay_revision)))
+            .unwrap_or_else(|| cold.to_string())
+    ));
+    md.push_str(&format!(
+        "anchor_catalog_revision: {}\n",
+        state
+            .map(|state| short_revision(&state.anchor_catalog_revision))
+            .or_else(|| source
+                .doc
+                .as_ref()
+                .map(|doc| short_revision(&doc.anchor_catalog_revision)))
+            .unwrap_or_else(|| cold.to_string())
+    ));
 
     md.push_str("\n## Freshness\n\n");
     md.push_str(&format!("{}\n", atlas_freshness_line(pack)));
@@ -1487,6 +1524,7 @@ fn is_runtime_owner_hint(kind: &str) -> bool {
 /// from the cache (never a producer spawn — the detached refresh owned by the
 /// CLI handler is the only road to the producer) plus an explicit staleness
 /// marker when the layer is degraded.
+#[derive(Default)]
 struct IntentCardSource {
     doc: Option<OverlayDoc>,
     /// Raw producer emission as parsed JSON — carried into the canonical
@@ -3262,11 +3300,81 @@ mod tests {
             snapshot_id: None,
         });
         pack.risk.stale_snapshot = true;
-        let body = render_core_card(&pack);
+        let body = render_core_card(&pack, &IntentCardSource::default());
         assert!(
             body.markdown
                 .contains("Freshness: STALE - card snapshot main@abc1234"),
             "stale dense cards must carry a loud header flag: {}",
+            body.markdown
+        );
+    }
+
+    /// M1-01 regression: the Identity section once hardcoded three
+    /// `unavailable — …` excuse rows claiming the pack carries no intent-layer
+    /// revisions. It does — `pack.memory.overlay` has carried all three since
+    /// the overlay seam landed — so the card must read them, not apologize.
+    #[test]
+    fn core_card_reads_intent_layer_revisions_from_the_pack() {
+        let mut pack = ContextPack::empty(ProjectIdentity {
+            canonical_root: Some("/tmp/proj".to_string()),
+            branch: Some("main".to_string()),
+            commit: Some("abc1234".to_string()),
+            snapshot_id: None,
+        });
+        pack.memory.overlay = Some(crate::aicx::overlay::OverlayRenderState {
+            schema_version: "loctree.overlay.intent.v1".to_string(),
+            repo_id: "proj".to_string(),
+            store_revision: "sr1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
+            overlay_revision: "ov1:cccccccccccccccccccccccccccccccc".to_string(),
+            snapshot_commit: "abc1234".to_string(),
+            anchor_catalog_revision: "acr1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+            producer_version: "aicx 0.12.2-test".to_string(),
+            freshness: crate::aicx::overlay::OverlayFreshness::Fresh,
+            key_transition: None,
+            theses: Vec::new(),
+            scope_paths: Vec::new(),
+            refresh_command: "aicx overlay".to_string(),
+            refresh_recommended: false,
+        });
+
+        let body = render_core_card(&pack, &IntentCardSource::default());
+        for expected in [
+            "store_revision: sr1:bbbbbbbbbbbb",
+            "overlay_revision: ov1:cccccccccccc",
+            "anchor_catalog_revision: acr1:aaaaaaaaaaaa",
+        ] {
+            assert!(
+                body.markdown.contains(expected),
+                "core card must carry `{expected}`: {}",
+                body.markdown
+            );
+        }
+        assert!(
+            !body
+                .markdown
+                .contains("does not carry an AICX store revision"),
+            "the retired excuse row must not come back: {}",
+            body.markdown
+        );
+    }
+
+    /// The honest half of the same contract: with no overlay state and no
+    /// cached producer document the layer really is cold, and the card names
+    /// the refresh instead of a stale-sounding excuse.
+    #[test]
+    fn core_card_names_the_refresh_when_the_intent_layer_is_cold() {
+        let pack = ContextPack::empty(ProjectIdentity {
+            canonical_root: Some("/tmp/proj".to_string()),
+            branch: Some("main".to_string()),
+            commit: Some("abc1234".to_string()),
+            snapshot_id: None,
+        });
+        let body = render_core_card(&pack, &IntentCardSource::default());
+        assert!(
+            body.markdown.contains(
+                "store_revision: unavailable — no overlay document (cold store); refresh with `aicx overlay`"
+            ),
+            "cold layer must point at the refresh: {}",
             body.markdown
         );
     }

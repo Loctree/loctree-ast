@@ -2,7 +2,7 @@
 //!
 //! Each constant provides detailed usage documentation for a specific command.
 //!
-//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents ⓒ 2025-2026 Loctree Team
+//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI
 
 pub(super) const AUTO_HELP: &str =
     "loct auto - Full auto-scan with stack detection (default command)
@@ -804,9 +804,10 @@ DESCRIPTION:
     top-line status in CI or scripts.
 
 OPTIONS:
-    --summary         Emit only the compact summary payload
-    --json            Output as JSON (default for this command)
-    --help, -h        Show this help message
+    --summary                Emit only the compact summary payload
+    --root, --project <PATH> Project root (alias pair; default: current directory)
+    --json                   Output as JSON (default for this command)
+    --help, -h               Show this help message
 
 ARGUMENTS:
     [PATHS...]        Root directories to scan (default: current directory)
@@ -814,6 +815,7 @@ ARGUMENTS:
 EXAMPLES:
     loct findings
     loct findings --summary
+    loct findings --project /path/to/repo --summary
     loct findings src/ > findings.json
     loct findings --summary | jq '.health_score'";
 

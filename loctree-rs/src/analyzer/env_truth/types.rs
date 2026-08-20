@@ -3,7 +3,7 @@
 //! Cut 8 (P0). See `docs/env-truth-precedence.md` for the precedence-rank
 //! model and why we never decode sealed/SOPS payloads.
 //!
-//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents ⓒ 2025-2026 Loctree Team
+//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI
 
 use std::path::PathBuf;
 
@@ -26,7 +26,13 @@ use crate::pack::AuthorityLabel;
 ///
 /// `"1.1"` (W2-c): additive `template_drift` top-level field; template
 /// files (`.env.example` & friends) no longer appear in `sources`.
-pub const ENV_TRUTH_SCHEMA_VERSION: &str = "1.1";
+///
+/// `"1.2"`: additive `source_reads` top-level field. The read side is no
+/// longer sourced from `semantic_facts.env_contracts` alone — named reads
+/// discovered directly in Rust / Swift / JS sources are merged in, and
+/// `source_reads` states what was actually scanned so an empty read list can
+/// be told apart from a scan that never ran.
+pub const ENV_TRUTH_SCHEMA_VERSION: &str = "1.2";
 
 /// Top-level `env-truth` report.
 ///
@@ -48,8 +54,32 @@ pub struct EnvTruthReport {
     /// compared key-by-key instead. Additive in schema `"1.1"`.
     #[serde(default)]
     pub template_drift: Vec<TemplateDrift>,
+    /// What the source-side read scan actually covered. `None` means the scan
+    /// never ran (no snapshot to enumerate source files), so an empty `reads`
+    /// list on a declaration proves nothing. Additive in schema `"1.2"`.
+    #[serde(default)]
+    pub source_reads: Option<SourceReadCoverage>,
     /// Roll-up counts and the precedence-rank table that was applied.
     pub summary: EnvTruthSummary,
+}
+
+/// Coverage statement for the source-side read scan.
+///
+/// Absence of a read is only meaningful against a stated scan surface — this
+/// struct is what lets a consumer say "no reader found *in these classes*"
+/// instead of the unfalsifiable "no reader exists".
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceReadCoverage {
+    /// Access classes the scanner knows how to recognise (e.g.
+    /// `rust_std_env`, `rust_env_accessor_wrapper`, `rust_key_registry_const`,
+    /// `swift_process_environment`, `javascript_process_env`).
+    pub classes: Vec<String>,
+    /// Source files opened and scanned during this run.
+    pub files_scanned: usize,
+    /// Individual read sites discovered (one per name per line).
+    pub read_sites: usize,
+    /// Distinct env names carrying at least one discovered read site.
+    pub names: usize,
 }
 
 /// Key-level drift between one template file and the live declaration set.
@@ -383,10 +413,20 @@ mod tests {
                 missing_in_live: vec!["TEMPLATE_ONLY".into()],
                 extra_in_live: vec![],
             }],
+            source_reads: Some(SourceReadCoverage {
+                classes: vec!["rust_std_env".into()],
+                files_scanned: 12,
+                read_sites: 3,
+                names: 2,
+            }),
             summary: EnvTruthSummary::default(),
         };
         let json = serde_json::to_string(&report).expect("serialize");
-        let _back: EnvTruthReport = serde_json::from_str(&json).expect("deserialize");
+        let back: EnvTruthReport = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(
+            back.source_reads.as_ref().map(|c| c.files_scanned),
+            Some(12)
+        );
         // Schema 1.0 payloads (no template_drift key) still deserialize.
         let legacy = json.replace(
             "\"template_drift\":[{\"template_path\":\".env.example\",\"missing_in_live\":[\"TEMPLATE_ONLY\"],\"extra_in_live\":[]}],",
@@ -394,5 +434,13 @@ mod tests {
         );
         let back: EnvTruthReport = serde_json::from_str(&legacy).expect("legacy deserialize");
         assert!(back.template_drift.is_empty());
+        // Schema 1.1 payloads (no source_reads key) still deserialize, and the
+        // missing key reads as "scan did not run", not "scan found nothing".
+        let legacy_11 = json.replace(
+            "\"source_reads\":{\"classes\":[\"rust_std_env\"],\"files_scanned\":12,\"read_sites\":3,\"names\":2},",
+            "",
+        );
+        let back: EnvTruthReport = serde_json::from_str(&legacy_11).expect("1.1 deserialize");
+        assert!(back.source_reads.is_none());
     }
 }

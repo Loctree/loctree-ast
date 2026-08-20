@@ -594,6 +594,8 @@ DESCRIPTION:
 
 OPTIONS:
     --root <PATH>        Project root to scan (default: current directory)
+    --regex              Evaluate <IDENT> as a regular expression over raw file text
+                         (same engine, coverage line and paging as 'find --regex')
     --whole-token        Treat '-' as token-internal: 'backdrop' no longer matches inside
                          'overlay-backdrop'/'--sample-z-overlay-backdrop' (opt-in, no default change)
     --group-by-file      Add a per-file occurrence rollup ('by_file')
@@ -610,7 +612,8 @@ EXAMPLES:
     loct occurrences backdrop --whole-token            # Exclude hyphenated z-index noise
     loct occurrences utterance_id --compact            # Terse path:line context for agents
     loct occurrences agent --limit 50 --offset 100 --json  # Page through large result sets
-    loct occurrences backdrop --group-by-file --count-only --json  # Per-file counts, no list"
+    loct occurrences backdrop --group-by-file --count-only --json  # Per-file counts, no list
+    loct occurrences 'twin\\w+' --regex                    # Pattern mode, in parity with find --regex"
                 .to_string(),
         );
     }
@@ -633,6 +636,10 @@ EXAMPLES:
                     .ok_or_else(|| format!("{flag} requires a path"))?;
                 opts.roots.push(PathBuf::from(value));
                 i += 2;
+            }
+            "--regex" => {
+                opts.regex = true;
+                i += 1;
             }
             "--whole-token" => {
                 opts.whole_token = true;
@@ -1210,6 +1217,59 @@ mod tests {
                 panic!("Expected Occurrences command for {flag}");
             }
         }
+    }
+
+    // `occurrences` is the surface agents cross-check `find` against. A flag
+    // that parses on one and errors on the other reads as "the tools
+    // disagree", so `--regex` must land on both with the same meaning.
+    #[test]
+    fn test_occurrences_regex_flag_parity_with_find() {
+        let args = vec!["twin\\w+".into(), "--regex".into()];
+        let occurrences = parse_occurrences_command(&args)
+            .unwrap_or_else(|e| panic!("occurrences rejected --regex: {e}"));
+        let Command::Occurrences(occ) = occurrences else {
+            panic!("Expected Occurrences command");
+        };
+        assert!(occ.regex, "--regex must select pattern mode");
+        assert_eq!(
+            occ.ident, "twin\\w+",
+            "the pattern is not consumed as a flag"
+        );
+
+        let find =
+            parse_find_command(&args).unwrap_or_else(|e| panic!("find rejected --regex: {e}"));
+        let Command::Find(find) = find else {
+            panic!("Expected Find command");
+        };
+        assert!(find.regex, "precondition: find already carries --regex");
+        assert_eq!(
+            find.queries.first().map(String::as_str),
+            Some(occ.ident.as_str()),
+            "both surfaces must keep the same pattern text"
+        );
+    }
+
+    // Flag order must not matter, and `--regex` must compose with paging the
+    // same way it does on `find`.
+    #[test]
+    fn test_occurrences_regex_parity_composes_with_paging() {
+        let args = vec![
+            "--regex".into(),
+            "twin\\w+".into(),
+            "--limit".into(),
+            "10".into(),
+            "--offset".into(),
+            "20".into(),
+        ];
+        let Command::Occurrences(opts) = parse_occurrences_command(&args)
+            .unwrap_or_else(|e| panic!("occurrences rejected leading --regex: {e}"))
+        else {
+            panic!("Expected Occurrences command");
+        };
+        assert!(opts.regex);
+        assert_eq!(opts.ident, "twin\\w+");
+        assert_eq!(opts.limit, Some(10));
+        assert_eq!(opts.offset, 20);
     }
 
     // A path-less `--project` must fail loudly rather than swallow the next

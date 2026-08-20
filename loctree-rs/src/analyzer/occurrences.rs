@@ -3923,6 +3923,63 @@ mod tests {
     }
 
     #[test]
+    fn hit_shape_withholds_the_dataflow_story_for_a_module_declaration() {
+        // `loct find health_score` narrated "1 definition, 1 write site, 60
+        // read site(s) — state flag / single-writer pattern" when the sole
+        // definition was `pub mod health_score;`. Role *counts* cannot tell a
+        // module from a variable; the introducer can, and the narrative must
+        // not outrun it.
+        //
+        // The fixture deliberately does NOT spell `health_score`: the
+        // grep-impossible eval runs `loct find health_score` against this very
+        // repository, so a test using that name would add a definition to the
+        // live hit set and quietly disarm the question this test protects.
+        let src = "\
+pub mod shape_probe_score;\n\
+shape_probe_score = 5;\n\
+read_one(shape_probe_score);\n\
+read_two(shape_probe_score);\n";
+        let res = scan_files([("src/analyzer/mod.rs", src)], "shape_probe_score");
+
+        let shape = res.hit_shape.as_ref().expect("hit_shape present");
+        assert_eq!(
+            (shape.definitions, shape.writers, shape.readers),
+            (1, 1, 2),
+            "precondition: the counts alone still look like a single-writer flag"
+        );
+        assert_ne!(
+            shape.label, "single_writer",
+            "a module declaration is not a state flag: {shape:?}"
+        );
+        let note = shape.note.clone().unwrap_or_default();
+        assert!(
+            !note.contains("state flag"),
+            "state-flag wording survived: {note}"
+        );
+        assert!(
+            note.contains("`mod`"),
+            "the withheld shape must name what the definition actually is: {note}"
+        );
+    }
+
+    #[test]
+    fn hit_shape_still_narrates_a_real_value_declaration() {
+        // The gate is about *what* the definition is, not about muting the
+        // shape layer: a genuine value declaration keeps its story.
+        let src = "\
+const shape_probe_score: u8 = 1;\n\
+shape_probe_score = 5;\n\
+read_one(shape_probe_score);\n";
+        let res = scan_files([("src/state.rs", src)], "shape_probe_score");
+
+        let shape = res.hit_shape.as_ref().expect("hit_shape present");
+        assert_eq!(
+            shape.label, "single_writer",
+            "const + write + read is exactly the shape this label exists for: {shape:?}"
+        );
+    }
+
+    #[test]
     fn swift_var_is_definition_and_assignment_is_mutation() {
         // Operator proof case (trustAgentConnection): Swift `var` declaration
         // and a later assignment must not all collapse to `reference` with

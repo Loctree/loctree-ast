@@ -6,7 +6,9 @@
 //!
 //! Each path-typed line carries a Copy button (reusing the existing
 //! `data-copy` handler in `document.rs::APP_SCRIPT`) so an agent or operator
-//! can paste the path straight into a terminal or editor.
+//! can paste the path straight into a terminal or editor. Cards whose body
+//! was embedded at generation time additionally open in-page via
+//! `<details>` — clicking a reading-path entry shows the card itself.
 
 use crate::components::icons::{ICON_CLIPBOARD_LIST, Icon};
 use crate::types::ContextAtlasInfo;
@@ -72,13 +74,43 @@ pub fn ContextAtlasPanel(atlas: ContextAtlasInfo) -> impl IntoView {
                     <h4>"Recommended reading path"</h4>
                     <ol class="context-atlas-card-list">
                         {atlas.cards.into_iter().map(|card| {
-                            view! {
-                                <li class="context-atlas-card">
-                                    <span class="context-atlas-card-title">{card.title}</span>
-                                    <code class="context-atlas-card-path">{card.path}</code>
-                                    <span class="context-atlas-card-lines">{format!("{} lines", card.lines)}</span>
-                                    <p class="context-atlas-card-why">{card.why}</p>
-                                </li>
+                            let path_for_copy = card.path.clone();
+                            match card.body {
+                                Some(body) => view! {
+                                    <li class="context-atlas-card">
+                                        <details class="context-atlas-card-details">
+                                            <summary class="context-atlas-card-summary">
+                                                <span class="context-atlas-card-title">{card.title}</span>
+                                                <code class="context-atlas-card-path">{card.path}</code>
+                                                <span class="context-atlas-card-lines">{format!("{} lines", card.lines)}</span>
+                                            </summary>
+                                            <p class="context-atlas-card-why">{card.why}</p>
+                                            <button
+                                                class="copy-btn"
+                                                data-copy=path_for_copy
+                                                title="Copy card path"
+                                            >
+                                                "Copy path"
+                                            </button>
+                                            <pre class="atlas-card-body"><code>{body}</code></pre>
+                                        </details>
+                                    </li>
+                                }.into_any(),
+                                None => view! {
+                                    <li class="context-atlas-card">
+                                        <span class="context-atlas-card-title">{card.title}</span>
+                                        <code class="context-atlas-card-path">{card.path}</code>
+                                        <span class="context-atlas-card-lines">{format!("{} lines", card.lines)}</span>
+                                        <p class="context-atlas-card-why">{card.why}</p>
+                                        <button
+                                            class="copy-btn"
+                                            data-copy=path_for_copy
+                                            title="Copy card path"
+                                        >
+                                            "Copy path"
+                                        </button>
+                                    </li>
+                                }.into_any(),
                             }
                         }).collect::<Vec<_>>()}
                     </ol>

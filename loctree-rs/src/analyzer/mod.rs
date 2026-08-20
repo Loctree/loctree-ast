@@ -45,6 +45,7 @@ pub mod for_ai;
 pub mod frameworks;
 pub mod go;
 mod graph;
+pub mod health_inputs;
 pub mod health_score;
 pub mod html;
 pub(crate) mod html_analyzer;

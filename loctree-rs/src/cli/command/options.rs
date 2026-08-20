@@ -1,6 +1,6 @@
 //! Per-command option structs for all CLI commands.
 //!
-//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents ⓒ 2025-2026 Loctree Team
+//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI
 
 use std::path::PathBuf;
 
@@ -301,6 +301,13 @@ pub struct OccurrencesOptions {
 
     /// Emit terse human output: `path:line context` per occurrence.
     pub compact: bool,
+
+    /// Evaluate `ident` as a regular expression over raw file text instead of
+    /// as an exact identifier. Flag parity with `find --regex`: same engine,
+    /// same coverage line, same paging — `occurrences` is the surface agents
+    /// cross-check `find` against, so a flag that works on one and errors on
+    /// the other reads as "no matches" rather than "wrong command".
+    pub regex: bool,
 
     /// Zero-based occurrence offset for paged output.
     pub offset: usize,
@@ -851,6 +858,10 @@ pub struct JqQueryOptions {
     pub json_args: Vec<(String, String)>,
     /// Explicit snapshot path
     pub snapshot_path: Option<PathBuf>,
+    /// Sibling artifact to query instead of `snapshot.json` (`--artifact findings`).
+    ///
+    /// `None` keeps the historical surface: the filter runs against the snapshot.
+    pub artifact: Option<String>,
 }
 
 /// Options for the `impact` command.

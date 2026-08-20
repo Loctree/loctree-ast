@@ -146,6 +146,73 @@ pub(super) fn suggested_next(query: &str, occurrences: &[LiteralOccurrence]) -> 
     out
 }
 
+/// Symbol kinds whose value can actually be assigned. Only these justify the
+/// dataflow narrative (`single_writer` / `read_only`) — a module, a type or a
+/// function has no "write site" to be the single writer of.
+fn kind_is_value_like(kind: &str) -> bool {
+    matches!(
+        kind.trim().to_ascii_lowercase().as_str(),
+        "variable"
+            | "var"
+            | "let"
+            | "const"
+            | "constant"
+            | "static"
+            | "field"
+            | "property"
+            | "member"
+            | "binding"
+    )
+}
+
+/// The declaration keyword immediately preceding the matched identifier, if any.
+fn definition_introducer(occ: &LiteralOccurrence) -> Option<String> {
+    let chars: Vec<char> = occ.context.chars().collect();
+    let start = occ.column.saturating_sub(1).min(chars.len());
+    let prefix: String = chars[..start].iter().collect();
+    prefix
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .rfind(|token| !token.is_empty())
+        .map(|token| token.to_string())
+}
+
+/// Does this definition site describe a *value* (variable / field / constant)?
+///
+/// Symbol-table truth wins when present; otherwise the lexical introducer
+/// decides. An introducer we cannot name is treated as NOT value-like on
+/// purpose: withholding a dataflow story costs an agent one extra command,
+/// while confabulating one costs it the wrong edit.
+fn definition_is_value_like(occ: &LiteralOccurrence) -> bool {
+    if let Some(kind) = occ
+        .resolved_definition
+        .as_ref()
+        .or_else(|| {
+            occ.definition_candidates
+                .iter()
+                .find(|def| def.file == occ.file && def.line == Some(occ.line))
+        })
+        .map(|def| def.kind.as_str())
+    {
+        return kind_is_value_like(kind);
+    }
+    // No symbol-table entry: fall back to the same lexical introducer that
+    // promoted this hit to `Definition` in the first place. `pub mod
+    // health_score;` reaches Definition through `derive_match_role`'s
+    // introducer table (`mod`), never through the symbol table — reading that
+    // introducer back is the only thing that can tell the shape layer this is
+    // a module and not a state flag.
+    definition_introducer(occ).is_some_and(|intro| kind_is_value_like(&intro))
+}
+
+/// The single definition in a hit set, when there is exactly one.
+fn sole_definition(occurrences: &[LiteralOccurrence]) -> Option<&LiteralOccurrence> {
+    let mut defs = occurrences
+        .iter()
+        .filter(|o| o.match_role == MatchRole::Definition);
+    let first = defs.next()?;
+    defs.next().is_none().then_some(first)
+}
+
 /// Synthesize a distribution shape from role counts.
 ///
 /// Returns `None` for an empty set. Labels stay conservative: mixed or sparse
@@ -153,6 +220,13 @@ pub(super) fn suggested_next(query: &str, occurrences: &[LiteralOccurrence]) -> 
 /// confident wrong story. Authority is `loctree_derived` only when at least one
 /// high-confidence definition is present (symbol-table proven); otherwise
 /// `semantic_guess`.
+///
+/// The dataflow labels (`single_writer`, `read_only`) additionally require the
+/// sole definition to be a *value* declaration. `loct find health_score` used
+/// to narrate "1 definition, 1 write site, 60 read sites — state flag /
+/// single-writer pattern" when that definition was `pub mod health_score;`:
+/// role counts alone cannot tell a module from a variable, so counting was
+/// never enough authority for the story.
 pub(super) fn hit_shape(occurrences: &[LiteralOccurrence]) -> Option<HitShape> {
     if occurrences.is_empty() {
         return None;
@@ -187,19 +261,26 @@ pub(super) fn hit_shape(occurrences: &[LiteralOccurrence]) -> Option<HitShape> {
         "semantic_guess"
     };
 
+    // Dataflow narration is gated on the definition being a value: a module
+    // or type declaration has nothing to write to.
+    let value_definition = sole_definition(occurrences).is_some_and(definition_is_value_like);
+    let withheld_intro = (!value_definition && definitions == 1)
+        .then(|| sole_definition(occurrences).and_then(definition_introducer))
+        .flatten();
+
     let (label, note) = if non_test == 0 {
         (
             "test_only",
             Some("every hit sits in a test-scoped file".to_string()),
         )
-    } else if definitions == 1 && writers == 1 && readers >= 1 {
+    } else if definitions == 1 && writers == 1 && readers >= 1 && value_definition {
         (
             "single_writer",
             Some(format!(
                 "1 definition, 1 write site, {readers} read site(s) — state flag / single-writer pattern"
             )),
         )
-    } else if definitions == 1 && writers == 0 && readers >= 1 {
+    } else if definitions == 1 && writers == 0 && readers >= 1 && value_definition {
         (
             "read_only",
             Some(format!(
@@ -219,12 +300,15 @@ pub(super) fn hit_shape(occurrences: &[LiteralOccurrence]) -> Option<HitShape> {
             Some("no definition role in this hit set — pair with where-symbol or body".to_string()),
         )
     } else if definitions > 0 || writers > 0 || readers > 0 {
-        (
-            "mixed",
-            Some(format!(
+        let note = match withheld_intro.as_deref() {
+            Some(intro) => format!(
+                "{definitions} def / {writers} write / {readers} read — the definition is a `{intro}` declaration, not a value; dataflow shape withheld"
+            ),
+            None => format!(
                 "{definitions} def / {writers} write / {readers} read — inspect roles before acting"
-            )),
-        )
+            ),
+        };
+        ("mixed", Some(note))
     } else {
         ("unknown", None)
     };

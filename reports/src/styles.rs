@@ -4140,6 +4140,55 @@ input[type="range"]::-webkit-slider-thumb {
     border-radius: 3px;
 }
 
+.atlas-card-open {
+    margin: 0;
+}
+
+.atlas-card-open-summary {
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--theme-accent);
+    user-select: none;
+}
+
+.atlas-card-open-summary:hover {
+    text-decoration: underline;
+}
+
+.atlas-card-body {
+    margin: 8px 0 0;
+    padding: 10px 12px;
+    max-height: 420px;
+    overflow: auto;
+    background: var(--theme-bg-deep);
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-md);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.55;
+    color: var(--theme-text-secondary);
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.context-atlas-card-details {
+    width: 100%;
+}
+
+.context-atlas-card-summary {
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    user-select: none;
+}
+
+.context-atlas-card-summary:hover .context-atlas-card-title {
+    text-decoration: underline;
+}
+
 .atlas-footer {
     margin-top: 8px;
 }

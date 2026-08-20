@@ -113,6 +113,7 @@ mod tests {
     #[test]
     fn from_result_without_filter_keeps_all_bodies() {
         let result = BodyResult {
+            module_redirect: None,
             symbol: "f".into(),
             bodies: vec![body("src/a.rs"), body("src/b.rs")],
         };
@@ -123,6 +124,7 @@ mod tests {
     #[test]
     fn from_result_with_file_filter_keeps_matching_suffix() {
         let result = BodyResult {
+            module_redirect: None,
             symbol: "f".into(),
             bodies: vec![body("crate/src/a.rs"), body("crate/src/b.rs")],
         };
@@ -134,6 +136,7 @@ mod tests {
     #[test]
     fn response_serializes_to_loct_body_json_shape() {
         let result = BodyResult {
+            module_redirect: None,
             symbol: "f".into(),
             bodies: vec![body("src/a.rs")],
         };

@@ -1,5 +1,5 @@
 /**
- * TypeScript definitions for the @loctree/loct npm package (the Loctree runtime wrapper).
+ * TypeScript definitions for the @loctree/loctree npm package (the Loctree runtime wrapper).
  */
 
 import { ExecFileSyncOptions } from 'child_process';
@@ -18,7 +18,7 @@ export const BUNDLED_BINARIES: BundledBinary[];
 
 /**
  * Name of the technical platform package for the current platform
- * (e.g. "@loctree/loct-darwin-arm64"), or null if the platform is unsupported.
+ * (e.g. "@loctree/loctree-darwin-arm64"), or null if the platform is unsupported.
  */
 export function platformPackageName(): string | null;
 

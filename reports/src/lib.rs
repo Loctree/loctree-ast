@@ -61,7 +61,7 @@
 //!
 //! ---
 //!
-//! Developed with 💀 by The Loctree Team ⓒ 2025-2026
+//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI
 
 #![doc(html_root_url = "https://docs.rs/report-leptos/0.1.0")]
 #![warn(missing_docs)]

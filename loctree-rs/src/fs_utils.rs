@@ -909,6 +909,19 @@ pub fn gather_files(
     gather_files_inner(dir, &dir_canon, options, depth, git_checker, visited, files)
 }
 
+/// A subdirectory that carries its own `.git` (directory, or file for
+/// submodules/worktrees) is another project's checkout, not content of the
+/// scanned repo. Field incident 2026-08-14: an untracked Xcode `build-local/`
+/// held `SourcePackages/checkouts/*` — dozens of full dependency repos — and
+/// walking into them ballooned a scan of a mid-size app to 2.9 GB RSS and
+/// minutes of allocator churn, twice over because `context` and `scan` ran
+/// concurrently. The walk must stop at nested repo boundaries.
+fn is_nested_git_repo(dir: &Path) -> bool {
+    // `.git` is a dir in normal checkouts and a file in submodules/worktrees;
+    // either form marks a repo boundary.
+    dir.join(".git").exists()
+}
+
 fn gather_files_inner(
     dir: &Path,
     scan_root: &Path,
@@ -983,6 +996,9 @@ fn gather_files_inner(
                 Err(_) => continue,
             };
             if meta.is_dir() && options.max_depth.is_none_or(|max| depth < max) {
+                if !options.scan_all && is_nested_git_repo(&target) {
+                    continue;
+                }
                 gather_files_inner(
                     &target,
                     scan_root,
@@ -1013,6 +1029,9 @@ fn gather_files_inner(
             continue;
         }
         if path.is_dir() && options.max_depth.is_none_or(|max| depth < max) {
+            if !options.scan_all && is_nested_git_repo(&path) {
+                continue;
+            }
             gather_files_inner(
                 &path,
                 scan_root,
@@ -1720,5 +1739,65 @@ mod tests {
         assert!(loctignore_exclusion_hint(root, "nonexistent").is_none());
         // Existing, non-ignored dir → None.
         assert!(loctignore_exclusion_hint(root, "src").is_none());
+    }
+
+    #[test]
+    fn gather_files_stops_at_nested_git_repos() {
+        // Field incident 2026-08-14: untracked build-local/ carrying
+        // SourcePackages/checkouts/* (full dependency repos) blew a scan up to
+        // 2.9 GB. A dir with its own .git is another project — prune it.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src")).expect("src");
+        std::fs::write(root.join("src/main.rs"), "fn main() {}\n").expect("main");
+
+        let dep = root.join("build-local/SourcePackages/checkouts/dep");
+        std::fs::create_dir_all(dep.join("src")).expect("dep src");
+        // .git as a dir (normal checkout)…
+        std::fs::create_dir_all(dep.join(".git")).expect("dep .git");
+        std::fs::write(dep.join("src/lib.rs"), "pub fn dep() {}\n").expect("dep lib");
+        // …and .git as a file (submodule/worktree form).
+        let wt = root.join("build-local/worktree-form");
+        std::fs::create_dir_all(&wt).expect("wt");
+        std::fs::write(wt.join(".git"), "gitdir: /elsewhere\n").expect("wt .git file");
+        std::fs::write(wt.join("inner.rs"), "pub fn wt() {}\n").expect("wt file");
+
+        let options = Options {
+            use_gitignore: false,
+            ..Options::default()
+        };
+        let mut visited = HashSet::new();
+        let mut files = Vec::new();
+        gather_files(root, &options, 0, None, &mut visited, &mut files).expect("gather");
+
+        let names: Vec<String> = files.iter().map(|p| p.display().to_string()).collect();
+        assert!(
+            names.iter().any(|p| p.ends_with("src/main.rs")),
+            "root project content must be scanned: {names:?}"
+        );
+        assert!(
+            !names.iter().any(|p| p.contains("checkouts")),
+            "nested git checkout must be pruned: {names:?}"
+        );
+        assert!(
+            !names.iter().any(|p| p.contains("worktree-form")),
+            ".git-file (worktree/submodule) form must be pruned too: {names:?}"
+        );
+
+        // --scan-all keeps the escape hatch: nested repos are walked again.
+        let options_all = Options {
+            use_gitignore: false,
+            scan_all: true,
+            ..Options::default()
+        };
+        let mut visited = HashSet::new();
+        let mut files = Vec::new();
+        gather_files(root, &options_all, 0, None, &mut visited, &mut files).expect("gather all");
+        assert!(
+            files
+                .iter()
+                .any(|p| p.display().to_string().contains("checkouts")),
+            "--scan-all must still reach nested repos"
+        );
     }
 }

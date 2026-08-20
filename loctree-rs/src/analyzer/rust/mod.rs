@@ -752,6 +752,10 @@ pub(crate) fn analyze_rust_file(
     // This creates a dependency edge from the declaring file to the module file
     for caps in regex_rust_mod_decl().captures_iter(&production_content) {
         if let Some(mod_name) = caps.get(2) {
+            // Anchor the declaration on its own line: `where-symbol` answers
+            // module names with this site (a `mod x;` IS where `x` is defined
+            // in Rust's namespace), and a site without a line is not an answer.
+            let decl_line = offset_to_line(&production_content, mod_name.start());
             let mod_name = mod_name.as_str();
 
             // Check for #[path = "..."] attribute (group 1)
@@ -768,6 +772,7 @@ pub(crate) fn analyze_rust_file(
 
             let mut imp = ImportEntry::new(source.clone(), ImportKind::Static);
             imp.raw_path = source;
+            imp.line = Some(decl_line);
             imp.is_crate_relative = false;
             imp.is_super_relative = false;
             imp.is_self_relative = false;

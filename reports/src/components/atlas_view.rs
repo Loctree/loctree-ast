@@ -101,6 +101,15 @@ pub fn AtlasView(
                 .collect()
         })
         .unwrap_or_default();
+    let real_bodies: HashMap<String, String> = atlas
+        .as_ref()
+        .map(|a| {
+            a.cards
+                .iter()
+                .filter_map(|c| c.body.clone().map(|b| (c.id.clone(), b)))
+                .collect()
+        })
+        .unwrap_or_default();
 
     let atlas_dir = atlas
         .as_ref()
@@ -167,6 +176,20 @@ pub fn AtlasView(
                         .get(&id_key)
                         .cloned()
                         .unwrap_or_else(|| spec.filename.to_string());
+                    let body = real_bodies.get(&id_key).cloned();
+                    let meta = view! {
+                        <footer class="atlas-card-meta">
+                            <code class="atlas-card-file">{path.clone()}</code>
+                            {match lines {
+                                Some(l) => view! {
+                                    <span class="atlas-card-lines">{format!("{} lines", l)}</span>
+                                }.into_any(),
+                                None => view! {
+                                    <span class="atlas-card-lines muted">"template — run "<code>"loct auto"</code></span>
+                                }.into_any(),
+                            }}
+                        </footer>
+                    };
                     view! {
                         <article class="atlas-card">
                             <header class="atlas-card-header">
@@ -182,17 +205,13 @@ pub fn AtlasView(
                                 <span class="atlas-card-label">"Saves you from: "</span>
                                 {spec.saves}
                             </p>
-                            <footer class="atlas-card-meta">
-                                <code class="atlas-card-file">{path}</code>
-                                {match lines {
-                                    Some(l) => view! {
-                                        <span class="atlas-card-lines">{format!("{} lines", l)}</span>
-                                    }.into_any(),
-                                    None => view! {
-                                        <span class="atlas-card-lines muted">"template — run "<code>"loct auto"</code></span>
-                                    }.into_any(),
-                                }}
-                            </footer>
+                            {body.map(|content| view! {
+                                <details class="atlas-card-open">
+                                    <summary class="atlas-card-open-summary">"Open card"</summary>
+                                    <pre class="atlas-card-body"><code>{content}</code></pre>
+                                </details>
+                            })}
+                            {meta}
                         </article>
                     }
                 }).collect::<Vec<_>>()}

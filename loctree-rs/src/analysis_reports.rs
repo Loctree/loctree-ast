@@ -10,7 +10,9 @@ use std::path::Path;
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 
-use crate::analyzer::audit_report::{AuditFindings, OrphanFile, ShadowExport};
+use crate::analyzer::audit_report::{
+    AuditFindings, OrphanFile, ReportProvenance, ShadowExport, audit_health,
+};
 use crate::analyzer::coverage_gaps::{CoverageGap, GapKind, Severity, find_coverage_gaps};
 use crate::analyzer::crowd::detect_all_crowds;
 use crate::analyzer::cycles::{CycleCompilability, find_cycles_classified_with_lazy};
@@ -347,6 +349,22 @@ pub fn audit_findings(
         crowds: detect_all_crowds(&snapshot.files),
         total_files: snapshot.files.len(),
         total_loc: snapshot.files.iter().map(|file| file.loc).sum(),
+        provenance: Some(ReportProvenance {
+            version: crate::BUILD_VERSION.to_string(),
+            generated_at: if snapshot.metadata.generated_at.is_empty() {
+                time::OffsetDateTime::now_utc()
+                    .format(&time::format_description::well_known::Iso8601::DEFAULT)
+                    .unwrap_or_else(|_| "unknown".to_string())
+            } else {
+                snapshot.metadata.generated_at.clone()
+            },
+            root: root.display().to_string(),
+            git_commit: snapshot
+                .metadata
+                .git_commit
+                .clone()
+                .filter(|commit| !commit.is_empty()),
+        }),
     }
 }
 
@@ -481,6 +499,7 @@ pub fn audit_json_report(findings: &AuditFindings, limit: Option<usize>) -> Valu
             json!({
                 "total_files": findings.total_files,
                 "total_loc": findings.total_loc,
+                "health_score": audit_health(findings).health,
             }),
         ),
     ]))

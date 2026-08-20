@@ -1389,4 +1389,9 @@ pub struct ContextAtlasCardInfo {
     pub lines: usize,
     /// One-line "why read this card" hint.
     pub why: String,
+    /// Full card markdown, embedded at generation time so the card opens
+    /// in-page. `None` when the card file was unreadable — the report is a
+    /// static `file://` page and cannot fetch it later.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
 }

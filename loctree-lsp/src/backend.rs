@@ -302,6 +302,9 @@ pub struct Backend {
     /// `did_change`, so consumers see at most one notification per
     /// edit transaction.
     symbol_tracker: Arc<RwLock<HashMap<Url, HashMap<SymbolIdV1, SymbolMetadata>>>>,
+    /// RSS sentinel task (see [`Self::spawn_rss_sentinel`]). `None` until
+    /// `initialized`, aborted on `shutdown`.
+    rss_sentinel_task: RwLock<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl Backend {
@@ -350,6 +353,7 @@ impl Backend {
             watcher_scope_tx: RwLock::new(None),
             live_ast: LiveAstStore::new(),
             symbol_tracker: Arc::new(RwLock::new(HashMap::new())),
+            rss_sentinel_task: RwLock::new(None),
         }
     }
 
@@ -970,6 +974,71 @@ impl Backend {
     /// Custom notification handler for loctree/refresh
     pub async fn refresh(&self) {
         self.refresh_snapshot().await;
+    }
+
+    /// Long-lived editor processes have been observed at 3.9 GB RSS after
+    /// ~38 h: the residency budget only governs parsed snapshots, while
+    /// live ASTs, symbol trackers and allocator page retention sit outside
+    /// it. The sentinel measures CURRENT RSS on an interval; above the soft
+    /// limit it sheds every rebuildable cache and asks the allocator to
+    /// return free pages, and if RSS re-measured AFTER that relief is still
+    /// above the hard limit it exits the process so the editor's standard
+    /// LSP restart policy brings back a fresh server. Tunable / disableable
+    /// via LOCTREE_LSP_RSS_{SOFT_MB,HARD_MB,CHECK_SECS} (0 disables a leg).
+    async fn spawn_rss_sentinel(&self) {
+        let config = crate::memory::RssSentinelConfig::from_env();
+        if !config.enabled() || crate::memory::current_rss_bytes().is_none() {
+            return;
+        }
+        let client = self.client.clone();
+        let live_ast = self.live_ast.clone();
+        let symbol_tracker = Arc::clone(&self.symbol_tracker);
+        let workspaces = Arc::clone(&self.workspaces);
+        let diff_sessions = Arc::clone(&self.diff_sessions);
+        let task = tokio::spawn(async move {
+            let mib = |bytes: u64| bytes / (1024 * 1024);
+            let mut interval =
+                tokio::time::interval(std::time::Duration::from_secs(config.check_interval_secs));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                interval.tick().await;
+                let Some(rss) = crate::memory::current_rss_bytes() else {
+                    return;
+                };
+                let over_soft = config.soft_limit_bytes > 0 && rss > config.soft_limit_bytes;
+                let over_hard = config.hard_limit_bytes > 0 && rss > config.hard_limit_bytes;
+                if !(over_soft || over_hard) {
+                    continue;
+                }
+                live_ast.clear();
+                symbol_tracker.write().await.clear();
+                let evicted = workspaces.write().await.evict_all_resident();
+                diff_sessions.write().await.clear();
+                let released = crate::memory::release_unused_allocator_memory();
+                let after = crate::memory::current_rss_bytes().unwrap_or(rss);
+                let message = format!(
+                    "loctree-lsp RSS sentinel: {} MiB > {} MiB soft limit — dropped live ASTs, symbol trackers, {} resident snapshot(s), diff sessions; allocator released {} MiB; RSS now {} MiB",
+                    mib(rss),
+                    mib(config.soft_limit_bytes),
+                    evicted,
+                    mib(released as u64),
+                    mib(after),
+                );
+                tracing::warn!("{message}");
+                client.log_message(MessageType::WARNING, &message).await;
+                if config.hard_limit_bytes > 0 && after > config.hard_limit_bytes {
+                    let farewell = format!(
+                        "loctree-lsp RSS sentinel: {} MiB still above the {} MiB hard limit after relief — exiting so the editor restarts a fresh server",
+                        mib(after),
+                        mib(config.hard_limit_bytes),
+                    );
+                    tracing::error!("{farewell}");
+                    client.log_message(MessageType::ERROR, &farewell).await;
+                    std::process::exit(1);
+                }
+            }
+        });
+        *self.rss_sentinel_task.write().await = Some(task);
     }
 
     /// Start the background filesystem watcher (Plan 10 of the LSP roadmap).
@@ -1958,6 +2027,8 @@ impl LanguageServer for Backend {
             }
         }
 
+        self.spawn_rss_sentinel().await;
+
         // Plan 10: kick off the background watcher once the initial
         // routing inventory is available. Mega-roots begin with an empty
         // subscription set and are re-armed by lazy hydration.
@@ -1971,6 +2042,9 @@ impl LanguageServer for Backend {
     }
 
     async fn shutdown(&self) -> Result<()> {
+        if let Some(task) = self.rss_sentinel_task.write().await.take() {
+            task.abort();
+        }
         tracing::info!("loctree-lsp server shutting down");
         if let Some(handle) = self.watcher_task.write().await.take() {
             handle.abort();

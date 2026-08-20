@@ -14,11 +14,12 @@
 //! not a closed body. Output is always bounded by a line cap with explicit
 //! truncation metadata.
 //!
-//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents ⓒ 2025-2026 Loctree Team
+//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI
 
 use serde::{Deserialize, Serialize};
 
-use crate::query::query_where_symbol;
+use crate::analyzer::search::literal_fuzzy_suggestions;
+use crate::query::{ModuleDeclaration, module_declarations, query_where_symbol};
 use crate::snapshot::Snapshot;
 
 /// Default maximum number of source lines returned for a single body.
@@ -68,6 +69,65 @@ pub struct SymbolBody {
     pub extent: String,
 }
 
+/// A symbol exported by the module a `body` query was redirected to.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModuleSymbol {
+    /// Exported symbol name — the thing that actually has a body.
+    pub name: String,
+    /// Export kind as indexed (`function`, `struct`, `decl`, ...).
+    pub kind: String,
+    /// File the symbol is defined in.
+    pub file: String,
+    /// 1-based definition line, when indexed.
+    pub line: Option<usize>,
+}
+
+/// A name-similarity hint carried alongside a module redirect.
+///
+/// Scored by the single fuzzy engine
+/// ([`crate::analyzer::search::literal_fuzzy_suggestions`]) — this type only
+/// gives the same suggestions an owned, round-trippable wire shape, it does not
+/// re-implement the scoring.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BodySuggestion {
+    /// Suggested symbol name.
+    pub symbol: String,
+    /// Where the suggestion lives (`export in <path>` or `file path`).
+    pub file: String,
+    /// Definition line, when known.
+    pub line: Option<usize>,
+    /// Similarity score in `0.0..=1.0`.
+    pub score: f64,
+    /// Always `"fuzzy"` — provenance marker; a suggestion is not evidence.
+    pub source: String,
+}
+
+/// The answer `body` gives when the queried name is a MODULE, not a symbol
+/// with a source body.
+///
+/// A module declaration has no body to return, but the engine knows exactly
+/// what the asker wanted: the module's file and the symbols inside it. Without
+/// this, `body` emitted "(no source body found)" and pointed at `where-symbol`,
+/// which — before module declarations became definition sites — answered
+/// "(no results)": three surfaces, zero conclusions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModuleRedirect {
+    /// The module name that was queried.
+    pub module: String,
+    /// Every `mod <name>;` declaration site found.
+    pub declarations: Vec<ModuleDeclaration>,
+    /// Symbols exported by the module's file(s) — the real body candidates.
+    pub symbols: Vec<ModuleSymbol>,
+    /// Name-similarity hints (`health_score` -> `HealthScore`), reused from the
+    /// same fuzzy engine `find --json` already surfaces.
+    pub suggestions: Vec<BodySuggestion>,
+}
+
+/// Maximum module symbols listed in a redirect before the tail is elided.
+pub const MODULE_REDIRECT_SYMBOL_CAP: usize = 12;
+/// Maximum fuzzy suggestions carried by a redirect.
+const MODULE_REDIRECT_SUGGESTION_CAP: usize = 5;
+
 /// Aggregate result of a `loct body <symbol>` lookup.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BodyResult {
@@ -75,6 +135,11 @@ pub struct BodyResult {
     pub symbol: String,
     /// Bodies found (one per defining file/line).
     pub bodies: Vec<SymbolBody>,
+    /// Present when the queried name is a module: where it is declared, what
+    /// it resolves to, and which symbols inside it do have bodies. `None` for
+    /// ordinary symbol queries, so existing consumers see an unchanged shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub module_redirect: Option<ModuleRedirect>,
 }
 
 impl BodyResult {
@@ -531,11 +596,23 @@ fn read_source(snapshot: &Snapshot, file: &str) -> Option<String> {
 pub fn query_symbol_body(snapshot: &Snapshot, symbol: &str, line_cap: Option<usize>) -> BodyResult {
     let cap = line_cap.unwrap_or(DEFAULT_BODY_LINE_CAP).max(1);
     let where_result = query_where_symbol(snapshot, symbol);
+    let declarations = module_declarations(snapshot, symbol);
+    let declaration_sites: std::collections::HashSet<(&str, Option<usize>)> = declarations
+        .iter()
+        .map(|d| (d.declared_in.as_str(), d.line))
+        .collect();
 
     let mut bodies = Vec::new();
     let mut seen: std::collections::HashSet<(String, usize)> = std::collections::HashSet::new();
 
     for m in &where_result.results {
+        // `pub mod health_score;` is a complete one-line statement, so the
+        // extractor would happily return it as a "body". That answers a
+        // question nobody asked — the module declaration belongs in the
+        // redirect below, which names the symbols that do have bodies.
+        if declaration_sites.contains(&(m.file.as_str(), m.line)) {
+            continue;
+        }
         // We need a concrete line to anchor body extraction.
         let Some(line) = m.line else { continue };
         if line == 0 {
@@ -572,15 +649,223 @@ pub fn query_symbol_body(snapshot: &Snapshot, symbol: &str, line_cap: Option<usi
         });
     }
 
+    let module_redirect = build_module_redirect(snapshot, symbol, declarations);
+
     BodyResult {
         symbol: symbol.to_string(),
         bodies,
+        module_redirect,
     }
+}
+
+/// Assemble the module redirect for `symbol`, or `None` when the name is not a
+/// declared module.
+///
+/// The symbol list is the module file's own exports — exact truth, not a
+/// guess. Fuzzy suggestions come from the shared engine
+/// ([`literal_fuzzy_suggestions`]), which is what already produces
+/// `fuzzy_suggestions` in `find --json`; the scoring lives in exactly one
+/// place, this surface only carries it.
+fn build_module_redirect(
+    snapshot: &Snapshot,
+    symbol: &str,
+    declarations: Vec<ModuleDeclaration>,
+) -> Option<ModuleRedirect> {
+    if declarations.is_empty() {
+        return None;
+    }
+
+    let module_files: Vec<&str> = declarations
+        .iter()
+        .filter_map(|d| d.module_file.as_deref())
+        .collect();
+    let mut symbols: Vec<ModuleSymbol> = Vec::new();
+    for file in &snapshot.files {
+        if !module_files.contains(&file.path.as_str()) {
+            continue;
+        }
+        for export in &file.exports {
+            // Re-exports have no line and no body here — they point elsewhere,
+            // and pointing at a pointer is how this dead end started.
+            if export.line.is_none() {
+                continue;
+            }
+            symbols.push(ModuleSymbol {
+                name: export.name.clone(),
+                kind: export.kind.clone(),
+                file: file.path.clone(),
+                line: export.line,
+            });
+        }
+    }
+    symbols.sort_by(|a, b| a.file.cmp(&b.file).then(a.line.cmp(&b.line)));
+
+    let suggestions: Vec<BodySuggestion> = literal_fuzzy_suggestions(symbol, &snapshot.files)
+        .into_iter()
+        .filter(|s| s.symbol != symbol)
+        .take(MODULE_REDIRECT_SUGGESTION_CAP)
+        .map(|s| BodySuggestion {
+            symbol: s.symbol,
+            file: s.file,
+            line: s.line,
+            score: s.score,
+            source: s.source.to_string(),
+        })
+        .collect();
+
+    Some(ModuleRedirect {
+        module: symbol.to_string(),
+        declarations,
+        symbols,
+        suggestions,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Build a snapshot in which `analyzer/mod.rs` really declares
+    /// `pub mod health_score;` (parsed by the production Rust analyzer, not a
+    /// hand-written fixture) and `analyzer/health_score.rs` exports the
+    /// symbols that actually have bodies.
+    fn module_snapshot() -> Snapshot {
+        use crate::types::{ExportSymbol, FileAnalysis};
+
+        fn export(name: &str, kind: &str, line: Option<usize>) -> ExportSymbol {
+            ExportSymbol {
+                name: name.to_string(),
+                kind: kind.to_string(),
+                export_type: "named".to_string(),
+                line,
+                params: Vec::new(),
+                symbol_id: Default::default(),
+            }
+        }
+
+        let decl_src = "//! analyzer\npub mod graph;\npub mod health_score;\npub mod html;\n";
+        let mut decl = crate::analyzer::rust::analyze_rust_file(
+            decl_src,
+            "src/analyzer/mod.rs".to_string(),
+            &[],
+        );
+        // Path resolution happens in the scan phase; the analyzer only records
+        // the declaration itself.
+        for import in &mut decl.imports {
+            if import.is_mod_declaration && import.symbols.iter().any(|s| s.name == "health_score")
+            {
+                import.resolved_path = Some("src/analyzer/health_score.rs".to_string());
+            }
+        }
+
+        let mut module_file = FileAnalysis::new("src/analyzer/health_score.rs".to_string());
+        module_file.exports = vec![
+            export("CERTAIN_WEIGHT", "decl", Some(33)),
+            export("HealthScore", "struct", Some(101)),
+            export("calculate_health_score", "function", Some(178)),
+            // Re-exports point elsewhere and carry no line: they must not be
+            // offered as "symbols in this module that have bodies".
+            export("ReExported", "reexport", None),
+        ];
+
+        let mut snapshot = Snapshot::new(vec![".".to_string()]);
+        snapshot.files = vec![decl, module_file];
+        snapshot
+    }
+
+    #[test]
+    fn body_module_name_redirects_to_module_symbols() {
+        let snapshot = module_snapshot();
+        let result = query_symbol_body(&snapshot, "health_score", None);
+
+        // A `mod x;` line is a complete single-line statement, so without the
+        // redirect the extractor would hand back the declaration itself as a
+        // "body" — an answer to a question nobody asked.
+        assert!(
+            result.bodies.is_empty(),
+            "module declaration must not be returned as a body: {:?}",
+            result.bodies
+        );
+
+        let redirect = result
+            .module_redirect
+            .expect("module name must produce a redirect, not a dead end");
+        assert_eq!(redirect.module, "health_score");
+        assert_eq!(redirect.declarations.len(), 1);
+        let decl = &redirect.declarations[0];
+        assert_eq!(decl.declared_in, "src/analyzer/mod.rs");
+        assert_eq!(
+            decl.line,
+            Some(3),
+            "the declaration site needs a line, not just a file"
+        );
+        assert_eq!(
+            decl.module_file.as_deref(),
+            Some("src/analyzer/health_score.rs")
+        );
+
+        let names: Vec<&str> = redirect.symbols.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"calculate_health_score"), "{names:?}");
+        assert!(names.contains(&"HealthScore"), "{names:?}");
+        assert!(
+            !names.contains(&"ReExported"),
+            "line-less re-exports are pointers, not bodies: {names:?}"
+        );
+    }
+
+    #[test]
+    fn body_module_redirect_carries_fuzzy_suggestions() {
+        let snapshot = module_snapshot();
+        let redirect = query_symbol_body(&snapshot, "health_score", None)
+            .module_redirect
+            .expect("redirect");
+        let suggested: Vec<&str> = redirect
+            .suggestions
+            .iter()
+            .map(|s| s.symbol.as_str())
+            .collect();
+        assert!(
+            suggested.contains(&"HealthScore"),
+            "the fuzzy hit `find --json` already knows must surface here: {suggested:?}"
+        );
+        assert!(
+            redirect.suggestions.iter().all(|s| s.source == "fuzzy"),
+            "suggestions must stay labelled as suggestions, not evidence"
+        );
+    }
+
+    #[test]
+    fn body_module_where_symbol_locates_the_declaration() {
+        let snapshot = module_snapshot();
+        let result = query_where_symbol(&snapshot, "health_score");
+        assert_eq!(
+            result.results.len(),
+            1,
+            "where-symbol must answer for a module name: {:?}",
+            result.results
+        );
+        let m = &result.results[0];
+        assert_eq!(m.file, "src/analyzer/mod.rs");
+        assert_eq!(m.line, Some(3));
+        assert!(
+            m.context
+                .as_deref()
+                .unwrap_or_default()
+                .contains("module declaration"),
+            "the answer must say WHAT it found: {:?}",
+            m.context
+        );
+    }
+
+    #[test]
+    fn body_module_redirect_absent_for_ordinary_symbols() {
+        let snapshot = module_snapshot();
+        let result = query_symbol_body(&snapshot, "calculate_health_score", None);
+        assert!(
+            result.module_redirect.is_none(),
+            "only module names get a module redirect"
+        );
+    }
 
     #[test]
     fn test_language_of() {
@@ -835,6 +1120,7 @@ mod tests {
     #[test]
     fn test_filtered_to_file_matches_path_component_suffix() {
         let result = BodyResult {
+            module_redirect: None,
             symbol: "f".into(),
             bodies: vec![
                 body_in("crate/src/a.rs"),
@@ -850,6 +1136,7 @@ mod tests {
     #[test]
     fn test_filtered_to_file_none_keeps_all_candidates() {
         let result = BodyResult {
+            module_redirect: None,
             symbol: "f".into(),
             bodies: vec![body_in("a.rs"), body_in("b.rs")],
         };

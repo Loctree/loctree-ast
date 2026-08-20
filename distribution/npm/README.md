@@ -10,7 +10,7 @@ contains the thin JS wrapper and platform package manifests that ship to the
 
 | Package | Commands exposed | Notes |
 | --- | --- | --- |
-| `@loctree/loct` | `loctree` (runtime), `loct` (alias), `loctree-mcp` (stdio adapter) | the only public package |
+| `@loctree/loctree` | `loctree` (runtime), `loct` (alias), `loctree-mcp` (stdio adapter) | the only public package |
 
 `loctree` and `loct` are the **same binary** (`loct` is a short alias). MCP and
 LSP are not separate packages — they are modes/co-processes the runtime spawns:
@@ -22,7 +22,7 @@ The wrapper declares 4 platform sub-packages as `optionalDependencies`
 (esbuild/swc pattern). Platform matrix: `darwin-arm64`, `darwin-x64`,
 `linux-x64-gnu`, `win32-x64-msvc`.
 
-**Embed model:** each `@loctree/loct-<platform>` package carries three release
+**Embed model:** each `@loctree/loctree-<platform>` package carries three release
 binaries side by side — `loctree`, `loctree-mcp`, `loctree-lsp` — with no
 postinstall download. The runtime resolves `loctree-mcp` / `loctree-lsp` as
 **siblings** of its own executable, so they must live in the same directory.
@@ -31,12 +31,12 @@ Total: **1 wrapper + 4 platform packages = 5 npm packages.**
 
 > There are **no separate** `@loctree/loctree-mcp` or `@loctree/loctree-lsp` npm
 > packages. The bundled MCP binary is exposed as `loctree-mcp` so stdio clients
-> can use `npx -y --package=@loctree/loct loctree-mcp`; LSP stays internal.
+> can use `npx -y --package=@loctree/loctree loctree-mcp`; LSP stays internal.
 
 ## Install (end users)
 
 ```bash
-npm install -g @loctree/loct
+npm install -g @loctree/loctree
 ```
 
 Smoke-test:
@@ -48,7 +48,7 @@ loct --version
 
 > AICX (`aicx` / `aicx-mcp`) is owned by the sibling
 > [`Loctree/aicx`](https://github.com/Loctree/aicx) repo and publishes separately
-> as `@loctree/aicx`. It is not part of the `@loctree/loct` runtime.
+> as `@loctree/aicx`. It is not part of the `@loctree/loctree` runtime.
 
 ## Layout
 
@@ -59,12 +59,12 @@ distribution/npm/
 ├── QUICKSTART.md        (end-user install recipe)
 ├── LICENSE              (BUSL-1.1)
 ├── sync-version.mjs     (bump the 5 package.json files in lockstep)
-└── loct/                (the @loctree/loct wrapper + 4 platform packages)
+└── loct/                (the @loctree/loctree wrapper + 4 platform packages)
 ```
 
 > The legacy Gen2 wrappers (`loctree-mcp/`, `loctree-lsp/`) were removed from
 > this tree — they were never published and the runtime ships MCP/LSP as
-> co-process binaries inside `@loctree/loct`'s platform packages. None of the
+> co-process binaries inside `@loctree/loctree`'s platform packages. None of the
 > published packages declare lifecycle scripts (npm 11+ `allowScripts` blocks
 > unapproved postinstalls; delivery is pure `optionalDependencies`).
 

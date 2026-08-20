@@ -5,7 +5,7 @@ One install. One runtime.
 ## Install
 
 ```bash
-npm install -g @loctree/loct
+npm install -g @loctree/loctree
 ```
 
 You get **one runtime**, with two CLI names and one MCP adapter:
@@ -48,10 +48,10 @@ Point an HTTP-capable MCP client (e.g. an agent gateway) at
 For a stdio MCP client without a global install:
 
 ```bash
-npx -y --package=@loctree/loct loctree-mcp
+npx -y --package=@loctree/loctree loctree-mcp
 ```
 
-Do not shorten this to `npx -y @loctree/loct`: that command intentionally runs
+Do not shorten this to `npx -y @loctree/loctree`: that command intentionally runs
 the `loct` CLI.
 
 ## Editors — `loct watch --lsp`

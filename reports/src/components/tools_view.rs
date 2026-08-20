@@ -1,9 +1,10 @@
 //! Tools sidebar view — first-class surface for the twelve Loctree MCP tools.
 //!
-//! Mirrors the tool descriptions in
-//! `loctree-mcp/src/main.rs::LoctreeServer::get_info` (the server instructions
-//! string) so the operator-facing report tells the same story the MCP server
-//! tells an agent on first connect.
+//! The tool LIST tracks `loctree-mcp/src/main.rs::LoctreeServer::get_info`
+//! (same twelve tools, same order), but the descriptions here are curated
+//! operator-facing copy — the server's `instructions` string is written for
+//! agents and carries internal tiering/roadmap language that has no place in
+//! a report a human reads.
 //!
 //! This is the second of the two MCP-first sidebar surfaces — pair it with
 //! [`super::atlas_view::AtlasView`] to show *what loctree precomputes* (atlas)
@@ -74,9 +75,9 @@ const TOOLS: &[ToolSpec] = &[
     ToolSpec {
         name: "impact",
         section: "Map",
-        signature: "impact(file)",
-        description: "Before deleting. Direct + transitive consumers (blast radius).",
-        example_args: r#"{ "file": "src/db/connection.rs" }"#,
+        signature: "impact(file, depth?)",
+        description: "Before deleting. Direct + transitive consumers (blast radius). Omitted depth traverses without limit.",
+        example_args: r#"{ "file": "src/db/connection.rs", "depth": 2 }"#,
         doc_anchor: "impact",
     },
     ToolSpec {
@@ -113,17 +114,17 @@ const TOOLS: &[ToolSpec] = &[
     },
     ToolSpec {
         name: "suppressions",
-        section: "Silencer surface",
+        section: "Hygiene",
         signature: "suppressions(project, kinds?)",
-        description: "Source-side silencer inventory: Rust #[allow(...)], Rust #[ignore], Rust unsafe { ... } (env-var boilerplate split out), Semgrep nosemgrep, TypeScript @ts-ignore, ESLint eslint-disable, Python # noqa, Python # type: ignore, Shell # shellcheck disable. Literal-only detection (free-tier). Semantic enrichment (suspicious/stale) is paid-tier Wave 7+.",
+        description: "Every place the code silences a linter or checker — #[allow], @ts-ignore, eslint-disable, # noqa, nosemgrep, shellcheck disable, unsafe blocks — collected into one reviewable inventory.",
         example_args: r#"{ "project": ".", "kinds": ["rust-allow", "ts-ignore"] }"#,
         doc_anchor: "suppressions",
     },
     ToolSpec {
         name: "prism",
-        section: "Polarization gate",
+        section: "Scoring",
         signature: "prism(task=[a, b, ...])",
-        description: "Score conceptual smear across task framings. Emits loctree.prism.v1 JSON for vc-polarize gating.",
+        description: "Compare two or more framings of the same task and score how much the concept smears across the codebase — a signal that the work needs sharpening before it starts.",
         example_args: r#"{ "task": ["auth", "session", "login"] }"#,
         doc_anchor: "prism",
     },
@@ -135,8 +136,10 @@ fn section_slug(section: &str) -> &'static str {
     match section {
         "Start" => "start",
         "Map" => "map",
-        "Silencer surface" => "silencer",
-        "Polarization gate" => "polarize",
+        // Display labels were de-jargoned ("Silencer surface" -> "Hygiene",
+        // "Polarization gate" -> "Scoring"); slugs stay stable for the CSS.
+        "Hygiene" => "silencer",
+        "Scoring" => "polarize",
         _ => "default",
     }
 }
@@ -208,11 +211,13 @@ pub fn ToolsView() -> impl IntoView {
 
             <footer class="tools-footer">
                 <p class="tools-footer-fineprint">
-                    "These descriptions are mirrored from the MCP server "
-                    <code>"instructions"</code>
-                    " string ("
-                    <code>"LoctreeServer::get_info"</code>
-                    "). If the server adds a tool, this list is the next thing to update."
+                    "Full parameter reference for every tool: "
+                    <a
+                        href="https://github.com/Loctree/loctree/blob/main/docs/mcp.md"
+                        rel="noopener noreferrer"
+                    >
+                        "docs/mcp.md"
+                    </a>
                 </p>
             </footer>
         </div>

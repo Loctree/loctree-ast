@@ -1,7 +1,7 @@
 {
-  "name": "@loctree/loct-darwin-x64",
+  "name": "@loctree/loctree-darwin-x64",
   "version": "0.14.2",
-  "description": "Loctree runtime (loctree) + co-process binaries (loctree-mcp, loctree-lsp) for macOS Intel (x64). Technical delivery package for @loctree/loct — do not install directly.",
+  "description": "Loctree suite binaries (loct, loctree, loctree-mcp, loctree-lsp) for macOS Intel (x64). Technical delivery package for @loctree/loctree — do not install directly.",
   "keywords": [
     "loctree",
     "loctree-mcp",
@@ -22,8 +22,9 @@
     "directory": "distribution/npm/loct/platform-packages/darwin-x64"
   },
   "files": [
-    "loctree",
-    "loctree-mcp",
-    "loctree-lsp"
+    "bin/loct",
+    "bin/loctree",
+    "bin/loctree-mcp",
+    "bin/loctree-lsp"
   ]
 }
