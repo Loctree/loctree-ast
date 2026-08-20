@@ -1,0 +1,36 @@
+{
+  "schema": "loctree.overlay.intent.v1",
+  "repo_id": "Loctree/loctree-suite",
+  "snapshot_commit": "48a9526d",
+  "anchor_catalog_revision": "acr1:ab12cd34ab12cd34ab12cd34ab12cd34ab12cd34ab12cd34ab12cd34ab12cd34",
+  "store_revision": "sr1:5f0a5f0a5f0a5f0a5f0a5f0a5f0a5f0a5f0a5f0a5f0a5f0a5f0a5f0a5f0a5f0a",
+  "overlay_revision": "ov1:9e3b9e3b9e3b9e3b9e3b9e3b9e3b9e3b9e3b9e3b9e3b9e3b9e3b9e3b9e3b9e3b",
+  "producer_version": "0.12.0",
+  "entries": [
+    {
+      "intent_id": "int1:bbbb444455556666",
+      "content_hash": "ch1:22ff22ff22ff22ff22ff22ff22ff22ff22ff22ff22ff22ff22ff22ff22ff22ff",
+      "target": { "kind": "repo" },
+      "thesis": "KONTRAKT ZŁAMANY CELOWO: relacja celuje w content_hash zamiast intent_id — relacje wiszą po każdej zmianie treści klastra (v3 bug).",
+      "status": "current",
+      "authority": "agent_derived",
+      "verification_status": "unverified",
+      "valid_from": "2026-06-05T09:00:00Z",
+      "relations": [
+        {
+          "kind": "supersedes",
+          "content_hash": "ch1:33aa33aa33aa33aa33aa33aa33aa33aa33aa33aa33aa33aa33aa33aa33aa33aa",
+          "evidence_ref": "chunk:d9100591-0007",
+          "confidence": 0.92,
+          "observed_at": "2026-06-05T09:05:00Z"
+        }
+      ],
+      "refs": [
+        {
+          "evidence_event_id": "ev1:codex:9f1d2b73-1111-2222-3333-445566778899:000117:function_call:89abcdef01234567",
+          "ref": "chunk:d9100591-0007"
+        }
+      ]
+    }
+  ]
+}

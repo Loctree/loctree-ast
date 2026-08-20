@@ -5,39 +5,90 @@ members = [
     "loctree-rs",
     "loctree-mcp",
     "loctree-lsp",
+    "rmcp-common",
+    "reports",
+    "reports/wasm",
 ]
 
+# Removed from workspace:
+# - rmcp-memex: use crates.io version (0.3.2+), standalone: ~/Libraxis/rmcp-memex
+# - rmcp-mux: deprecated (dead end approach)
+# - rmcp-config-ui: moved to ~/Libraxis/rmcp-config-ui
+# - landing: extracted to standalone repo at ../loct-io
+#   (origin: github.com/Loctree/loct-io); sourced from
+#   feat/landing-polish-2026-05-02 (5c5a3a4d) at split time.
+
 [workspace.package]
-version = "0.13.1"
+version = "0.14.2"
 edition = "2024"
-rust-version = "1.91.1"
+rust-version = "1.93.0"
 license = "BUSL-1.1"
-authors = ["Loctree <loct@loct.io>"]
+authors = ["LibraxisAI <support@loctree.com>"]
 
 [workspace.dependencies]
+# Core
+aicx = { version = "0.10.0", default-features = false, features = ["loctree-consumer"] }
 tokio = { version = "1.52", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 anyhow = "1"
 thiserror = "2"
+
+# CLI
 clap = { version = "4.4", features = ["derive"] }
+
+# Logging
 tracing = "0.1"
 tracing-subscriber = "0.3"
+
+# MCP
 rmcp = { version = "1.7", features = ["server"] }
+
+# Async
 futures = "0.3"
+
+# HTTP server + middleware (loctree-mcp streamable-http + bearer auth)
 axum = { version = "0.8", features = ["json"] }
 tower = { version = "0.5", features = ["util"] }
 tokio-util = { version = "0.7", features = ["rt"] }
+
+# Auth primitives (loctree-mcp::auth ported from rust-memex)
 argon2 = "0.5"
 password-hash = { version = "0.5", features = ["getrandom"] }
 subtle = "2.6"
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 shellexpand = "3.1"
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls-native-roots"] }
+
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "stream",
+    "rustls-tls-native-roots",
+] }
+
+# Crypto helpers
 sha2 = "0.10"
+
+# JSON Schema generation for LSP custom-request capability advertisement.
+# Pinned at 1.x so derive(JsonSchema) and schema_for!() share one major
+# across loctree-lsp and any future consumer that wants to publish
+# editor-side typed builders for `loctree/*` requests.
 schemars = "1"
-aicx = { version = "0.10.0", default-features = false, features = ["loctree-consumer"] }
-loctree = { path = "loctree-rs", version = "0.13.1" }
-loctree-ast = { path = "loctree-ast", version = "0.13.1" }
-report-leptos = "0.13.1"
+
+# Current crate-publish reality: crates.io names stay on the legacy line until the
+# dedicated rename tracks land. Thin releases, npm, and Homebrew use the active
+# loct / loct-mcp / loct-lsp naming contract instead.
+# The local crates (for inter-crate dependencies)
+loctree = { path = "loctree-rs", version = "0.14.2" }
+loctree-ast = { path = "loctree-ast", version = "0.14.2" }
+report-leptos = { path = "reports", version = "0.14.2" }
+
+# Release profile - good defaults for all crates
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+
+# WASM crates need size optimization - override when building with trunk/wasm-pack
+# trunk uses its own Trunk.toml for wasm-opt settings

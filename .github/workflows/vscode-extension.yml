@@ -1,0 +1,177 @@
+name: VSCode Extension
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'editors/vscode/**'
+      - 'loctree-lsp/**'
+      - 'loctree-rs/src/analyzer/occurrences.rs'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/vscode-extension.yml'
+  pull_request:
+    paths:
+      - 'editors/vscode/**'
+      - 'loctree-lsp/**'
+      - 'loctree-rs/src/analyzer/occurrences.rs'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/vscode-extension.yml'
+
+jobs:
+  build-vsix:
+    name: Build VSIX (${{ matrix.name }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      # windows-x64 and linux-arm64 are intentionally omitted: they are
+      # future/unsupported in the release pipeline for now. The VS Code client
+      # declares those asset names, but no binary is published yet.
+      # See docs/release/editors-distribution.md.
+      #
+      # `vsix_suffix` doubles as the `vsce --target` platform identifier. VS Code
+      # platform names (linux-x64 / darwin-arm64 / darwin-x64) happen to match the
+      # suffixes we already used, so one field drives both the artifact name and
+      # the VSIX manifest's TargetPlatform. Keep them equal: without --target the
+      # three VSIXs are all "universal" and publishing them in sequence makes each
+      # one replace the previous, so only the last platform survives on the
+      # marketplace. See docs/release/vscode-marketplace.md.
+      matrix:
+        include:
+          - name: linux-x64
+            runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            lsp_asset: loctree-lsp-linux-x64
+            vsix_suffix: linux-x64
+          - name: darwin-arm64
+            runner: macos-latest
+            target: aarch64-apple-darwin
+            lsp_asset: loctree-lsp-darwin-arm64
+            vsix_suffix: darwin-arm64
+          - name: darwin-x64
+            runner: macos-latest
+            target: x86_64-apple-darwin
+            lsp_asset: loctree-lsp-darwin-x64
+            vsix_suffix: darwin-x64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: |
+            loctree-lsp
+
+      - name: Install protoc (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Install protoc (macOS)
+        if: runner.os == 'macOS'
+        run: brew install protobuf
+
+      - name: Build loctree-lsp
+        run: cargo build -p loctree-lsp --release --target ${{ matrix.target }}
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+
+      - name: Install VSCode extension deps
+        run: npm ci
+        working-directory: editors/vscode
+
+      - name: Check VSCode extension types
+        run: npm run check-types
+        working-directory: editors/vscode
+
+      - name: Test VSCode extension gateway
+        run: npm test
+        working-directory: editors/vscode
+
+      - name: Fetch release loctree-lsp
+        id: release_lsp
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+        env:
+          LOCTREE_TARGET: ${{ matrix.target }}
+          LOCTREE_DOWNLOAD_DIR: ${{ runner.temp }}/loctree-release-lsp/${{ matrix.target }}
+        run: node scripts/fetch-release-lsp.js
+        working-directory: editors/vscode
+
+      - name: Package VSIX with release binary
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+        env:
+          LOCTREE_LSP_PATH: ${{ steps.release_lsp.outputs.lsp_path }}
+        run: npm run package -- --target ${{ matrix.vsix_suffix }}
+        working-directory: editors/vscode
+
+      - name: Package VSIX with source-built binary
+        if: ${{ !(startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') }}
+        env:
+          LOCTREE_LSP_PATH: ${{ github.workspace }}/target/${{ matrix.target }}/release/loctree-lsp${{ startsWith(matrix.target, 'x86_64-pc-windows') && '.exe' || '' }}
+        run: npm run package -- --target ${{ matrix.vsix_suffix }}
+        working-directory: editors/vscode
+
+      - name: Prepare artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          ARTIFACTS_DIR="${RUNNER_TEMP}/loctree-artifacts"
+          mkdir -p "$ARTIFACTS_DIR"
+
+          VSIX_SRC=$(find editors/vscode -maxdepth 1 -name '*.vsix' -print -quit)
+          if [[ -z "$VSIX_SRC" ]]; then
+            echo "No VSIX artifact produced" >&2
+            exit 1
+          fi
+          VSIX_NAME="loct-vscode-${{ matrix.vsix_suffix }}.vsix"
+          cp "$VSIX_SRC" "$ARTIFACTS_DIR/$VSIX_NAME"
+
+          LSP_SRC="target/${{ matrix.target }}/release/loctree-lsp"
+          if [[ "${{ matrix.target }}" == x86_64-pc-windows-msvc ]]; then
+            LSP_SRC="${LSP_SRC}.exe"
+          fi
+          cp "$LSP_SRC" "$ARTIFACTS_DIR/${{ matrix.lsp_asset }}"
+
+          echo "VSIX: $VSIX_NAME"
+          echo "LSP:  ${{ matrix.lsp_asset }}"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: loct-vscode-${{ matrix.vsix_suffix }}
+          path: ${{ runner.temp }}/loctree-artifacts
+
+  release-assets:
+    name: Upload release assets
+    # action-gh-release needs a tag; on PR/branch runs there is no release to
+    # attach to, so this job must only fire on tag pushes.
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    needs: build-vsix
+    # The default GITHUB_TOKEN is read-only here; creating/updating the
+    # release requires an explicit write grant (v0.13.1 failed on this).
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: artifacts
+
+      - name: List artifacts
+        run: ls -R artifacts
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          files: artifacts/**/*

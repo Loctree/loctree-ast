@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.loctree.dev/loctree.anchors.v1.schema.json",
+  "title": "loctree.anchors.v1",
+  "description": "Frozen contract for the loctree anchor catalog (substrate-makieta v4, C0-01 freezes the SCHEMA; the real producer is L0-01: `loct anchors --format json`). Anchors give attribution (A1-01) stable, snapshot-aligned targets: anchor_id survives renames via the aliases history. anchor_catalog_revision from this catalog is embedded into loctree.overlay.intent.v1 documents.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "repo_id",
+    "snapshot_commit",
+    "anchor_catalog_revision",
+    "producer_version",
+    "anchors"
+  ],
+  "properties": {
+    "schema": {
+      "description": "Optional self-describing schema tag for dispatch by consumers.",
+      "const": "loctree.anchors.v1"
+    },
+    "repo_id": {
+      "description": "Repository identity, org/repo or bare slug. Never an absolute filesystem path.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)?$",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "snapshot_commit": {
+      "description": "Loctree snapshot commit the catalog was emitted from (7-40 hex).",
+      "type": "string",
+      "pattern": "^[0-9a-f]{7,40}$"
+    },
+    "anchor_catalog_revision": {
+      "description": "Deterministic revision of this catalog: acr1:<sha256-hex> over the canonical serialization of all anchors + producer version.",
+      "type": "string",
+      "pattern": "^acr1:[0-9a-f]{64}$"
+    },
+    "producer_version": {
+      "description": "Version of the emitting loctree binary (L0-01).",
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+([-+][0-9A-Za-z.+-]+)?$"
+    },
+    "anchors": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/anchor" }
+    }
+  },
+  "$defs": {
+    "anchorId": {
+      "description": "Stable anchor identity: anc1:<hex>. Deterministic emission is L0-01's obligation; the id survives renames (rename history lives in aliases).",
+      "type": "string",
+      "pattern": "^anc1:[0-9a-f]{16,64}$"
+    },
+    "relativePath": {
+      "description": "Repo-relative normalized path. Never absolute, never escaping the repo root.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._@+-][A-Za-z0-9._@+/-]*$",
+      "allOf": [
+        { "not": { "pattern": "(^|/)\\.\\.(/|$)" } }
+      ],
+      "maxLength": 512
+    },
+    "language": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_+#-]{0,31}$"
+    },
+    "qualifiedSymbol": {
+      "description": "Fully qualified symbol in the target language's canonical notation. No path separators.",
+      "type": "string",
+      "pattern": "^[^/\\\\]{1,512}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$"
+    },
+    "alias": {
+      "description": "One rename-history entry: a previous path or previous qualified symbol this anchor was known under.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "value"],
+      "properties": {
+        "kind": { "enum": ["path", "symbol"] },
+        "value": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "observed_at": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "anchor": {
+      "description": "One anchor. Path-level anchors omit qualified_symbol/signature_hash; symbol-level anchors carry both.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["anchor_id", "normalized_path", "language"],
+      "properties": {
+        "anchor_id": { "$ref": "#/$defs/anchorId" },
+        "normalized_path": { "$ref": "#/$defs/relativePath" },
+        "language": { "$ref": "#/$defs/language" },
+        "qualified_symbol": { "$ref": "#/$defs/qualifiedSymbol" },
+        "signature_hash": {
+          "description": "Symbol signature hash: sig1:<hex>. Requires qualified_symbol.",
+          "type": "string",
+          "pattern": "^sig1:[0-9a-f]{16,64}$"
+        },
+        "aliases": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/alias" }
+        }
+      },
+      "dependentRequired": {
+        "signature_hash": ["qualified_symbol"]
+      }
+    }
+  }
+}

@@ -1,0 +1,88 @@
+<!--
+  Loctree IntelliJ plugin descriptor.
+
+  Native JetBrains LSP integration for the loctree-lsp server. The
+  Loctree-specific extension registrations live in loctree-lsp.xml and
+  are pulled in via <xi:include> so concurrent feature slices can extend
+  registration append-only without colliding on this file.
+
+  𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents ⓒ 2025-2026 Vetcoders
+-->
+<idea-plugin xmlns:xi="http://www.w3.org/2001/XInclude">
+    <id>io.loct.loctree</id>
+    <name>Loctree</name>
+    <vendor email="support@loctree.com" url="https://loctree.com">Loctree</vendor>
+
+    <idea-version since-build="252.1"/>
+
+    <description><![CDATA[
+        One-shot full repository context for AI agents, powered by the
+        <b>loctree-lsp</b> server.
+        <br/><br/>
+        The plugin starts the native loctree language server for
+        supported files (TypeScript, JavaScript, Rust, Python, Go) and
+        surfaces standard LSP diagnostics, hover, navigation, and code
+        actions, plus Loctree-specific tooling: Context Pack cards,
+        literal occurrences, symbol bodies, impact analysis, holographic
+        slices, and secondary findings.
+        <br/><br/>
+        <b>Requires a paid JetBrains IDE on the 2025.2.1+ line</b> —
+        IntelliJ IDEA Ultimate, WebStorm, PyCharm Professional, GoLand,
+        RustRover, Rider, PhpStorm, RubyMine, or CLion. Community editions
+        do not ship the native LSP module this plugin depends on.
+        <br/><br/>
+        Supported platforms: macOS (Apple Silicon and Intel) and Linux x64.
+        The loctree-lsp runtime is downloaded once for your platform from
+        GitHub Releases with a mandatory SHA256 check, then cached by the
+        IDE; a local server path can be set instead. On other platforms the
+        plugin shows a notification pointing at the manual install path.
+    ]]></description>
+
+    <!--
+      Marketplace renders <change-notes> verbatim as "What's new" for the
+      version in gradle.properties (pluginVersion). These notes MUST match
+      the top dated section of editors/jetbrains/CHANGELOG.md — when you
+      bump pluginVersion, move [Unreleased] to a dated CHANGELOG section
+      and rewrite this block from it. Never ship a previous version's notes.
+    -->
+    <change-notes><![CDATA[
+        <h3>0.14.2</h3>
+        <p>Initial Marketplace release.</p>
+        <ul>
+            <li>Native IntelliJ LSP integration for the <b>loctree-lsp</b>
+                server: diagnostics, hover, navigation, and code actions for
+                TypeScript, JavaScript, Rust, Python, and Go.</li>
+            <li>Loctree tool window with routed query modes — Health, Find,
+                Literal, Body, Follow, Slice, Impact, Context Atlas, Context
+                Pack, Workspaces, Diff, AICX, Semantic, and AST Query — with
+                rich JSON results and Load More continuation.</li>
+            <li>Verified runtime resolution: configured path &#8594; IDE cache
+                &#8594; verified download (mandatory SHA256, fail-closed)
+                &#8594; PATH. Downloads are pinned to the plugin's own version
+                by default; <code>latest</code> is an explicit opt-in.</li>
+            <li>Honest platform matrix: downloads target only the published
+                loctree-lsp binaries (macOS arm64/x64, Linux x64). On other
+                platforms the plugin shows a notification with the manual
+                install path instead of failing silently.</li>
+            <li>Settings under Tools &#8594; Loctree, status bar widget, and a
+                findings tool window for dead exports, circular imports, and
+                twins with double-click navigation.</li>
+            <li>Editor and project-view context actions: Refresh, Show Health,
+                Analyze Impact, Show Slice, Find Consumers/Importers, Check
+                Dead Exports, Show/Analyze Cycles, Find Literal Occurrences,
+                Open Report.</li>
+            <li>Light and dark plugin icons sized to the Marketplace spec.</li>
+            <li>Compatibility: paid JetBrains IDEs 2025.2.1+ (native LSP
+                module).</li>
+        </ul>
+    ]]></change-notes>
+
+    <!-- Native LSP API is exposed through this module in 2025.2.1+ IDEs. -->
+    <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.modules.lsp</depends>
+
+    <resource-bundle>messages.LoctreeBundle</resource-bundle>
+
+    <!-- Loctree-specific registrations (append-only target). -->
+    <xi:include href="/META-INF/loctree-lsp.xml" xpointer="xpointer(/idea-plugin/*)"/>
+</idea-plugin>

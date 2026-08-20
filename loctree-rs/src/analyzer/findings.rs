@@ -19,15 +19,14 @@ use crate::analyzer::dead_parrots::{
     DeadExport, DeadFilterConfig, ShadowExport, canonical_dead_filter, compute_dead_truth_with,
 };
 use crate::analyzer::dist::DistResult;
-use crate::analyzer::health_score::{HealthMetrics, calculate_health_score};
+use crate::analyzer::health_inputs::structural_defects;
+use crate::analyzer::health_score::calculate_health_score;
 use crate::analyzer::memory_lint::{MemoryLintIssue, MemoryLintSummary, lint_memory_file};
 use crate::analyzer::react_lint::{ReactLintIssue, ReactLintSummary, analyze_react_file};
 use crate::analyzer::report::RankedDup;
 use crate::analyzer::root_scan::ScanResults;
 use crate::analyzer::ts_lint::{TsLintIssue, TsLintSummary, lint_ts_file};
-use crate::analyzer::twins::{
-    TwinCategory, categorize_twin, detect_exact_twins, filter_idiom_twins, find_dead_parrots,
-};
+use crate::analyzer::twins::{detect_exact_twins, filter_idiom_twins, omit_from_duplicate_groups};
 use crate::semantic::{Classifier as SemClassifier, SemanticFacts};
 use crate::snapshot::{EntrypointDriftSummary, Snapshot};
 use crate::types::FileAnalysis;
@@ -242,6 +241,18 @@ pub struct QuickWin {
     pub action: String,
     /// Target file
     pub file: String,
+    /// The declaration this win is about, when the win is symbol-scoped.
+    ///
+    /// Without it a `delete_candidate` for one dead constant renders as
+    /// `delete_candidate: <path>` and reads as a verdict on the whole file —
+    /// a reader who then checks whether the *file* is used finds it very much
+    /// alive and dismisses a true finding. Carrying the symbol keeps the
+    /// proposal at the size it was actually made at. (loctree-fail 2026-08-12)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub symbol: Option<String>,
+    /// 1-based line of `symbol`, when known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line: Option<usize>,
     /// Human-readable reason
     pub reason: String,
     /// Estimated LOC savings (if applicable)
@@ -270,7 +281,7 @@ impl Findings {
         config: FindingsConfig,
         dist: Option<DistResult>,
     ) -> Self {
-        let version = env!("CARGO_PKG_VERSION").to_string();
+        let version = crate::BUILD_VERSION.to_string();
         let generated_at = time::OffsetDateTime::now_utc()
             .format(&time::format_description::well_known::Iso8601::DEFAULT)
             .unwrap_or_else(|_| "unknown".to_string());
@@ -448,6 +459,15 @@ impl Findings {
                 .map(|c| c.to_string());
         }
 
+        // W1-03: the sensor still lists every namesake group; the count that
+        // feeds `duplicate_groups` / score must read that classification.
+        let skip_score: HashSet<&str> = exact_twins
+            .iter()
+            .filter(|twin| omit_from_duplicate_groups(twin))
+            .map(|twin| twin.name.as_str())
+            .collect();
+        duplicates.retain(|dup| !skip_score.contains(dup.symbol.as_str()));
+
         let quick_wins = generate_quick_wins(
             &dead_parrots,
             &cycles,
@@ -458,17 +478,6 @@ impl Findings {
             &memory_lint,
         );
 
-        // Categorize twins: same-language vs cross-language
-        let (twins_same_language, _twins_cross_language): (Vec<_>, Vec<_>) = exact_twins
-            .iter()
-            .partition(|twin| matches!(categorize_twin(twin), TwinCategory::SameLanguage(_)));
-
-        // Use twins module's find_dead_parrots for consistency with for_ai.rs
-        // (this is different from DeadExport dead_parrots - twins dead_parrots are symbols with 0 imports)
-        let twins_result = find_dead_parrots(&analyses_vec, false, false);
-        let twins_dead_parrots = twins_result.dead_parrots.len();
-        let twins_same_lang_count = twins_same_language.len();
-
         // Count cascade imports for health score consistency with for_ai.rs
         let cascade_imports: usize = scan_results
             .contexts
@@ -478,6 +487,7 @@ impl Findings {
 
         // Calculate summary
         let summary = calculate_summary(&SummaryInput {
+            snapshot,
             analyses: &analyses,
             dead_parrots: &dead_parrots,
             shadow_exports: &shadow_exports,
@@ -487,8 +497,6 @@ impl Findings {
             react_lint: &react_lint,
             ts_lint: &ts_lint,
             memory_lint: &memory_lint,
-            twins_dead_parrots,
-            twins_same_language: twins_same_lang_count,
             cascade_imports,
             dist: dist.as_ref(),
         });
@@ -748,6 +756,12 @@ fn generate_quick_wins(
             wins.push(QuickWin {
                 action: "delete_candidate".to_string(),
                 file: dead.file.clone(),
+                // Carry the declaration: this win is about one symbol, not the
+                // file. Note the dedup above is per-file, so a file with several
+                // dead declarations contributes only its first — one more reason
+                // the entry must not read as a verdict on everything in it.
+                symbol: Some(dead.symbol.clone()),
+                line: dead.line,
                 reason: dead.reason.clone(),
                 saves_loc: None, // TODO: Add LOC info to DeadExport
             });
@@ -762,6 +776,9 @@ fn generate_quick_wins(
             wins.push(QuickWin {
                 action: "break_cycle".to_string(),
                 file: cycle.files.first().cloned().unwrap_or_default(),
+                // A cycle is a property of the edge set, not of one declaration.
+                symbol: None,
+                line: None,
                 reason: suggestion.clone(),
                 saves_loc: None,
             });
@@ -777,6 +794,8 @@ fn generate_quick_wins(
             wins.push(QuickWin {
                 action: "consolidate".to_string(),
                 file: dup.canonical.clone(),
+                symbol: Some(dup.symbol.clone()),
+                line: None,
                 reason: format!(
                     "Consolidate '{}' from {} files",
                     dup.symbol,
@@ -795,6 +814,10 @@ fn generate_quick_wins(
             wins.push(QuickWin {
                 action: "create_barrel".to_string(),
                 file: format!("{}/index.ts", dir),
+                // Directory-scoped: the win creates a file, it does not target
+                // an existing declaration.
+                symbol: None,
+                line: None,
                 reason: chaos.description.clone(),
                 saves_loc: None,
             });
@@ -809,6 +832,10 @@ fn generate_quick_wins(
             wins.push(QuickWin {
                 action: "fix_race_condition".to_string(),
                 file: issue.file.clone(),
+                // The line was already being stringified into `reason`; carrying
+                // it as data too lets a reader jump straight to it.
+                symbol: None,
+                line: Some(issue.line),
                 reason: format!("{} (line {})", issue.message, issue.line),
                 saves_loc: None,
             });
@@ -823,6 +850,8 @@ fn generate_quick_wins(
             wins.push(QuickWin {
                 action: "fix_type_safety".to_string(),
                 file: issue.file.clone(),
+                symbol: None,
+                line: Some(issue.line),
                 reason: format!("{} (line {})", issue.message, issue.line),
                 saves_loc: None,
             });
@@ -837,6 +866,8 @@ fn generate_quick_wins(
             wins.push(QuickWin {
                 action: "fix_memory_leak".to_string(),
                 file: issue.file.clone(),
+                symbol: None,
+                line: Some(issue.line),
                 reason: format!("{} (line {})", issue.message, issue.line),
                 saves_loc: None,
             });
@@ -850,6 +881,9 @@ fn generate_quick_wins(
 
 /// Bundled input for [`calculate_summary`] to stay under the 7-argument clippy limit.
 struct SummaryInput<'a> {
+    /// The scanned snapshot — the single source the canonical health vector is
+    /// built from (`health_inputs::structural_defects`).
+    snapshot: &'a Snapshot,
     analyses: &'a [&'a FileAnalysis],
     dead_parrots: &'a [DeadExport],
     shadow_exports: &'a [ShadowExport],
@@ -859,8 +893,6 @@ struct SummaryInput<'a> {
     react_lint: &'a [ReactLintIssue],
     ts_lint: &'a [TsLintIssue],
     memory_lint: &'a [MemoryLintIssue],
-    twins_dead_parrots: usize,
-    twins_same_language: usize,
     cascade_imports: usize,
     dist: Option<&'a DistResult>,
 }
@@ -882,25 +914,22 @@ fn calculate_summary(input: &SummaryInput) -> FindingsSummary {
         }
     }
 
-    // Vector-based health score with log-normalization (unified with for_ai.rs)
-    // Now includes twins metrics for consistency with for_ai.rs health score
-    let health_metrics = HealthMetrics {
-        // CERTAIN: breaking cycles are critical
-        breaking_cycles: cycle_counts.breaking,
-        // HIGH: dead exports, twins_dead_parrots
-        dead_exports: input.dead_parrots.len(),
-        twins_dead_parrots: input.twins_dead_parrots,
-        // SMELL: barrel chaos, structural cycles, duplicates, twins_same_language, cascades
-        barrel_chaos_count: input.barrel_chaos.len(),
-        structural_cycles: cycle_counts.structural,
-        duplicate_exports: input.duplicates.len(),
-        twins_same_language: input.twins_same_language,
-        cascade_imports: input.cascade_imports,
-        // Context
-        files,
-        loc,
-        ..Default::default()
-    };
+    // One health vector, one number: the metrics are built by
+    // `health_inputs::structural_defects`, never inline here. Inlining is what
+    // let every later defect gate land on this surface only, while `--for-ai`
+    // kept scoring the ungated sensor rows (85 vs 72 on df35a677).
+    let duplicate_symbols: Vec<String> = input
+        .duplicates
+        .iter()
+        .map(|dup| dup.symbol.clone())
+        .collect();
+    let health_metrics = structural_defects(
+        input.snapshot,
+        input.dead_parrots,
+        &duplicate_symbols,
+        input.cascade_imports,
+    )
+    .metrics();
 
     let health = calculate_health_score(&health_metrics);
     let health_score = health.health;
@@ -1071,7 +1100,7 @@ impl Manifest {
         agent_size_kb: usize,
         dist: Option<&DistResult>,
     ) -> Self {
-        let version = env!("CARGO_PKG_VERSION").to_string();
+        let version = crate::BUILD_VERSION.to_string();
         let generated_at = time::OffsetDateTime::now_utc()
             .format(&time::format_description::well_known::Iso8601::DEFAULT)
             .unwrap_or_else(|_| "unknown".to_string());
@@ -1108,10 +1137,10 @@ impl Manifest {
                 query_with: {
                     let mut queries = vec![
                         "loct findings".to_string(),
-                        "loct '.dead_parrots'".to_string(),
+                        "loct '.dead_parrots' --artifact findings".to_string(),
                     ];
                     if dist.is_some() {
-                        queries.push("loct '.dist'".to_string());
+                        queries.push("loct '.dist' --artifact findings".to_string());
                     }
                     queries
                 },
@@ -1126,7 +1155,7 @@ impl Manifest {
                 query_with: {
                     let mut queries = vec!["loct --for-ai".to_string()];
                     if dist.is_some() {
-                        queries.push("loct '.bundle.dist'".to_string());
+                        queries.push("loct '.bundle.dist' --artifact agent".to_string());
                     }
                     queries
                 },
@@ -1145,11 +1174,11 @@ impl Manifest {
         let examples = vec![
             ManifestExample {
                 task: "Get health score".to_string(),
-                cmd: "loct '.summary.health_score'".to_string(),
+                cmd: "loct '.summary.health_score' --artifact agent".to_string(),
             },
             ManifestExample {
                 task: "List dead exports".to_string(),
-                cmd: "loct '.dead_parrots'".to_string(),
+                cmd: "loct '.dead_parrots' --artifact findings".to_string(),
             },
             ManifestExample {
                 task: "Context for file".to_string(),
@@ -1161,18 +1190,18 @@ impl Manifest {
             },
             ManifestExample {
                 task: "Count cycles".to_string(),
-                cmd: "loct '.cycles | length'".to_string(),
+                cmd: "loct '.cycles | length' --artifact findings".to_string(),
             },
         ];
         let mut examples = examples;
         if dist.is_some() {
             examples.push(ManifestExample {
                 task: "Show bundle coverage".to_string(),
-                cmd: "loct '.dist.coveragePct'".to_string(),
+                cmd: "loct '.dist.coveragePct' --artifact findings".to_string(),
             });
             examples.push(ManifestExample {
                 task: "List tree-shaken exports".to_string(),
-                cmd: "loct '.dist.deadExports'".to_string(),
+                cmd: "loct '.dist.deadExports' --artifact findings".to_string(),
             });
         }
 
@@ -1218,6 +1247,8 @@ mod tests {
         let win = QuickWin {
             action: "delete_candidate".to_string(),
             file: "src/dead.ts".to_string(),
+            symbol: Some("unusedExport".to_string()),
+            line: Some(42),
             reason: "Unused export".to_string(),
             saves_loc: Some(100),
         };
@@ -1225,6 +1256,21 @@ mod tests {
         assert!(json.contains("delete_candidate"));
         assert!(json.contains("src/dead.ts"));
         assert!(json.contains("100"));
+        assert!(json.contains("unusedExport"), "symbol must reach the wire");
+        assert!(json.contains("42"), "line must reach the wire");
+
+        // Symbol-less wins (cycles, barrels) must not emit null noise.
+        let cycle_win = QuickWin {
+            action: "break_cycle".to_string(),
+            file: "src/a.ts".to_string(),
+            symbol: None,
+            line: None,
+            reason: "Break the a->b->a cycle".to_string(),
+            saves_loc: None,
+        };
+        let json = serde_json::to_string(&cycle_win).expect("serialize quick win");
+        assert!(!json.contains("symbol"), "absent symbol must be omitted");
+        assert!(!json.contains("line"), "absent line must be omitted");
     }
 
     #[test]
@@ -1284,6 +1330,14 @@ mod tests {
         assert_eq!(wins.len(), 1, "only the clean high-confidence candidate");
         assert_eq!(wins[0].action, "delete_candidate");
         assert_eq!(wins[0].file, "src/dead.ts");
+        // The win is about one declaration; without these a reader checks the
+        // whole file for usage, finds it alive, and dismisses a true finding.
+        assert_eq!(
+            wins[0].symbol.as_deref(),
+            Some("unused"),
+            "a symbol-scoped win must name its declaration"
+        );
+        assert_eq!(wins[0].line, Some(3), "and point at its line");
         assert!(
             !wins.iter().any(|w| w.file == "src/bin/tool.rs"),
             "entry-point files must never get delete_candidate"

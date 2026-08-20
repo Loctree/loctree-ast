@@ -1072,7 +1072,17 @@ pub fn compute_dead_truth_with(
         None => raw,
     };
 
-    let (dead, cross_check) = cross_check_dead_exports(candidates, snapshot);
+    let (mut dead, cross_check) = cross_check_dead_exports(candidates, snapshot);
+
+    // `--confidence high` is a verdict filter, not merely a hint for the raw
+    // import-graph pass. Cross-checking can discover runtime reachability after
+    // the raw candidates are built (for example Swift `@main` or a Cargo bin),
+    // so apply the requested threshold again after those candidates have been
+    // downgraded. Otherwise a low-confidence framework entrypoint leaks back
+    // out of the explicitly high-confidence surface.
+    if high_confidence {
+        dead.retain(|candidate| matches!(candidate.confidence.as_str(), "high" | "very-high"));
+    }
 
     DeadTruth {
         dead,
@@ -1358,12 +1368,33 @@ pub fn cross_check_dead_exports(
             ));
         }
 
+        // Framework-dispatch fence: an `override` member is called by the
+        // superclass, never from app code, so "no references" is the shape of a
+        // correct override rather than evidence of death. Same downgrade the
+        // entry-point fence applies — the candidate stays visible in the raw
+        // list, but cannot be promoted into a delete quick-win.
+        if let Some(root) = &root
+            && filters::probe_framework_dispatched_declaration(
+                &root.join(&candidate.file),
+                &candidate.file,
+                candidate.line,
+            )
+        {
+            degrade = true;
+            notes.push(
+                "framework dispatch: `override` member is called by the superclass — confidence downgraded and excluded from delete quick-wins".to_string(),
+            );
+        }
+
         if is_entrypoint_file(&candidate.file) {
             candidate.entrypoint = true;
+            // Manifest/framework dispatch is positive reachability evidence.
+            // It does not prove every declaration in the owner file is live,
+            // but it is sufficient to make high-confidence dead impossible.
+            degrade = true;
             stats.entrypoint_fenced += 1;
             notes.push(
-                "entry-point fence: runtime entrypoint — excluded from delete quick-wins"
-                    .to_string(),
+                "entry-point fence: framework/manifest reachability — confidence downgraded and excluded from delete quick-wins".to_string(),
             );
         } else {
             notes.push("not an entrypoint".to_string());
@@ -1555,6 +1586,155 @@ mod tests {
                 .collect(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn framework_entrypoint_is_downgraded_before_high_confidence_filtering() {
+        let source = "import SwiftUI\n\n@main\nstruct FixtureApp: App {\n    var body: some Scene { WindowGroup {} }\n}\n";
+        let app = crate::analyzer::swift::analyze_swift_file(
+            source,
+            "Sources/FixtureApp.swift".to_string(),
+        );
+        let mut snapshot = crate::snapshot::Snapshot::new(Vec::new());
+        snapshot.files.push(app);
+
+        let all = compute_dead_truth_with(&snapshot, DeadFilterConfig::default(), false);
+        let app = all
+            .dead
+            .iter()
+            .find(|candidate| candidate.symbol == "FixtureApp")
+            .expect("the framework owner remains an honest low-confidence candidate");
+        assert!(app.entrypoint);
+        assert_eq!(app.confidence, "low");
+        assert!(app.reason.contains("framework/manifest reachability"));
+
+        let high = compute_dead_truth_with(&snapshot, DeadFilterConfig::default(), true);
+        assert!(
+            high.dead
+                .iter()
+                .all(|candidate| candidate.symbol != "FixtureApp" && !candidate.entrypoint),
+            "framework entrypoints must not leak from the high-confidence surface: {:?}",
+            high.dead
+        );
+    }
+
+    // loctree-fail 2026-08-12: `canBecomeKey` (an AppKit `override`) was promoted
+    // to a delete quick-win with confidence=high. An override is dispatched by the
+    // superclass, so "no references from Swift code" is what a correct override
+    // looks like — not evidence that it is dead.
+    // Pensieve report 2026-08-12: ~90% of the 21 "high-confidence dead" symbols
+    // were AppKit/SwiftUI witnesses — a forwarding NSWindowDelegate proxy, a
+    // ButtonStyle `makeBody`, NSViewRepresentable lifecycle, a Markdown visitor,
+    // LocalizedError. Following the report's own "Quick Win: remove 16 dead
+    // exports" would have deleted a working conscious-close path. Each case here
+    // is one named symbol from that report.
+    #[test]
+    fn swift_framework_witnesses_are_not_high_confidence_dead() {
+        let dir = std::env::temp_dir().join(format!(
+            "loctree-witness-probe-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("Fixture.swift");
+        std::fs::write(
+            &file,
+            "import SwiftUI\n\
+             func windowWillMove(_ n: Notification) {}\n\
+             func makeBody(configuration: Configuration) -> some View { EmptyView() }\n\
+             func textViewDidChangeSelection(_ n: Notification) {}\n\
+             func dismantleNSView(_ v: NSView, coordinator: ()) {}\n\
+             func webViewWebContentProcessDidTerminate(_ w: WKWebView) {}\n\
+             func visitHeading(_ h: Heading) -> String { \"\" }\n\
+             var errorDescription: String? { nil }\n\
+             @objc func handleTap(_ s: Any) {}\n\
+             func loadDocument() {}\n\
+             func windowsize() -> Int { 0 }\n",
+        )
+        .unwrap();
+
+        for (line, symbol) in [
+            (2, "windowWillMove (NSWindowDelegate)"),
+            (3, "makeBody (ButtonStyle witness)"),
+            (4, "textViewDidChangeSelection (NSTextViewDelegate)"),
+            (5, "dismantleNSView (NSViewRepresentable lifecycle)"),
+            (
+                6,
+                "webViewWebContentProcessDidTerminate (WKNavigationDelegate)",
+            ),
+            (7, "visitHeading (Markdown visitor)"),
+            (8, "errorDescription (LocalizedError)"),
+            (9, "handleTap (@objc selector target)"),
+        ] {
+            assert!(
+                filters::probe_framework_dispatched_declaration(&file, "Fixture.swift", Some(line)),
+                "{symbol} must be fenced from delete quick-wins"
+            );
+        }
+
+        // Ordinary app code must stay a candidate — the fence must not swallow
+        // everything. `windowsize` guards the prefix rule: `window` only counts
+        // when an uppercase letter follows it.
+        for (line, symbol) in [(10, "loadDocument"), (11, "windowsize")] {
+            assert!(
+                !filters::probe_framework_dispatched_declaration(
+                    &file,
+                    "Fixture.swift",
+                    Some(line)
+                ),
+                "{symbol} is ordinary app code and must remain a candidate"
+            );
+        }
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn swift_override_is_not_high_confidence_dead() {
+        let dir = std::env::temp_dir().join(format!(
+            "loctree-override-probe-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("Window.swift");
+        std::fs::write(
+            &file,
+            "import AppKit\n\
+             final class OverlayWindow: NSWindow {\n\
+             \x20   override var canBecomeKey: Bool { true }\n\
+             \x20   func plainHelper() {}\n\
+             }\n",
+        )
+        .unwrap();
+
+        // line 3 is the override, line 4 is an ordinary declaration
+        assert!(
+            filters::probe_framework_dispatched_declaration(&file, "Window.swift", Some(3)),
+            "an `override` member must be fenced"
+        );
+        assert!(
+            !filters::probe_framework_dispatched_declaration(&file, "Window.swift", Some(4)),
+            "an ordinary declaration must stay a candidate"
+        );
+        // Non-Swift and unknown-line inputs must not read the file at all.
+        assert!(!filters::probe_framework_dispatched_declaration(
+            &file,
+            "Window.rs",
+            Some(3)
+        ));
+        assert!(!filters::probe_framework_dispatched_declaration(
+            &file,
+            "Window.swift",
+            None
+        ));
+        assert!(!filters::probe_framework_dispatched_declaration(
+            &file,
+            "Window.swift",
+            Some(9_999)
+        ));
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

@@ -5,7 +5,7 @@
 //! - Route decorator parsing for web frameworks
 //! - Type extraction from decorator parameters (response_model, Depends, etc.)
 //!
-//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents ⓒ 2025-2026 Loctree Team
+//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI
 
 use super::helpers::{bytes_match_keyword, extract_ascii_ident};
 

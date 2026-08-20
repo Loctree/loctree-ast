@@ -9,11 +9,26 @@ fn agent_index_url() -> &'static str {
     "https://loct.io/api/agent/index.json"
 }
 
-fn fetch_agent_index_json() -> serde_json::Value {
+/// Fetch the published agent index, or `None` when the network path itself is
+/// down (DNS, connect, timeout, TLS transport). HTTP-level errors (404/500)
+/// still fail hard — a reachable site without the index is a broken contract;
+/// an unreachable site must not wedge local gates for 300s.
+fn fetch_agent_index_json() -> Option<serde_json::Value> {
+    const NETWORK_DOWN_CURL_CODES: [i32; 4] = [6, 7, 28, 35];
     let output = Command::new("curl")
-        .args(["-fsSL", agent_index_url()])
+        .args(["-fsSL", "--max-time", "15", agent_index_url()])
         .output()
         .expect("run curl for loct.io agent index");
+    if let Some(code) = output.status.code()
+        && NETWORK_DOWN_CURL_CODES.contains(&code)
+    {
+        eprintln!(
+            "SKIP agent_index_contract: {} unreachable (curl exit {code}); \
+             network availability is not this repo's contract",
+            agent_index_url()
+        );
+        return None;
+    }
     assert!(
         output.status.success(),
         "failed to fetch {} (status: {}):\n{}",
@@ -22,7 +37,7 @@ fn fetch_agent_index_json() -> serde_json::Value {
         String::from_utf8_lossy(&output.stderr),
     );
     let text = String::from_utf8(output.stdout).expect("decode loct.io agent index as utf-8");
-    serde_json::from_str(&text).expect("parse https://loct.io/api/agent/index.json")
+    Some(serde_json::from_str(&text).expect("parse https://loct.io/api/agent/index.json"))
 }
 
 fn help_args_for_agent_cmd(cmd: &str) -> Vec<String> {
@@ -75,7 +90,9 @@ fn help_args_for_agent_cmd(cmd: &str) -> Vec<String> {
 
 #[test]
 fn agent_index_commands_have_help() {
-    let json = fetch_agent_index_json();
+    let Some(json) = fetch_agent_index_json() else {
+        return;
+    };
 
     let commands = json
         .get("commands")

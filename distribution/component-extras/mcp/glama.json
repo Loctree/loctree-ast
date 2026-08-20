@@ -1,0 +1,93 @@
+{
+  "$schema": "https://glama.ai/mcp/schemas/server.json",
+  "maintainers": [
+    "div0-space"
+  ],
+  "name": "loctree-mcp",
+  "description": "MCP server exposing loctree's structural code perception to AI agents. Twelve read-only tools over a scanned AST/import graph: orient with context, read a file's role with slice, measure blast radius with impact, locate symbols and occurrences with find, and pursue dead code, cycles, twins and hotspots with follow. Universal by design — every tool takes a project path, so one server answers for any repository on the host.",
+  "license": "BUSL-1.1",
+  "homepage": "https://loct.io",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Loctree/loctree-mcp"
+  },
+  "categories": [
+    "developer-tools",
+    "code-analysis"
+  ],
+  "tags": [
+    "mcp",
+    "code-analysis",
+    "static-analysis",
+    "ast",
+    "dependency-graph",
+    "impact-analysis",
+    "dead-code",
+    "refactoring",
+    "agents",
+    "rust"
+  ],
+  "transports": [
+    "stdio",
+    "streamable-http"
+  ],
+  "installation": {
+    "npm": "npx -y --package=@loctree/loctree loctree-mcp",
+    "docker": "docker build -t loctree-mcp . && docker run --rm -i --mount type=bind,src=\"$PWD\",dst=/workspace,readonly loctree-mcp",
+    "script": "curl -fsSL https://loct.io/install.sh | bash"
+  },
+  "authentication": {
+    "stdio": "none — the server runs as a child process of the MCP client",
+    "streamableHttp": "Optional bearer token (Authorization: Bearer <token>), argon2id-hashed at rest. Loopback binds may run without it; a non-loopback bind refuses to start unless tokens are configured or --allow-unauthenticated is passed. No TLS in-process — terminate TLS at a reverse proxy or use a tailnet."
+  },
+  "tools": [
+    {
+      "name": "context",
+      "description": "Complete Agent Context Pack: structural + runtime + risk + action + authority, with optional AICX memory. The session-start surface."
+    },
+    {
+      "name": "repo-view",
+      "description": "Repository overview: file count, LOC, languages, health summary, top hubs, quick wins."
+    },
+    {
+      "name": "slice",
+      "description": "File context before modifying: the file plus every import it pulls and every file that depends on it."
+    },
+    {
+      "name": "body",
+      "description": "Bounded source body/range for a symbol, with extent and truncation metadata."
+    },
+    {
+      "name": "find",
+      "description": "Symbol, importer and occurrence search. Modes: symbols, who-imports, where-symbol, tagmap, crowd, literal."
+    },
+    {
+      "name": "impact",
+      "description": "Blast radius before deleting or refactoring: direct and transitive consumers of a file."
+    },
+    {
+      "name": "diff",
+      "description": "Compare the live snapshot against a git ref: file, graph, export and impact changes."
+    },
+    {
+      "name": "tree",
+      "description": "Directory structure with LOC counts, filters, artifact detection."
+    },
+    {
+      "name": "focus",
+      "description": "Understand a module: files, exports, internal edges, external dependencies, optional consumers."
+    },
+    {
+      "name": "follow",
+      "description": "Pursue structural signals: dead, cycles, twins, hotspots, trace, commands, events, pipelines."
+    },
+    {
+      "name": "suppressions",
+      "description": "Source-side silencer inventory: Rust #[allow]/#[ignore]/unsafe, nosemgrep, @ts-ignore, eslint-disable, noqa, type: ignore, shellcheck disable."
+    },
+    {
+      "name": "prism",
+      "description": "Score conceptual smear across task framings; emits the loctree.prism.v1 schema."
+    }
+  ]
+}

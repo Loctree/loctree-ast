@@ -1,0 +1,111 @@
+# loctree v0.9.0 — AI Agent Quick Reference
+
+> Scan once, query everything. Use loctree BEFORE reading files manually.
+
+## Install
+```bash
+curl -fsSL https://loct.io/install.sh | bash
+```
+
+## First Run
+```bash
+loct                 # scan, produce cached artifacts
+loct --for-ai        # AI-optimized JSON overview (USE THIS FIRST)
+loct doctor          # interactive diagnostics
+```
+
+## Short Aliases (ALL work)
+```bash
+loct h    # health - quick sanity check
+loct d    # dead - unused exports
+loct t    # twins - dead parrots + duplicates
+loct c    # cycles - circular imports
+loct s    # slice - file context
+loct f    # find - symbol search (includes params!)
+loct i    # impact - change blast radius
+loct q    # query - graph queries
+```
+
+## Most Reliable Commands
+```bash
+loct --for-ai                          # Start here - AI bundle + quick wins
+loct slice <file> --consumers --json   # Best for file context
+loct find <symbol>                     # Semantic search + param matching
+loct impact <file>                     # What breaks if changed?
+loct query who-imports <file>          # Reverse lookup
+loct trace <handler>                   # Tauri FE→BE pipelines
+```
+
+## MCP Integration (Claude Code, etc.)
+```bash
+# MCP server auto-discovers project
+# Available tools: for_ai, slice, find, impact, health, cycles, dead, twins, query, trace, scan
+```
+
+## Parameter Indexing (NEW in 0.8.x)
+```bash
+loct find params        # Find functions with 'params' in signature
+loct f className        # Find where className is a parameter
+# Works across: Rust, TypeScript, JavaScript, Python
+```
+
+## Artifacts (user cache dir by default)
+```
+snapshot.json   # dependency graph (jq-able)
+findings.json   # all issues (dead, cycles, twins, shadows, orphans)
+manifest.json   # index for tooling
+agent.json      # AI-ready bundle (same as --for-ai)
+```
+
+## jq-style Queries
+```bash
+# Findings
+loct '.dead_parrots' --artifact findings              # dead exports
+loct '.cycles' --artifact findings                    # circular imports
+loct twins --json                 # twin groups (own command)
+
+# Snapshot
+loct '.files | length'            # count files
+loct '.files[] | select(.loc > 500)' -c   # large files
+```
+
+## Before Creating Anything
+```bash
+loct f <Name>     # check if symbol exists
+loct t            # check for twins/duplicates
+```
+
+## Before Modifying/Deleting
+```bash
+loct s <file> --consumers   # who uses this file?
+loct i <file>               # what breaks if removed?
+```
+
+## Diagnostics
+```bash
+loct doctor                       # interactive diagnostics
+loct doctor --apply-suppressions  # auto-add .loctignore
+loct audit                        # full markdown report
+loct h                            # quick health check
+```
+
+## Tauri FE<>BE
+```bash
+loct commands --missing    # FE calls without BE handlers
+loct commands --unused     # BE handlers without FE calls
+loct trace <handler>       # trace handler usage
+```
+
+## CI Pipeline
+```bash
+loct findings | jq '.dead_parrots | length'
+loct doctor && echo "Clean"
+```
+
+## Known Limitations
+- Python import resolution ~50% accurate for complex packages
+- FastAPI/Flask routes not detected as handlers
+- Library mode recommended for stdlib codebases
+
+---
+Docs: https://docs.rs/loctree | GitHub: https://github.com/Loctree/Loctree

@@ -1,0 +1,47 @@
+{
+  "schema": "loctree.overlay.intent.v1",
+  "repo_id": "Loctree/loctree-suite",
+  "snapshot_commit": "48a9526d",
+  "anchor_catalog_revision": "acr1:ab12cd34ab12cd34ab12cd34ab12cd34ab12cd34ab12cd34ab12cd34ab12cd34",
+  "store_revision": "sr1:5f0a5f0a5f0a5f0a5f0a5f0a5f0a5f0a5f0a5f0a5f0a5f0a5f0a5f0a5f0a5f0a",
+  "overlay_revision": "ov1:9e3b9e3b9e3b9e3b9e3b9e3b9e3b9e3b9e3b9e3b9e3b9e3b9e3b9e3b9e3b9e3b",
+  "producer_version": "0.12.0",
+  "entries": [
+    {
+      "intent_id": "int1:dddd000011112222",
+      "content_hash": "ch1:44bb44bb44bb44bb44bb44bb44bb44bb44bb44bb44bb44bb44bb44bb44bb44bb",
+      "target": {
+        "kind": "path",
+        "path": "loctree-rs/src/pack.rs",
+        "language": "rust"
+      },
+      "thesis": "Context pack niesie authority labels per fakt; konsument nie zgaduje pochodzenia.",
+      "status": "current",
+      "authority": "operator_confirmed",
+      "verification_status": "verified",
+      "valid_from": "2026-05-14T10:00:00Z",
+      "refs": [
+        {
+          "evidence_event_id": "ev1:claude:c935402e-0000-1111-2222-333344445555:000120:text:00ff11ee22dd33cc",
+          "ref": "session:c935402e#L120"
+        }
+      ]
+    },
+    {
+      "intent_id": "int1:eeee333344445555",
+      "content_hash": "ch1:55cc55cc55cc55cc55cc55cc55cc55cc55cc55cc55cc55cc55cc55cc55cc55cc",
+      "target": { "kind": "repo" },
+      "thesis": "Shadow-cleanup w install.sh kasował binarki hosta — podejście obalone, nie przywracać.",
+      "status": "disputed",
+      "authority": "agent_derived",
+      "verification_status": "refuted",
+      "valid_from": "2026-06-30T08:00:00Z",
+      "refs": [
+        {
+          "evidence_event_id": "ev1:gemini:0ac52090-6666-7777-8888-99aabbccddee:msg:14:tool_call:5566778899aabbcc",
+          "ref": "chunk:0ac52090-0014"
+        }
+      ]
+    }
+  ]
+}

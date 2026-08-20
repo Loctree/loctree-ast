@@ -17,6 +17,39 @@ use std::thread;
 use std::time::Duration;
 use tempfile::TempDir;
 
+#[cfg(unix)]
+fn fake_mcp_companion(dir: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let script = dir.join("fake-loctree-mcp.sh");
+    let marker = dir.join("mcp-pids.log");
+    std::fs::write(
+        &script,
+        "#!/bin/sh\nprintf '%s\\n' \"$$\" >> \"$LOCT_TEST_MCP_MARKER\"\ncat >/dev/null\n",
+    )
+    .expect("write fake MCP companion");
+    let mut permissions = std::fs::metadata(&script).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&script, permissions).unwrap();
+    (script, marker)
+}
+
+#[cfg(unix)]
+fn wait_for_marker_lines(path: &std::path::Path, expected: usize, timeout: Duration) -> Vec<u32> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        let pids: Vec<u32> = std::fs::read_to_string(path)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| line.parse().ok())
+            .collect();
+        if pids.len() >= expected || std::time::Instant::now() >= deadline {
+            return pids;
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
 fn make_repo() -> TempDir {
     let tmp = TempDir::new().expect("tempdir");
     // Minimum to look like a git repo so resolve_snapshot_root anchors here.
@@ -33,10 +66,20 @@ fn loct_bin() -> std::path::PathBuf {
     cargo_bin("loct")
 }
 
+/// Binary-wide temp cache: watcher scans write snapshots through the
+/// env-resolved cache, so every spawned `loct` must point `LOCT_CACHE_DIR`
+/// away from the operator-global cache (`~/Library/Caches/loctree`).
+fn test_cache_dir() -> &'static std::path::Path {
+    static CACHE: std::sync::LazyLock<TempDir> =
+        std::sync::LazyLock::new(|| TempDir::new().expect("shared test cache dir"));
+    CACHE.path()
+}
+
 fn spawn_watcher(repo: &std::path::Path) -> std::process::Child {
     Command::new(loct_bin())
         .current_dir(repo)
         .env("LOCT_OPEN_BROWSER", "0")
+        .env("LOCT_CACHE_DIR", test_cache_dir())
         .args(["scan", "--watch", "."])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -78,6 +121,7 @@ fn second_scan_watch_against_same_repo_is_rejected_with_exit_75() {
     let second = Command::new(loct_bin())
         .current_dir(repo.path())
         .env("LOCT_OPEN_BROWSER", "0")
+        .env("LOCT_CACHE_DIR", test_cache_dir())
         .args(["scan", "--watch", "."])
         .stdin(Stdio::null())
         .output()
@@ -112,6 +156,7 @@ fn absolute_path_collides_with_relative_dot() {
     let second = Command::new(loct_bin())
         .current_dir(elsewhere.path())
         .env("LOCT_OPEN_BROWSER", "0")
+        .env("LOCT_CACHE_DIR", test_cache_dir())
         .args(["scan", "--watch", abs.to_str().unwrap()])
         .stdin(Stdio::null())
         .output()
@@ -140,6 +185,7 @@ fn one_shot_scan_is_not_blocked_by_a_live_watcher() {
     let one_shot = Command::new(loct_bin())
         .current_dir(repo.path())
         .env("LOCT_OPEN_BROWSER", "0")
+        .env("LOCT_CACHE_DIR", test_cache_dir())
         .args(["scan", "--full-scan", "."])
         .stdin(Stdio::null())
         .output()
@@ -209,6 +255,7 @@ fn loct_watch_http_announces_streamable_http_companion() {
     let mut child = Command::new(loct_bin())
         .current_dir(repo.path())
         .env("LOCT_OPEN_BROWSER", "0")
+        .env("LOCT_CACHE_DIR", test_cache_dir())
         .args(["watch", "--http", "--port", &port.to_string(), "."])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -258,6 +305,106 @@ fn loct_watch_http_announces_streamable_http_companion() {
 }
 
 #[test]
+#[cfg(unix)]
+fn contending_http_watcher_never_spawns_a_companion() {
+    let repo = make_repo();
+    let helpers = TempDir::new().unwrap();
+    let (fake_mcp, marker) = fake_mcp_companion(helpers.path());
+    let port = pick_test_port(47);
+
+    let mut first = Command::new(loct_bin())
+        .current_dir(repo.path())
+        .env("LOCT_OPEN_BROWSER", "0")
+        .env("LOCT_CACHE_DIR", test_cache_dir())
+        .env("LOCTREE_MCP_BIN", &fake_mcp)
+        .env("LOCT_TEST_MCP_MARKER", &marker)
+        .args(["watch", "--http", "--port", &port.to_string(), "."])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn first http watcher");
+
+    wait_for_lock_acquired(repo.path(), Duration::from_secs(15));
+    // Generous bound: under CPU starvation the fork/exec of the fake companion
+    // plus its marker append can exceed a small window; healthy runs return in ms.
+    let first_pids = wait_for_marker_lines(&marker, 1, Duration::from_secs(15));
+    assert_eq!(
+        first_pids.len(),
+        1,
+        "first watcher must spawn one companion"
+    );
+
+    let second = Command::new(loct_bin())
+        .current_dir(repo.path())
+        .env("LOCT_OPEN_BROWSER", "0")
+        .env("LOCT_CACHE_DIR", test_cache_dir())
+        .env("LOCTREE_MCP_BIN", &fake_mcp)
+        .env("LOCT_TEST_MCP_MARKER", &marker)
+        .args(["watch", "--http", "--port", &port.to_string(), "."])
+        .stdin(Stdio::null())
+        .output()
+        .expect("run contending http watcher");
+    assert_eq!(second.status.code(), Some(75));
+
+    thread::sleep(Duration::from_millis(200));
+    let all_pids = wait_for_marker_lines(&marker, 1, Duration::from_millis(1));
+    unsafe {
+        libc::kill(first.id() as libc::pid_t, libc::SIGTERM);
+    }
+    let _ = first.wait();
+
+    assert_eq!(
+        all_pids.len(),
+        1,
+        "a lock loser must have zero process-creation side effects; companion pids: {all_pids:?}"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn http_companion_exits_when_watcher_parent_dies() {
+    let repo = make_repo();
+    let helpers = TempDir::new().unwrap();
+    let (fake_mcp, marker) = fake_mcp_companion(helpers.path());
+    let port = pick_test_port(53);
+
+    let mut watcher = Command::new(loct_bin())
+        .current_dir(repo.path())
+        .env("LOCT_OPEN_BROWSER", "0")
+        .env("LOCT_CACHE_DIR", test_cache_dir())
+        .env("LOCTREE_MCP_BIN", &fake_mcp)
+        .env("LOCT_TEST_MCP_MARKER", &marker)
+        .args(["watch", "--http", "--port", &port.to_string(), "."])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn http watcher");
+
+    wait_for_lock_acquired(repo.path(), Duration::from_secs(15));
+    // Same generous bound as the contention test — spawn latency under load.
+    let companion_pids = wait_for_marker_lines(&marker, 1, Duration::from_secs(15));
+    assert_eq!(companion_pids.len(), 1);
+    let companion_pid = companion_pids[0];
+
+    unsafe {
+        libc::kill(watcher.id() as libc::pid_t, libc::SIGTERM);
+    }
+    let _ = watcher.wait();
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while std::time::Instant::now() < deadline {
+        let alive = unsafe { libc::kill(companion_pid as libc::pid_t, 0) == 0 };
+        if !alive {
+            return;
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+    panic!("companion pid {companion_pid} survived watcher death");
+}
+
+#[test]
 fn loct_watch_report_brings_up_local_http_server() {
     use std::net::TcpStream;
 
@@ -266,6 +413,7 @@ fn loct_watch_report_brings_up_local_http_server() {
     let mut child = Command::new(loct_bin())
         .current_dir(repo.path())
         .env("LOCT_OPEN_BROWSER", "0")
+        .env("LOCT_CACHE_DIR", test_cache_dir())
         .args(["watch", "--report", "--port", &port.to_string(), "."])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -307,6 +455,7 @@ fn loct_watch_help_mentions_single_instance_and_exit_75() {
     let out = Command::new(loct_bin())
         .args(["watch", "--help"])
         .env("LOCT_OPEN_BROWSER", "0")
+        .env("LOCT_CACHE_DIR", test_cache_dir())
         .stdin(Stdio::null())
         .output()
         .expect("run loct watch --help");
@@ -332,6 +481,7 @@ fn loct_watch_dev_and_scan_watch_share_the_same_lock() {
     let mut first = Command::new(loct_bin())
         .current_dir(repo.path())
         .env("LOCT_OPEN_BROWSER", "0")
+        .env("LOCT_CACHE_DIR", test_cache_dir())
         .args(["watch", "--dev", "."])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -345,6 +495,7 @@ fn loct_watch_dev_and_scan_watch_share_the_same_lock() {
     let second = Command::new(loct_bin())
         .current_dir(repo.path())
         .env("LOCT_OPEN_BROWSER", "0")
+        .env("LOCT_CACHE_DIR", test_cache_dir())
         .args(["scan", "--watch", "."])
         .stdin(Stdio::null())
         .output()
@@ -414,6 +565,7 @@ fn replace_mode_sigterms_holder_and_retakes_lock() {
     let mut replacement = Command::new(loct_bin())
         .current_dir(repo.path())
         .env("LOCT_OPEN_BROWSER", "0")
+        .env("LOCT_CACHE_DIR", test_cache_dir())
         .args(["scan", "--watch", "--replace", "."])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -433,6 +585,7 @@ fn replace_mode_sigterms_holder_and_retakes_lock() {
     let third = Command::new(loct_bin())
         .current_dir(repo.path())
         .env("LOCT_OPEN_BROWSER", "0")
+        .env("LOCT_CACHE_DIR", test_cache_dir())
         .args(["scan", "--watch", "."])
         .stdin(Stdio::null())
         .output()
@@ -470,6 +623,7 @@ fn bg_mode_detaches_and_survives_parent() {
     let parent = Command::new(loct_bin())
         .current_dir(repo.path())
         .env("LOCT_OPEN_BROWSER", "0")
+        .env("LOCT_CACHE_DIR", test_cache_dir())
         .args(["watch", "--bg", "."])
         .stdin(Stdio::null())
         .output()

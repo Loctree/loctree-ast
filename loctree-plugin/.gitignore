@@ -1,0 +1,22 @@
+# Per-project plugin settings (read by hooks/skills, never committed)
+.claude/*.local.md
+
+# Caches and runtime artifacts
+.loctree/
+.cache/
+
+# Hook log files (operator-curated)
+.loct-hook.log
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+
+# Secrets — Vetcoders policy: never commit .env*
+.env
+.env.*
+!.env.example

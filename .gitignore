@@ -1,6 +1,148 @@
-/target/
-/.loctree/
+/loctree-rs/target
+
+# Subcrate Cargo.lock files are orphans — workspace uses root Cargo.lock only
+# (deleted in cut9 security sweep; prevent accidental re-creation)
+/loctree-rs/Cargo.lock
+/loctree-mcp/Cargo.lock
+/landing/Cargo.lock
+/reports/Cargo.lock
+/reports/wasm/Cargo.lock
+/.codex
 *.pyc
+/.fastembed_cache
+tarpaulin-report.json
+tarpaulin-report.html
+*.profraw
+loctree-rs/tarpaulin-report.json
+/.ai-agents
+/.ai-suite
+.loctree/
+/.loctree
+/.benchmarks
+/agents
+/loctree-rs/logs
+/loctree-rs/.loctree
+*.log
+/.claude
+/reports/report.html
+
+
+# Root Markdown policy: ignore root .md files except core docs that are tracked
+/*.md
+!/README.md
+!/CHANGELOG.md
+!/CONTRIBUTING.md
+!/LOCTREE_NEXT.md
+!/replit.md
+!AGENTS.md
+!/SECURITY.md
+
+# Local patch/diff artifacts
+*.patch
+*.diff
+
+# Python cache
 __pycache__/
-**/__pycache__/
-.DS_Store
+.mypy_cache/
+.ruff_cache/
+/reports/target
+*.zip
+# Test fixtures - generated .loctree snapshots
+/loctree-rs/tests/fixtures/**/.loctree
+
+# Generated loctree output assets (JS libraries written alongside reports)
+loctree-*.js
+loctree-*.min.js
+/reports/loctree-*.js
+!/public_dist/loctree-*.js
+# Platform binary swept into the landing dist by `loct dist` — not used by the
+# site (install.sh fetches from loct.io/releases). Keep it out of git.
+/public_dist/loctree
+/reports/reports/
+/reports/wasm/target
+/loctree-rs/.fastembed_cache
+*.txt
+!tools/fixtures/**/*.txt
+!/landing/public/robots.txt
+!/public_dist/robots.txt
+!/public_dist/api/agent/index.txt
+/assets/Icon Exports
+.replit
+/.tools
+
+.gemini/
+gha-creds-*.json
+GEMINI.md
+gemini.md
+**/.loctree/**/report.html
+/loctree_memex/target
+/loctree_server/target
+/target
+/dist/
+brave-mcp-servers-report.md
+reports/report.html
+/loctree-rs/src/.loctree
+
+# npm package - downloaded binaries (keep placeholders)
+/bin/*.tar.gz
+/bin/*.zip
+# Keep placeholder scripts but ignore actual binaries that overwrite them
+# (they have no extension on Unix, .exe on Windows)
+
+# macOS
+**/.DS_Store
+/.idea
+SeniorDev/
+/reports/.loctree
+*.out
+
+# AI Context (local tooling)
+.ai-context/
+/.vibecrafted
+monika*
+/*.py
+/*.rs
+/logs
+/*.sh
+!install.sh
+*.json
+# Editor plugin lint config must be tracked (the broad *.json ignore would
+# otherwise drop it, unlike package.json/tsconfig.json which predate the rule).
+!/editors/vscode/.eslintrc.json
+# Glama.ai claim manifest — must live at repo root and reach the public
+# mirrors, so it has to survive the broad *.json ignore.
+!/glama.json
+# Frozen contracts + golden fixtures (substrate-makieta C0-01) are the
+# source of truth for producers/consumers in both repos — they must be
+# tracked despite the broad *.json ignore.
+!/docs/contracts/**/*.json
+# Component-sync extras are release inputs referenced by the manifests —
+# an untracked extra makes the sync fail (or silently drift) on every
+# machine except the one that authored it.
+!/distribution/component-extras/**/*.json
+# Test fixtures are source, not artifacts: the broad *.json rule silently
+# swallowed dead_truth_spawn/package.json (its test passed only where the
+# file survived untracked on disk). Fixtures must never depend on local dirt.
+!/loctree-rs/tests/fixtures/**/*.json
+# Makieta eval control fixtures are source inputs for the live A/B harness,
+# not run artifacts. Keep generated results outside this directory.
+!/tools/makieta-eval/tasks.json
+!/tools/makieta-eval/canaries.json
+
+# npm platform-package staged binaries: published to the npm registry by the
+# publish flow, never committed (each is ~38 MB; the tracked contract is the
+# package.json next to them). The suite binaries (loct, loctree, loctree-mcp,
+# loctree-lsp, .exe on win32) are staged under bin/.
+/distribution/npm/*/platform-packages/*/bin/
+
+# local agent CLI state (machine-specific, never commit)
+.antigravitycli/
+# brainstorming visual-companion mockups (local dev artifact)
+.superpowers/
+/docs/reports
+/.junie
+
+# Gradle build caches inside test fixtures — the scanner already skips
+# `.gradle` (loctree-rs/src/tree.rs), and these binaries re-dirty the tree on
+# every Gradle run, which trips the release version bump's clean-tree check.
+loctree-rs/tests/fixtures/**/.gradle/

@@ -1,0 +1,16 @@
+target_repo=Loctree/loctree-mcp
+license=BUSL-1.1
+readme_src=distribution/component-readmes/mcp.md
+dependency_mode=crates.io registry
+dependency_note=Engine crates (loctree, loctree-ast, report-leptos) are consumed from crates.io at the pinned release version; no vendored sources in this mirror.
+include=loctree-mcp:loctree-mcp
+exclude=.git/
+exclude=.loctree/
+exclude=.vibecrafted/
+exclude=target/
+exclude=.DS_Store
+exclude=loctree-fail.md
+exclude=**/loctree-fail.md
+extra=distribution/component-extras/mcp/glama.json:glama.json
+extra=Dockerfile:Dockerfile
+extra=.dockerignore:.dockerignore

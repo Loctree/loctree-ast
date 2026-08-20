@@ -6,14 +6,14 @@
 //!
 //! Plan 07 of the LSP roadmap.
 //!
-//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by VetCoders ⓒ 2025-2026 VetCoders
+//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders ⓒ 2025-2026 Vetcoders
 
 use std::path::PathBuf;
 
 use loctree::analyzer::classify::language_from_path;
 use loctree::analyzer::dead_parrots::{SimilarityCandidate, SymbolFileMatch, SymbolMatchKind};
 use loctree::analyzer::occurrences::{
-    FileScope, OccurrenceResults, ReportOptions, ScanOptions, scan_files_with_scope,
+    FileScope, OccurrenceResults, ReportOptions, ScanOptions, scan_files_for_literal_query,
 };
 use loctree::analyzer::search::{
     CrossMatchFile, FuzzySuggestion, ParamMatch, SearchResults, SuppressionMatch,
@@ -41,7 +41,8 @@ fn default_mode() -> String {
 /// Parameters for `loctree/find`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct FindParams {
-    /// Search query. May contain `|` for explicit OR matching.
+    /// Search query. May contain `|` for multi-pattern OR (semantic modes
+    /// and, for simple identifier segments, literal multi-literal OR).
     pub query: String,
     /// Search mode: `single` (default), `split`, `and`, or `literal`.
     ///
@@ -54,8 +55,9 @@ pub struct FindParams {
     /// - `literal`: the W1 exact-identifier truth layer. Scans raw source
     ///   bytes for identifier-boundary occurrences and returns them in
     ///   `literal_matches`; the AST/fuzzy buckets are emptied. At parity
-    ///   with `loct occurrences` / `loct find --literal` — same scanner,
-    ///   same bytes, same answer. "Not found" means not found.
+    ///   with `loct occurrences` / `loct find --literal` — same multi-
+    ///   literal engine (`NameA|NameB` → `match_mode: multi_literal`).
+    ///   "Not found" means not found.
     #[serde(default = "default_mode")]
     pub mode: String,
     /// Optional language tag filter (`rust`, `typescript`, `python`, ...).
@@ -442,10 +444,11 @@ fn paginate_response(
 /// `ident`, reading raw bytes from disk relative to `base`.
 ///
 /// This is the LSP surface of the W1 literal truth layer. It reuses the shared
-/// [`loctree::analyzer::occurrences::scan_files`] scanner — the same one
-/// `loct occurrences` / `loct find --literal` and the MCP `find(mode=literal)`
-/// use — so every surface reports the identical file/line set for a given
-/// snapshot. Only the file-enumeration glue is mirrored from the CLI handler
+/// [`loctree::analyzer::occurrences::scan_files_for_literal_query`] path — the
+/// same multi-literal-aware engine `loct occurrences` / `loct find --literal`
+/// and the MCP `find(mode=literal)` use — so every surface reports the
+/// identical file/line set for a given snapshot (including agent pipe-OR
+/// `A|B`). Only the file-enumeration glue is mirrored from the CLI handler
 /// (`read_snapshot_contents`); there is no second scanner.
 ///
 /// Unreadable files (binary, deleted, permission) are skipped — they are simply
@@ -497,7 +500,7 @@ pub fn scan_literal(
         .iter()
         .map(|(p, c)| (p.as_str(), c.as_str()))
         .collect::<Vec<_>>();
-    scan_files_with_scope(borrowed, ident.trim(), opts, scope)
+    scan_files_for_literal_query(&borrowed, ident, opts, scope)
 }
 
 #[derive(PartialEq, Eq)]
@@ -874,6 +877,7 @@ mod tests {
         params.symbol_id = Some(SymbolIdV1::from_parts("a.rs", "f"));
         let results = SearchResults {
             query: "f".into(),
+            universe: loctree::analyzer::occurrences::IndexedUniverse::default(),
             symbol_matches: SymbolSearchResult {
                 found: false,
                 total_matches: 0,

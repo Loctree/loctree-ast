@@ -1110,7 +1110,7 @@ mod tests {
 
     #[test]
     fn shared_node_cycles_stay_separate_without_phantom_edge() {
-        // Regression for loctree-feedback 2026-05-18: two real cycles sharing
+        // Regression for loctree-fail 2026-05-18: two real cycles sharing
         // `types.rs` must not be merged into a longer trail by inventing a
         // `types.rs -> menu.rs` edge.
         let edges = vec![
@@ -1519,7 +1519,7 @@ mod tests {
     #[test]
     fn is_fixture_cycle_flags_test_fixture_paths() {
         use super::is_fixture_cycle;
-        // Regression for loctree-feedback 2026-06-03: the intentional
+        // Regression for loctree-fail 2026-06-03: the intentional
         // tests/fixtures/circular_imports fixture was counted as a real cycle.
         let nodes = vec![
             "loctree-rs/tests/fixtures/circular_imports/src/c.ts".to_string(),
@@ -1565,7 +1565,7 @@ mod tests {
     #[test]
     fn classified_cycle_carries_fixture_provenance() {
         use super::find_cycles_classified;
-        // The exact false-positive shape from loctree-feedback L479-L499:
+        // The exact false-positive shape from loctree-fail L479-L499:
         // a.ts -> b.ts -> c.ts -> a.ts under tests/fixtures/circular_imports.
         let base = "loctree-rs/tests/fixtures/circular_imports/src";
         let edges = vec![

@@ -1,0 +1,455 @@
+name: VSCode Extension Publish
+
+# Publishing is a button, never a consequence of a push.
+#
+# workflow_dispatch is the ONLY trigger in this file on purpose: there is no
+# `push`, no `release`, and no tag path into it, so no commit and no tag can put
+# a build on a marketplace by itself. A human presses "Run workflow".
+#
+# This workflow does NOT build. It republishes the exact platform-tagged VSIX
+# artifacts that vscode-extension.yml already produced and tested, so what lands
+# on the marketplace is byte-identical to what was verified. See
+# docs/release/vscode-marketplace.md.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to publish (e.g. v0.14.1). Use this OR run_id, not both.'
+        required: false
+        type: string
+        default: ''
+      run_id:
+        description: 'vscode-extension.yml run ID to publish artifacts from. Use this OR tag, not both.'
+        required: false
+        type: string
+        default: ''
+      target:
+        description: 'Where to publish'
+        required: true
+        type: choice
+        default: both
+        options:
+          - both
+          - marketplace
+          - openvsx
+      dry_run:
+        description: 'Dry run — verify artifacts and credentials, print the exact publish commands, publish nothing.'
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  actions: read
+
+# Two operators pressing the button at once would race the marketplace API.
+concurrency:
+  group: vscode-publish
+  cancel-in-progress: false
+
+env:
+  PUBLISHER: libraxis
+  EXTENSION_NAME: loctree
+  # Pinned to the versions declared in editors/vscode/package.json devDependencies.
+  VSCE_VERSION: '3.9.2'
+  OVSX_VERSION: '1.0.0'
+  # The platform set vscode-extension.yml's matrix produces and that
+  # docs/release/vscode-marketplace.md promises. Publishing fewer is legal
+  # (a missing platform can be added later under the same version), so this
+  # is a loud warning rather than a refusal — but a silent partial publish
+  # leaves a whole OS with no installable extension.
+  EXPECTED_PLATFORMS: 'darwin-arm64 darwin-x64 linux-x64'
+
+jobs:
+  publish:
+    name: ${{ inputs.dry_run && 'Dry run' || 'PUBLISH' }} → ${{ inputs.target }}
+    # Belt and braces. If a trigger is ever added above by mistake, this job still
+    # refuses to run for anything except a human dispatch.
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve artifact source
+        id: source
+        shell: bash
+        env:
+          IN_TAG: ${{ inputs.tag }}
+          IN_RUN_ID: ${{ inputs.run_id }}
+        run: |
+          set -euo pipefail
+
+          # There is no actions/checkout in this workflow (nothing here needs the
+          # repo), so nothing runs `git clean` for us. On the self-hosted runner
+          # the workspace survives between runs, and a previous publish's vsix/
+          # would be merged into this one's download — republishing bytes nobody
+          # asked for. Start from an empty directory every time.
+          rm -rf vsix
+
+          TAG="${IN_TAG// /}"
+          RUN_ID="${IN_RUN_ID// /}"
+
+          if [[ -n "$TAG" && -n "$RUN_ID" ]]; then
+            echo "::error::Set either 'tag' or 'run_id', not both. Got tag=$TAG run_id=$RUN_ID."
+            exit 1
+          fi
+          if [[ -z "$TAG" && -z "$RUN_ID" ]]; then
+            echo "::error::Nothing to publish. Set 'tag' (a release whose VSIX assets you want to publish) or 'run_id' (a vscode-extension.yml run)."
+            exit 1
+          fi
+
+          if [[ -n "$TAG" ]]; then
+            if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+              echo "::error::tag '$TAG' does not look like vX.Y.Z."
+              exit 1
+            fi
+            {
+              echo "mode=release"
+              echo "tag=$TAG"
+              echo "expected_version=${TAG#v}"
+            } >> "$GITHUB_OUTPUT"
+            echo "Publishing from GitHub Release $TAG"
+          else
+            {
+              echo "mode=run"
+              echo "run_id=$RUN_ID"
+              echo "expected_version="
+            } >> "$GITHUB_OUTPUT"
+            echo "Publishing from workflow run $RUN_ID"
+          fi
+
+      - name: Resolve publish targets
+        id: plan
+        shell: bash
+        env:
+          IN_TARGET: ${{ inputs.target }}
+        run: |
+          set -euo pipefail
+          case "$IN_TARGET" in
+            both)        MP=true;  OV=true  ;;
+            marketplace) MP=true;  OV=false ;;
+            openvsx)     MP=false; OV=true  ;;
+            *) echo "::error::Unknown target '$IN_TARGET'."; exit 1 ;;
+          esac
+          echo "marketplace=$MP" >> "$GITHUB_OUTPUT"
+          echo "openvsx=$OV" >> "$GITHUB_OUTPUT"
+          echo "VS Code Marketplace: $MP"
+          echo "Open VSX:            $OV"
+
+      - name: Download VSIX assets from release
+        if: steps.source.outputs.mode == 'release'
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        env:
+          TAG: ${{ steps.source.outputs.tag }}
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+
+            const dir = 'vsix';
+            fs.mkdirSync(dir, { recursive: true });
+
+            const tag = process.env.TAG;
+            const { owner, repo } = context.repo;
+
+            let release;
+            try {
+              release = await github.rest.repos.getReleaseByTag({ owner, repo, tag });
+            } catch (error) {
+              if (error.status === 404) {
+                core.setFailed(
+                  `No GitHub Release found for tag ${tag}. Cut the tag first and let ` +
+                  `vscode-extension.yml attach its VSIX assets, or dispatch with run_id instead.`
+                );
+                return;
+              }
+              throw error;
+            }
+
+            const assets = release.data.assets.filter((a) => a.name.endsWith('.vsix'));
+            if (assets.length === 0) {
+              core.setFailed(
+                `Release ${tag} has no .vsix assets. The build workflow either did not run ` +
+                `for this tag or failed before uploading.`
+              );
+              return;
+            }
+
+            for (const asset of assets) {
+              const res = await github.request(
+                'GET /repos/{owner}/{repo}/releases/assets/{asset_id}',
+                { owner, repo, asset_id: asset.id, headers: { accept: 'application/octet-stream' } }
+              );
+              fs.writeFileSync(path.join(dir, asset.name), Buffer.from(res.data));
+              core.info(`downloaded ${asset.name} (${asset.size} bytes)`);
+            }
+
+      - name: Download VSIX artifacts from workflow run
+        if: steps.source.outputs.mode == 'run'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          run-id: ${{ steps.source.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          pattern: loct-vscode-*
+          merge-multiple: true
+          path: vsix
+
+      - name: Verify VSIX artifacts
+        id: verify
+        shell: bash
+        env:
+          EXPECTED_VERSION: ${{ steps.source.outputs.expected_version }}
+        run: |
+          set -euo pipefail
+
+          # Read one file out of a zip without adding a dependency. unzip is the
+          # normal path; python3 is the fallback for minimal runner images.
+          read_entry() {
+            local archive="$1" entry="$2"
+            if command -v unzip >/dev/null 2>&1; then
+              unzip -p "$archive" "$entry"
+            elif command -v python3 >/dev/null 2>&1; then
+              python3 -c 'import sys,zipfile; sys.stdout.write(zipfile.ZipFile(sys.argv[1]).read(sys.argv[2]).decode("utf-8","replace"))' "$archive" "$entry"
+            else
+              echo "::error::Neither unzip nor python3 is available; cannot verify VSIX contents." >&2
+              return 1
+            fi
+          }
+
+          list_entries() {
+            local archive="$1"
+            if command -v unzip >/dev/null 2>&1; then
+              unzip -Z1 "$archive"
+            else
+              python3 -c 'import sys,zipfile; print("\n".join(zipfile.ZipFile(sys.argv[1]).namelist()))' "$archive"
+            fi
+          }
+
+          mapfile -t VSIXES < <(find vsix -type f -name '*.vsix' | sort)
+          if [[ ${#VSIXES[@]} -eq 0 ]]; then
+            echo "::error::No .vsix files found. Nothing to publish."
+            exit 1
+          fi
+
+          echo "Found ${#VSIXES[@]} VSIX file(s)."
+          VERSIONS=()
+          PLATFORMS=()
+
+          for vsix in "${VSIXES[@]}"; do
+            MANIFEST="$(read_entry "$vsix" extension.vsixmanifest)"
+
+            VERSION="$(sed -n 's/.*<Identity[^>]*Version="\([^"]*\)".*/\1/p' <<<"$MANIFEST" | head -1)"
+            PLATFORM="$(sed -n 's/.*<Identity[^>]*TargetPlatform="\([^"]*\)".*/\1/p' <<<"$MANIFEST" | head -1)"
+            IDENT="$(sed -n 's/.*<Identity[^>]*Id="\([^"]*\)".*/\1/p' <<<"$MANIFEST" | head -1)"
+            PUB="$(sed -n 's/.*<Identity[^>]*Publisher="\([^"]*\)".*/\1/p' <<<"$MANIFEST" | head -1)"
+
+            echo "--- $(basename "$vsix")"
+            echo "    publisher=$PUB id=$IDENT version=$VERSION targetPlatform=${PLATFORM:-<none>}"
+
+            if [[ "$PUB" != "$PUBLISHER" || "$IDENT" != "$EXTENSION_NAME" ]]; then
+              echo "::error::$(basename "$vsix") is $PUB.$IDENT, expected $PUBLISHER.$EXTENSION_NAME."
+              exit 1
+            fi
+
+            # A VSIX with no TargetPlatform is a "universal" package. Publishing
+            # several of those in a row makes each one replace the previous, so
+            # only the last platform would survive. Refuse to do that.
+            if [[ -z "$PLATFORM" ]]; then
+              echo "::error::$(basename "$vsix") has no TargetPlatform. Per-platform builds must be packaged with 'vsce package --target <platform>', otherwise they overwrite each other on publish."
+              exit 1
+            fi
+
+            ENTRIES="$(list_entries "$vsix")"
+            for required in extension/dist/extension.js extension/bin/loctree-lsp; do
+              if ! grep -qxF "$required" <<<"$ENTRIES"; then
+                echo "::error::$(basename "$vsix") is missing $required — this build is not shippable."
+                exit 1
+              fi
+            done
+
+            VERSIONS+=("$VERSION")
+            PLATFORMS+=("$PLATFORM")
+          done
+
+          # All artifacts must be the same version.
+          UNIQUE_VERSIONS="$(printf '%s\n' "${VERSIONS[@]}" | sort -u | tr '\n' ' ')"
+          if [[ "$(printf '%s\n' "${VERSIONS[@]}" | sort -u | wc -l)" -ne 1 ]]; then
+            echo "::error::Mixed versions across artifacts: $UNIQUE_VERSIONS. Refusing to publish."
+            exit 1
+          fi
+          VERSION="${VERSIONS[0]}"
+
+          # Each platform must appear exactly once.
+          if [[ "$(printf '%s\n' "${PLATFORMS[@]}" | sort -u | wc -l)" -ne "${#PLATFORMS[@]}" ]]; then
+            echo "::error::Duplicate TargetPlatform among artifacts: $(printf '%s ' "${PLATFORMS[@]}"). Refusing to publish."
+            exit 1
+          fi
+
+          if [[ -n "$EXPECTED_VERSION" && "$VERSION" != "$EXPECTED_VERSION" ]]; then
+            echo "::error::Artifact version $VERSION does not match the requested tag version $EXPECTED_VERSION."
+            exit 1
+          fi
+
+          # A failed matrix leg upstream produces a smaller-but-valid artifact
+          # set, which would otherwise publish quietly and leave that OS with
+          # nothing to install.
+          MISSING=()
+          for want in $EXPECTED_PLATFORMS; do
+            printf '%s\n' "${PLATFORMS[@]}" | grep -qxF "$want" || MISSING+=("$want")
+          done
+          if [[ ${#MISSING[@]} -gt 0 ]]; then
+            echo "::warning::Publishing a partial platform set — missing: ${MISSING[*]}. Users on those platforms will be told the extension is unavailable. Check that every leg of vscode-extension.yml went green, or publish the missing VSIX afterwards under the same version."
+          fi
+
+          {
+            echo "version=$VERSION"
+            echo "platforms=$(printf '%s ' "${PLATFORMS[@]}" | sed 's/ $//')"
+            echo "missing_platforms=$(printf '%s ' "${MISSING[@]+"${MISSING[@]}"}" | sed 's/ $//')"
+            echo "count=${#VSIXES[@]}"
+            echo "packages=$(printf '%s ' "${VSIXES[@]}" | sed 's/ $//')"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Verified $VERSION across ${#VSIXES[@]} platform(s): ${PLATFORMS[*]}"
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+
+      - name: Verify credentials
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+          WANT_MARKETPLACE: ${{ steps.plan.outputs.marketplace }}
+          WANT_OPENVSX: ${{ steps.plan.outputs.openvsx }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          FAIL=0
+
+          if [[ "$WANT_MARKETPLACE" == "true" && -z "${VSCE_PAT:-}" ]]; then
+            echo "::error::secrets.VSCE_PAT is not set. Create an Azure DevOps PAT with Marketplace > Manage scope for the '$PUBLISHER' publisher and add it as the VSCE_PAT repository secret. See docs/release/vscode-marketplace.md."
+            FAIL=1
+          fi
+          if [[ "$WANT_OPENVSX" == "true" && -z "${OVSX_PAT:-}" ]]; then
+            echo "::error::secrets.OVSX_PAT is not set. Create an Open VSX access token for the '$PUBLISHER' namespace and add it as the OVSX_PAT repository secret. See docs/release/vscode-marketplace.md."
+            FAIL=1
+          fi
+          [[ $FAIL -eq 0 ]] || exit 1
+
+          # Real credential/namespace checks. These run in dry runs too — that is
+          # the point of the dry run — and none of them publish anything.
+          if [[ "$WANT_MARKETPLACE" == "true" ]]; then
+            echo "Verifying VSCE_PAT against publisher '$PUBLISHER'..."
+            npx --yes "@vscode/vsce@${VSCE_VERSION}" verify-pat "$PUBLISHER"
+            echo "VSCE_PAT is valid for '$PUBLISHER'."
+          fi
+
+          if [[ "$WANT_OPENVSX" == "true" ]]; then
+            echo "Checking Open VSX namespace '$PUBLISHER'..."
+            if ! curl -fsS "https://open-vsx.org/api/${PUBLISHER}" >/dev/null; then
+              echo "::error::Open VSX namespace '$PUBLISHER' does not exist (or open-vsx.org is unreachable). Create it once with: npx ovsx create-namespace $PUBLISHER -p \$OVSX_PAT"
+              exit 1
+            fi
+            echo "Open VSX namespace '$PUBLISHER' exists."
+            echo "Note: Open VSX has no token-verification endpoint, so OVSX_PAT validity is only proven by a real publish."
+          fi
+
+      - name: Dry run — plan only
+        if: ${{ inputs.dry_run }}
+        env:
+          PACKAGES: ${{ steps.verify.outputs.packages }}
+          VERSION: ${{ steps.verify.outputs.version }}
+          PLATFORMS: ${{ steps.verify.outputs.platforms }}
+          WANT_MARKETPLACE: ${{ steps.plan.outputs.marketplace }}
+          WANT_OPENVSX: ${{ steps.plan.outputs.openvsx }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "DRY RUN — nothing was published."
+          echo
+          echo "Would publish $PUBLISHER.$EXTENSION_NAME v$VERSION for: $PLATFORMS"
+          echo
+          if [[ "$WANT_MARKETPLACE" == "true" ]]; then
+            echo "  VSCE_PAT=*** npx @vscode/vsce@${VSCE_VERSION} publish --packagePath $PACKAGES"
+          fi
+          if [[ "$WANT_OPENVSX" == "true" ]]; then
+            for pkg in $PACKAGES; do
+              echo "  OVSX_PAT=*** npx ovsx@${OVSX_VERSION} publish $pkg"
+            done
+          fi
+          echo
+          echo "Re-run with dry_run unchecked to publish."
+
+      - name: Publish to VS Code Marketplace
+        if: ${{ !inputs.dry_run && steps.plan.outputs.marketplace == 'true' }}
+        env:
+          # vsce reads the PAT from VSCE_PAT, so it never appears in argv.
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+          PACKAGES: ${{ steps.verify.outputs.packages }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # One invocation with every platform package: vsce reads each VSIX's own
+          # TargetPlatform, so the platforms register alongside each other under a
+          # single version instead of replacing one another.
+          # shellcheck disable=SC2086
+          npx --yes "@vscode/vsce@${VSCE_VERSION}" publish --packagePath $PACKAGES
+
+      - name: Publish to Open VSX
+        if: ${{ !inputs.dry_run && steps.plan.outputs.openvsx == 'true' }}
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+          PACKAGES: ${{ steps.verify.outputs.packages }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # ovsx takes one package per invocation; each carries its own target.
+          for pkg in $PACKAGES; do
+            echo "Publishing $pkg to Open VSX..."
+            npx --yes "ovsx@${OVSX_VERSION}" publish "$pkg"
+          done
+
+      - name: Summary
+        if: always()
+        env:
+          VERSION: ${{ steps.verify.outputs.version }}
+          PLATFORMS: ${{ steps.verify.outputs.platforms }}
+          MISSING_PLATFORMS: ${{ steps.verify.outputs.missing_platforms }}
+          COUNT: ${{ steps.verify.outputs.count }}
+          MODE: ${{ steps.source.outputs.mode }}
+          SRC_TAG: ${{ steps.source.outputs.tag }}
+          SRC_RUN: ${{ steps.source.outputs.run_id }}
+          WANT_MARKETPLACE: ${{ steps.plan.outputs.marketplace }}
+          WANT_OPENVSX: ${{ steps.plan.outputs.openvsx }}
+          # Kept out of the `run:` body on purpose: interpolating `${{ ... }}`
+          # directly into a shell script lets context data become script text.
+          DRY_RUN: ${{ inputs.dry_run }}
+        shell: bash
+        run: |
+          {
+            echo "## VS Code extension publish"
+            echo
+            if [[ "${DRY_RUN}" == "true" ]]; then
+              echo "**DRY RUN — nothing was published.**"
+            else
+              echo "**LIVE PUBLISH**"
+            fi
+            echo
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Extension | \`${PUBLISHER}.${EXTENSION_NAME}\` |"
+            echo "| Version | \`${VERSION:-unresolved}\` |"
+            echo "| Platforms | \`${PLATFORMS:-none}\` (${COUNT:-0} VSIX) |"
+            if [[ -n "${MISSING_PLATFORMS:-}" ]]; then
+              echo "| **Missing platforms** | \`${MISSING_PLATFORMS}\` — partial publish |"
+            fi
+            echo "| Source | ${MODE:-unresolved} \`${SRC_TAG:-${SRC_RUN:-}}\` |"
+            echo "| VS Code Marketplace | ${WANT_MARKETPLACE:-false} |"
+            echo "| Open VSX | ${WANT_OPENVSX:-false} |"
+            echo
+            if [[ "${DRY_RUN}" != "true" && "${WANT_MARKETPLACE:-false}" == "true" ]]; then
+              echo "Listing: https://marketplace.visualstudio.com/items?itemName=${PUBLISHER}.${EXTENSION_NAME}"
+            fi
+            if [[ "${DRY_RUN}" != "true" && "${WANT_OPENVSX:-false}" == "true" ]]; then
+              echo "Listing: https://open-vsx.org/extension/${PUBLISHER}/${EXTENSION_NAME}"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

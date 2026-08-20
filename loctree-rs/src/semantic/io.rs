@@ -46,6 +46,43 @@ fn validate_and_canonicalize(path: &str) -> anyhow::Result<PathBuf> {
         .with_context(|| format!("canonicalize semantic input path {path}"))
 }
 
+/// Validate a semantic input path relative to its owning workspace root.
+///
+/// Snapshot paths are workspace-relative, while scanners and language servers
+/// may run with a process cwd outside that workspace. Resolve against the
+/// explicit root and reject symlinks that escape it.
+fn validate_and_canonicalize_from_root(root: &Path, path: &str) -> anyhow::Result<PathBuf> {
+    if path.is_empty() {
+        anyhow::bail!("empty path supplied to semantic input validator");
+    }
+    let raw = PathBuf::from(path);
+    if raw
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        anyhow::bail!("parent-dir traversal in semantic input path: {path}");
+    }
+
+    let canonical_root = root
+        .canonicalize()
+        .with_context(|| format!("canonicalize semantic workspace root {}", root.display()))?;
+    let candidate = if raw.is_absolute() {
+        raw
+    } else {
+        canonical_root.join(raw)
+    };
+    let canonical = candidate
+        .canonicalize()
+        .with_context(|| format!("canonicalize semantic input path {path}"))?;
+    if !canonical.starts_with(&canonical_root) {
+        anyhow::bail!(
+            "semantic input path escapes workspace root: {path} -> {}",
+            canonical.display()
+        );
+    }
+    Ok(canonical)
+}
+
 /// Read the contents of a Layer 1 sensor input file after validation.
 ///
 /// Strict variant: any I/O or validation failure is fatal. Use this when
@@ -53,6 +90,16 @@ fn validate_and_canonicalize(path: &str) -> anyhow::Result<PathBuf> {
 /// by design — see commit `e7a7579`).
 pub(crate) fn read_validated_semantic_input(path: &str) -> anyhow::Result<String> {
     let canonical = validate_and_canonicalize(path)?;
+    std::fs::read_to_string(&canonical)
+        .with_context(|| format!("read semantic input {}", canonical.display()))
+}
+
+/// Read a Layer 1 sensor input whose path is relative to `workspace_root`.
+pub(crate) fn read_validated_semantic_input_from_root(
+    workspace_root: &Path,
+    path: &str,
+) -> anyhow::Result<String> {
+    let canonical = validate_and_canonicalize_from_root(workspace_root, path)?;
     std::fs::read_to_string(&canonical)
         .with_context(|| format!("read semantic input {}", canonical.display()))
 }
@@ -158,6 +205,35 @@ mod tests {
         std::fs::write(&path, "echo hi\n").unwrap();
         let content = read_validated_semantic_input(&path.to_string_lossy()).unwrap();
         assert_eq!(content, "echo hi\n");
+    }
+
+    #[test]
+    fn rooted_read_resolves_relative_to_workspace_not_process_cwd() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let nested = tmp.path().join("fixtures");
+        std::fs::create_dir(&nested).expect("fixture dir");
+        std::fs::write(nested.join("Makefile"), "all:\n\t@true\n").expect("fixture file");
+
+        let content = read_validated_semantic_input_from_root(tmp.path(), "fixtures/Makefile")
+            .expect("rooted semantic read");
+
+        assert_eq!(content, "all:\n\t@true\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rooted_read_rejects_symlink_escape() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().expect("workspace tempdir");
+        let outside = tempfile::tempdir().expect("outside tempdir");
+        let outside_file = outside.path().join("Makefile");
+        std::fs::write(&outside_file, "all:\n").expect("outside fixture");
+        symlink(&outside_file, root.path().join("Makefile")).expect("fixture symlink");
+
+        let err = read_validated_semantic_input_from_root(root.path(), "Makefile")
+            .expect_err("workspace-relative semantic reads must fail closed");
+        assert!(err.to_string().contains("escapes workspace root"));
     }
 
     #[test]

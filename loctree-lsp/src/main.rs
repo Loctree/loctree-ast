@@ -1,6 +1,6 @@
 //! Loctree LSP Server binary entry point
 //!
-//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by VetCoders ⓒ 2025-2026 VetCoders
+//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders ⓒ 2025-2026 Vetcoders
 
 use std::io::Write as _;
 use std::panic;
@@ -13,7 +13,7 @@ use loctree_lsp::{run_server, static_initialize_result};
 #[derive(Debug, Parser)]
 #[command(
     name = "loctree-lsp",
-    version,
+    version = env!("LOCTREE_LSP_BUILD_VERSION"),
     about = "Language Server Protocol server for Loctree"
 )]
 struct Args {
@@ -143,6 +143,15 @@ async fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn version_exposes_checkout_identity() {
+        use clap::CommandFactory as _;
+        assert_eq!(
+            Args::command().get_version(),
+            Some(env!("LOCTREE_LSP_BUILD_VERSION"))
+        );
+    }
 
     #[test]
     fn root_flag_parses_workspace_pin() {

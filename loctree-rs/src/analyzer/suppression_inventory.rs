@@ -26,7 +26,7 @@
 //! without paying for semantic infrastructure. Semantic add-ons later are
 //! pure delta value, never the gate.
 //!
-//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents ⓒ 2025-2026 Loctree Team
+//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI
 
 use regex::Regex;
 use serde::Serialize;
@@ -40,7 +40,7 @@ use std::sync::LazyLock;
 /// linters/checkers — NOT to be confused with `crate::suppressions::SuppressionType`
 /// which models loctree's own finding-suppression file (`.loctree/suppressions.toml`).
 /// Different concepts, similar word — the name collision is documented in
-/// `~/internal-artifacts/loctree/loctree-feedback.md` (2026-05-17 entry).
+/// `~/.vibecrafted/loctree/loctree-fail.md` (2026-05-17 entry).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SilencerKind {

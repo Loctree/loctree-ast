@@ -6,7 +6,7 @@
 //! JSON shape a VS Code client will consume. Catches framing / serde / routing
 //! regressions that helper tests cannot.
 //!
-//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by VetCoders ⓒ 2025-2026 VetCoders
+//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders ⓒ 2025-2026 Vetcoders
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, ChildStdout, Command, Stdio};
@@ -90,6 +90,11 @@ fn symbol_context_over_real_stdio_jsonrpc() {
         .arg("--stdio")
         .env("LOCT_CACHE_DIR", cache.path())
         .env("LOCT_OPEN_BROWSER", "0")
+        // The workspace is a TMPDIR fixture, outside any git checkout; the scan
+        // guard (loctree snapshot.rs) refuses such roots unless this is set.
+        // Without it the background scan never produces a snapshot and every
+        // request below answers `-32001`, exhausting the retry budget.
+        .env(loctree::snapshot::LOCT_ALLOW_NON_GIT_ROOT_ENV, "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())

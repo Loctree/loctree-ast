@@ -29,6 +29,16 @@ static RE_WORD: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"\b([A-Z][A-Za-z0-9_]*|[a-z][A-Za-z0-9_]*)\b").expect("valid swift word regex")
 });
 
+// Type declaration with an inheritance clause:
+//   `struct ContentView: View {`, `final class Suite: XCTestCase {`,
+//   `extension ContentView: View {`, `struct S<T>: Widget where T: Sendable {`
+static RE_SWIFT_CONFORMANCE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r"^\s*(?:@[A-Za-z_][A-Za-z0-9_]*(?:\([^)]*\))?\s+)*(?:(?:public|internal|private|fileprivate|open|final|indirect)\s+)*(?:class|struct|enum|actor|extension)\s+([A-Za-z_][A-Za-z0-9_]*)(?:<[^>]*>)?\s*:\s*([^{]+)",
+    )
+    .expect("valid swift conformance regex")
+});
+
 pub fn analyze_swift_file(content: &str, relative: String) -> FileAnalysis {
     let mut analysis = FileAnalysis::new(relative);
     analysis.imports = parse_imports(content);
@@ -36,8 +46,455 @@ pub fn analyze_swift_file(content: &str, relative: String) -> FileAnalysis {
     analysis.symbol_usages = parse_symbol_usages(content, &analysis.exports);
     analysis.local_uses = parse_local_uses(content, &analysis.exports);
     apply_runtime_dispatch_signals(content, &mut analysis);
+    apply_framework_conformance_credits(content, &mut analysis);
     credit_uniffi_generated_glue(content, &mut analysis);
     analysis
+}
+
+/// Swift surfaces enumerated by tooling rather than referenced by identifier:
+/// Xcode discovers `PreviewProvider` conformances and the XCTest runner
+/// discovers `XCTestCase` subclasses at build/run time. Their declarations
+/// carry zero in-code references while being fully live.
+const SWIFT_ENUMERATED_CONFORMANCES: &[&str] = &["PreviewProvider", "XCTestCase"];
+
+/// Protocols whose `body` requirement is invoked exclusively through SwiftUI
+/// dispatch — `var body` on a conforming type is never read by identifier.
+const SWIFT_BODY_REQUIREMENT_PROTOCOLS: &[&str] = &[
+    "App",
+    "Scene",
+    "View",
+    "Widget",
+    "WidgetBundle",
+    "ViewModifier",
+    "Commands",
+    "ToolbarContent",
+    "Shape",
+    "InsettableShape",
+    "Gesture",
+    "PreviewModifier",
+];
+
+/// AppKit/UIKit (and peers) delegate/datasource protocols whose requirement
+/// methods are invoked by the framework dynamically — never by identifier.
+///
+/// W9-B / loctree-fail.md (2026-07-23): W9-A credited SwiftUI `body`/`previews`
+/// and XCTest, but left NSToolbarDelegate / NSTableView* methods as dead-HIGH
+/// (e.g. `toolbarDefaultItemIdentifiers` in vibecrafted). Conformance in the
+/// same file gates the credit so a free-standing helper with the same name
+/// stays a dead candidate.
+///
+/// Method names are the Swift base name the regex export parser captures
+/// (`func numberOfRows(in:)` → `numberOfRows`). Shared overloads collapse to
+/// one base (`func tableView(...)` for many NSTableView* requirements).
+const SWIFT_PROTOCOL_DISPATCH_REQUIREMENTS: &[(&str, &[&str])] = &[
+    (
+        "NSToolbarDelegate",
+        &[
+            "toolbar",
+            "toolbarDefaultItemIdentifiers",
+            "toolbarAllowedItemIdentifiers",
+            "toolbarSelectableItemIdentifiers",
+            "toolbarWillAddItem",
+            "toolbarDidRemoveItem",
+        ],
+    ),
+    (
+        "NSTableViewDataSource",
+        &["numberOfRows", "tableView", "acceptDrop", "validateDrop"],
+    ),
+    (
+        "NSTableViewDelegate",
+        &[
+            "tableView",
+            "tableViewSelectionDidChange",
+            "tableViewSelectionIsChanging",
+            "tableViewColumnDidMove",
+            "tableViewColumnDidResize",
+            "selectionShouldChange",
+        ],
+    ),
+    (
+        "NSOutlineViewDataSource",
+        &["outlineView", "acceptDrop", "validateDrop"],
+    ),
+    (
+        "NSOutlineViewDelegate",
+        &["outlineView", "outlineViewSelectionDidChange"],
+    ),
+    (
+        "NSCollectionViewDataSource",
+        &["numberOfSections", "collectionView"],
+    ),
+    ("NSCollectionViewDelegate", &["collectionView"]),
+    (
+        "NSMenuDelegate",
+        &[
+            "menu",
+            "menuNeedsUpdate",
+            "menuWillOpen",
+            "menuDidClose",
+            "numberOfItemsInMenu",
+            "menuHasKeyEquivalent",
+        ],
+    ),
+    (
+        "NSWindowDelegate",
+        &[
+            "windowWillClose",
+            "windowDidResize",
+            "windowShouldClose",
+            "windowDidBecomeKey",
+            "windowDidResignKey",
+            "windowDidBecomeMain",
+            "windowDidResignMain",
+            "windowWillMiniaturize",
+            "windowDidMiniaturize",
+            "windowDidDeminiaturize",
+            "windowDidEnterFullScreen",
+            "windowDidExitFullScreen",
+            "windowWillReturnFieldEditor",
+            "window",
+        ],
+    ),
+    (
+        "NSTextViewDelegate",
+        &[
+            "textDidChange",
+            "textDidBeginEditing",
+            "textDidEndEditing",
+            "textView",
+            "textShouldBeginEditing",
+            "textShouldEndEditing",
+        ],
+    ),
+    (
+        "NSTextFieldDelegate",
+        &[
+            "controlTextDidChange",
+            "controlTextDidBeginEditing",
+            "controlTextDidEndEditing",
+            "control",
+        ],
+    ),
+    (
+        "NSApplicationDelegate",
+        // Overlaps SWIFT_FRAMEWORK_DISPATCH_METHODS for name-only credit;
+        // protocol gate still helps methods not yet on that curated list.
+        &[
+            "applicationDidFinishLaunching",
+            "applicationWillFinishLaunching",
+            "applicationWillTerminate",
+            "applicationShouldTerminateAfterLastWindowClosed",
+            "applicationShouldTerminate",
+            "applicationSupportsSecureRestorableState",
+            "applicationDidBecomeActive",
+            "applicationWillBecomeActive",
+            "applicationDidResignActive",
+            "applicationWillResignActive",
+            "applicationDidHide",
+            "applicationDidUnhide",
+            "applicationShouldHandleReopen",
+            "applicationDockMenu",
+            "applicationOpenUntitledFile",
+            "applicationShouldOpenUntitledFile",
+            "applicationDidChangeScreenParameters",
+            "application",
+        ],
+    ),
+    (
+        "UIApplicationDelegate",
+        &[
+            "application",
+            "applicationDidFinishLaunching",
+            "applicationWillTerminate",
+            "applicationDidBecomeActive",
+            "applicationWillResignActive",
+            "applicationDidEnterBackground",
+            "applicationWillEnterForeground",
+        ],
+    ),
+    ("UITableViewDataSource", &["numberOfSections", "tableView"]),
+    ("UITableViewDelegate", &["tableView", "scrollViewDidScroll"]),
+    (
+        "UICollectionViewDataSource",
+        &["numberOfSections", "collectionView"],
+    ),
+    (
+        "UICollectionViewDelegate",
+        &["collectionView", "scrollViewDidScroll"],
+    ),
+    (
+        "UIScrollViewDelegate",
+        &[
+            "scrollViewDidScroll",
+            "scrollViewWillBeginDragging",
+            "scrollViewDidEndDragging",
+            "scrollViewDidEndDecelerating",
+            "scrollViewDidZoom",
+            "viewForZooming",
+        ],
+    ),
+    (
+        "UITextFieldDelegate",
+        &[
+            "textField",
+            "textFieldShouldBeginEditing",
+            "textFieldDidBeginEditing",
+            "textFieldShouldEndEditing",
+            "textFieldDidEndEditing",
+            "textFieldShouldReturn",
+            "textFieldShouldClear",
+        ],
+    ),
+    (
+        "UITextViewDelegate",
+        &[
+            "textView",
+            "textViewShouldBeginEditing",
+            "textViewDidBeginEditing",
+            "textViewShouldEndEditing",
+            "textViewDidEndEditing",
+            "textViewDidChange",
+            "textViewDidChangeSelection",
+        ],
+    ),
+    ("WKNavigationDelegate", &["webView"]),
+    ("WKUIDelegate", &["webView"]),
+    ("WKScriptMessageHandler", &["userContentController"]),
+    (
+        "NSOpenSavePanelDelegate",
+        &["panel", "panelSelectionDidChange"],
+    ),
+    ("NSSharingServicePickerDelegate", &["sharingServicePicker"]),
+    (
+        "NSGestureRecognizerDelegate",
+        &["gestureRecognizer", "gestureRecognizerShouldBegin"],
+    ),
+];
+
+/// Look up curated framework-dispatched requirement method names for a
+/// protocol base name (`AppKit.NSToolbarDelegate` already stripped to
+/// `NSToolbarDelegate` by the caller).
+fn protocol_dispatch_requirement_methods(proto: &str) -> Option<&'static [&'static str]> {
+    SWIFT_PROTOCOL_DISPATCH_REQUIREMENTS
+        .iter()
+        .find(|(name, _)| *name == proto)
+        .map(|(_, methods)| *methods)
+}
+
+/// XCTest methods invoked by the runner, never by identifier.
+fn is_xctest_dispatch_method(name: &str) -> bool {
+    name.starts_with("test")
+        || matches!(
+            name,
+            "setUp" | "setUpWithError" | "tearDown" | "tearDownWithError" | "invokeTest"
+        )
+}
+
+/// True when a stripped line looks like a new declaration / `where` clause /
+/// brace body rather than a multi-line inheritance-clause continuation
+/// (`NSToolbarDelegate,` / `NSTableViewDataSource`).
+fn looks_like_swift_decl_start(trimmed: &str) -> bool {
+    if trimmed.is_empty() || trimmed == "{" || trimmed.starts_with('}') {
+        return true;
+    }
+    if trimmed.starts_with('@') || trimmed.starts_with("where ") {
+        return true;
+    }
+    let first = trimmed.split_whitespace().next().unwrap_or("");
+    matches!(
+        first,
+        "import"
+            | "class"
+            | "struct"
+            | "enum"
+            | "protocol"
+            | "extension"
+            | "actor"
+            | "func"
+            | "var"
+            | "let"
+            | "init"
+            | "deinit"
+            | "subscript"
+            | "typealias"
+            | "associatedtype"
+            | "public"
+            | "internal"
+            | "private"
+            | "fileprivate"
+            | "open"
+            | "final"
+            | "static"
+            | "override"
+            | "required"
+            | "convenience"
+            | "lazy"
+            | "weak"
+            | "unowned"
+            | "mutating"
+            | "nonmutating"
+            | "indirect"
+            | "case"
+    )
+}
+
+/// Walk file lines and yield `(type_name, inheritance_clause)` pairs, folding
+/// multi-line clauses such as:
+///
+/// ```swift
+/// final class MainWindowController: NSWindowController,
+///     NSToolbarDelegate, NSTableViewDataSource
+/// {
+/// ```
+///
+/// Continuation lines are absorbed until `{`, a `where` clause, or a real
+/// declaration start. Line-oriented only — matching the rest of the analyzer.
+fn iter_swift_conformance_clauses(content: &str) -> Vec<(String, String)> {
+    let lines: Vec<&str> = content.lines().collect();
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let line = strip_line_comment(lines[i]);
+        let Some(caps) = RE_SWIFT_CONFORMANCE.captures(line) else {
+            i += 1;
+            continue;
+        };
+        let type_name = caps
+            .get(1)
+            .map(|m| m.as_str().to_string())
+            .unwrap_or_default();
+        let mut clause = caps
+            .get(2)
+            .map(|m| m.as_str().trim().to_string())
+            .unwrap_or_default();
+
+        // Inheritance still open when the opening brace is not on this line
+        // (common for long AppKit delegate lists).
+        if !line.contains('{') {
+            let mut j = i + 1;
+            while j < lines.len() {
+                let cont = strip_line_comment(lines[j]).trim();
+                if cont.is_empty() {
+                    j += 1;
+                    continue;
+                }
+                if cont.starts_with('{') {
+                    j += 1;
+                    break;
+                }
+                if looks_like_swift_decl_start(cont) {
+                    break;
+                }
+                let piece = cont.trim_end_matches('{').trim().trim_end_matches(',');
+                if !piece.is_empty() {
+                    if !clause.is_empty() && !clause.ends_with(',') {
+                        clause.push(',');
+                    }
+                    clause.push_str(piece);
+                }
+                j += 1;
+                if cont.contains('{') {
+                    break;
+                }
+            }
+            i = j;
+        } else {
+            i += 1;
+        }
+
+        // Drop a trailing `where` constraint tail: `View where T: Equatable`.
+        if let Some(idx) = clause.find(" where ") {
+            clause.truncate(idx);
+        } else if let Some(idx) = clause.find("\twhere ") {
+            clause.truncate(idx);
+        }
+
+        out.push((type_name, clause));
+    }
+    out
+}
+
+/// Credit framework-reached declarations the identifier scan cannot see
+/// (LCT-G01 class G false-dead family, W9-A + W9-B):
+/// - a type conforming to [`SWIFT_ENUMERATED_CONFORMANCES`] plus its
+///   requirement members (`previews`, `test*`/lifecycle methods),
+/// - `var body` when the file declares a conformance to a
+///   [`SWIFT_BODY_REQUIREMENT_PROTOCOLS`] protocol (directly or via
+///   `extension`),
+/// - `func` members matching curated requirements of AppKit/UIKit
+///   delegate/datasource protocols present in the same file
+///   ([`SWIFT_PROTOCOL_DISPATCH_REQUIREMENTS`]).
+///
+/// Gating is file-level, matching the analyzer's line-oriented shape: a
+/// `body`/`previews`/delegate-requirement declaration is only credited when
+/// the same file carries the triggering conformance, so unrelated symbols of
+/// the same name in plain files stay detectable. Multi-line inheritance
+/// clauses are folded (W9-B follow-up) so real AppKit controller headers are
+/// not half-blind. Crediting can only REMOVE a dead flag, never add one.
+fn apply_framework_conformance_credits(content: &str, analysis: &mut FileAnalysis) {
+    use std::collections::HashSet;
+
+    let mut credited: Vec<String> = Vec::new();
+    let mut has_body_protocol = false;
+    let mut has_preview = false;
+    let mut has_xctest = false;
+    let mut protocol_dispatch_methods: HashSet<&'static str> = HashSet::new();
+
+    for (type_name, clause) in iter_swift_conformance_clauses(content) {
+        for piece in clause.split(',') {
+            // `View where T: Equatable` → `View`; `SwiftUI.App` → `App`.
+            let Some(head) = piece.split_whitespace().next() else {
+                continue;
+            };
+            let proto = head.split('<').next().unwrap_or(head);
+            let proto = proto.rsplit('.').next().unwrap_or(proto);
+            if SWIFT_ENUMERATED_CONFORMANCES.contains(&proto) {
+                if proto == "PreviewProvider" {
+                    has_preview = true;
+                }
+                if proto == "XCTestCase" {
+                    has_xctest = true;
+                }
+                if !type_name.is_empty() {
+                    credited.push(type_name.clone());
+                }
+            }
+            if SWIFT_BODY_REQUIREMENT_PROTOCOLS.contains(&proto) {
+                has_body_protocol = true;
+            }
+            if let Some(methods) = protocol_dispatch_requirement_methods(proto) {
+                protocol_dispatch_methods.extend(methods.iter().copied());
+            }
+        }
+    }
+
+    if !(has_body_protocol || has_preview || has_xctest || !protocol_dispatch_methods.is_empty()) {
+        return;
+    }
+
+    for exp in &analysis.exports {
+        let name = exp.name.as_str();
+        let dispatched = match exp.kind.as_str() {
+            "var" | "let" => {
+                (has_body_protocol && name == "body") || (has_preview && name == "previews")
+            }
+            "func" => {
+                (has_xctest && is_xctest_dispatch_method(name))
+                    || protocol_dispatch_methods.contains(name)
+            }
+            _ => false,
+        };
+        if dispatched {
+            credited.push(name.to_string());
+        }
+    }
+
+    for name in credited {
+        if !analysis.local_uses.iter().any(|u| u == &name) {
+            analysis.local_uses.push(name);
+        }
+    }
 }
 
 /// A UniFFI-generated Swift bridge file is saturated with `FfiConverter*` glue;
@@ -49,7 +506,7 @@ const UNIFFI_FFICONVERTER_DENSITY_THRESHOLD: usize = 4;
 /// Recognize a UniFFI-generated Swift bridge file and credit ALL of its exports
 /// as `local_uses` so they are not flagged HIGH-confidence dead.
 ///
-/// loctree-feedback.md (2026-06-26): `loct dead --full` flagged ~50 symbols in
+/// loctree-fail.md (2026-06-26): `loct dead --full` flagged ~50 symbols in
 /// `*_ffi.swift` (`FfiConverterType*_lift/_lower`, `UNIFFI_CALLBACK_*`,
 /// `uniffiTraitInterface*`, …) as HIGH dead. These are machine-written FFI glue
 /// whose ONLY consumers live across the FFI boundary (C / Rust) — exactly the
@@ -103,7 +560,7 @@ fn is_uniffi_generated_bridge(content: &str) -> bool {
 /// identifier" in user code. They conform to NSApplicationDelegate /
 /// UIApplicationDelegate / scene protocols, so an import-graph dead scan sees
 /// 0 references and (before this) flagged them HIGH-confidence dead
-/// (loctree-feedback.md, 2026-06-16). Curated, not exhaustive — `override` and
+/// (loctree-fail.md, 2026-06-16). Curated, not exhaustive — `override` and
 /// `@objc` cover the rest.
 const SWIFT_FRAMEWORK_DISPATCH_METHODS: &[&str] = &[
     // NSApplicationDelegate
@@ -346,6 +803,101 @@ fn strip_line_comment(line: &str) -> &str {
     line
 }
 
+/// Type names a bare Swift identifier resolves to in the standard library,
+/// Foundation, concurrency runtime, or SwiftUI — BEFORE any same-module type
+/// of the same name. Repos routinely declare nested `enum Error`, `struct
+/// State`, etc.; a bare cross-file usage of such a name can only mean the
+/// stdlib/framework symbol (the nested one needs `Outer.Error` qualification),
+/// so an `implicit_symbol` edge on these names is categorically noise.
+/// Evidence: blinksh/blink — nested `enum Error` in `SSHDefaultAgent.swift`
+/// turned 75 unrelated files into "importers" (loctree-fail.md 2026-07-25).
+pub fn is_swift_shadowed_stdlib_name(word: &str) -> bool {
+    matches!(
+        word,
+        // Core language / stdlib
+        "Error"
+            | "Result"
+            | "Optional"
+            | "Any"
+            | "AnyObject"
+            | "Void"
+            | "Never"
+            | "String"
+            | "Substring"
+            | "Character"
+            | "Bool"
+            | "Int"
+            | "Int8"
+            | "Int16"
+            | "Int32"
+            | "Int64"
+            | "UInt"
+            | "UInt8"
+            | "UInt16"
+            | "UInt32"
+            | "UInt64"
+            | "Float"
+            | "Double"
+            | "CGFloat"
+            | "Array"
+            | "Dictionary"
+            | "Set"
+            // Common conformance protocols
+            | "Codable"
+            | "Encodable"
+            | "Decodable"
+            | "Equatable"
+            | "Hashable"
+            | "Comparable"
+            | "Identifiable"
+            | "Sendable"
+            | "CaseIterable"
+            | "RawRepresentable"
+            | "CustomStringConvertible"
+            // Foundation
+            | "Data"
+            | "Date"
+            | "Calendar"
+            | "TimeZone"
+            | "Locale"
+            | "URL"
+            | "URLRequest"
+            | "UUID"
+            | "Decimal"
+            | "IndexPath"
+            | "IndexSet"
+            | "Notification"
+            | "NotificationCenter"
+            | "Bundle"
+            | "FileManager"
+            | "UserDefaults"
+            | "JSONEncoder"
+            | "JSONDecoder"
+            | "Timer"
+            | "Thread"
+            | "DispatchQueue"
+            | "OperationQueue"
+            // Concurrency
+            | "Task"
+            | "MainActor"
+            // SwiftUI ubiquitous surfaces
+            | "State"
+            | "Binding"
+            | "Published"
+            | "ObservedObject"
+            | "ObservableObject"
+            | "EnvironmentObject"
+            | "Environment"
+            | "View"
+            | "Text"
+            | "Image"
+            | "Color"
+            | "Font"
+            | "Button"
+            | "Label"
+    )
+}
+
 fn is_swift_keyword(word: &str) -> bool {
     matches!(
         word,
@@ -463,7 +1015,7 @@ extension WorkspaceCacheStore: Searchable {}
 
     #[test]
     fn marks_nsapplicationmain_file_as_entry_point() {
-        // loctree-feedback.md (2026-06-16): main.swift drives the app via
+        // loctree-fail.md (2026-06-16): main.swift drives the app via
         // NSApplicationMain; it is a runtime entry point, not dead.
         let src = "import AppKit\n\nlet delegate = AppDelegate()\nNSApplication.shared.delegate = delegate\n_ = NSApplicationMain(CommandLine.argc, CommandLine.unsafeArgv)\n";
         let analysis = analyze_swift_file(src, "main.swift".to_string());
@@ -485,7 +1037,7 @@ extension WorkspaceCacheStore: Searchable {}
 
     #[test]
     fn credits_appkit_lifecycle_and_override_methods_as_used() {
-        // loctree-feedback.md (2026-06-16): NSApplicationDelegate protocol methods
+        // loctree-fail.md (2026-06-16): NSApplicationDelegate protocol methods
         // and `override`/`@objc` self-dispatched helpers are framework-invoked,
         // never "called by identifier" — they were FALSE HIGH-confidence dead.
         // Crediting them as local_uses removes the FP (can only ADD a use,
@@ -514,7 +1066,7 @@ extension WorkspaceCacheStore: Searchable {}
 
     #[test]
     fn credits_uniffi_generated_glue_via_header() {
-        // loctree-feedback.md (2026-06-26): UniFFI-generated bridge glue is reached
+        // loctree-fail.md (2026-06-26): UniFFI-generated bridge glue is reached
         // only across the FFI boundary (C/Rust), has 0 in-Swift references, and
         // was flagged HIGH-confidence dead. The autogenerated header marks the
         // whole file as generated → every export is credited as used.
@@ -557,6 +1109,206 @@ extension WorkspaceCacheStore: Searchable {}
                 .iter()
                 .any(|u| u == "myHandWrittenHelper"),
             "hand-written *_ffi.swift must not be force-credited as generated"
+        );
+    }
+
+    #[test]
+    fn credits_preview_provider_type_and_previews_requirement() {
+        // LCT-G01 family (W9-A): Xcode enumerates PreviewProvider
+        // conformances; neither the type nor its `previews` requirement is
+        // ever referenced by identifier, yet both are live.
+        let src = "import SwiftUI\n\nstruct ContentView_Previews: PreviewProvider {\n    static var previews: some View {\n        ContentView()\n    }\n}\n";
+        let analysis = analyze_swift_file(src, "Previews.swift".to_string());
+        for credited in ["ContentView_Previews", "previews"] {
+            assert!(
+                analysis.local_uses.iter().any(|u| u == credited),
+                "preview surface `{credited}` must be credited as framework-reached"
+            );
+        }
+    }
+
+    #[test]
+    fn credits_body_requirement_on_swiftui_conformance() {
+        // `var body` on a View/App/Scene conformer is invoked only through
+        // SwiftUI dispatch — never by identifier.
+        let src = "import SwiftUI\n\nstruct ContentView: View {\n    var body: some View {\n        Text(\"hello\")\n    }\n}\n";
+        let analysis = analyze_swift_file(src, "ContentView.swift".to_string());
+        assert!(
+            analysis.local_uses.iter().any(|u| u == "body"),
+            "protocol-requirement `body` must be credited as framework-dispatched"
+        );
+        // The conforming type itself is NOT auto-credited: a genuinely
+        // unreferenced View must stay a dead candidate.
+        assert!(
+            !analysis.local_uses.iter().any(|u| u == "ContentView"),
+            "a View conformer must not be force-credited by conformance alone"
+        );
+    }
+
+    #[test]
+    fn does_not_credit_body_without_framework_conformance() {
+        // A plain type with a `body` property has no SwiftUI dispatch —
+        // genuine dead code stays detectable.
+        let src = "import Foundation\n\nstruct Message {\n    var body: String\n}\n";
+        let analysis = analyze_swift_file(src, "Message.swift".to_string());
+        assert!(
+            !analysis.local_uses.iter().any(|u| u == "body"),
+            "`body` outside a framework conformance must not be credited"
+        );
+    }
+
+    #[test]
+    fn credits_xctest_subclass_and_runner_dispatched_methods() {
+        // The XCTest runner discovers XCTestCase subclasses and invokes
+        // test*/lifecycle methods reflectively.
+        let src = "import XCTest\n\nfinal class FixtureTests: XCTestCase {\n    override func setUpWithError() throws {}\n    func testDormantFeature() {}\n    func helperNotATest() -> Int { 7 }\n}\n";
+        let analysis = analyze_swift_file(src, "FixtureTests.swift".to_string());
+        for credited in ["FixtureTests", "testDormantFeature", "setUpWithError"] {
+            assert!(
+                analysis.local_uses.iter().any(|u| u == credited),
+                "XCTest surface `{credited}` must be credited as runner-reached"
+            );
+        }
+        assert!(
+            !analysis.local_uses.iter().any(|u| u == "helperNotATest"),
+            "a non-test helper in a test class must not be force-credited"
+        );
+    }
+
+    #[test]
+    fn credits_body_via_extension_conformance() {
+        // Conformance declared through an extension still makes `body` a
+        // framework-dispatched requirement in this file.
+        let src = "import SwiftUI\n\nstruct Panel {\n    var body: some View {\n        Text(\"panel\")\n    }\n}\n\nextension Panel: View {}\n";
+        let analysis = analyze_swift_file(src, "Panel.swift".to_string());
+        assert!(
+            analysis.local_uses.iter().any(|u| u == "body"),
+            "`body` must be credited when conformance arrives via extension"
+        );
+    }
+
+    #[test]
+    fn credits_appkit_toolbar_and_table_delegate_requirements() {
+        // W9-B / loctree-fail.md (2026-07-23): NSToolbarDelegate /
+        // NSTableViewDataSource requirements are AppKit-dispatched with zero
+        // identifier references. Without protocol-gated credit they land as
+        // dead-HIGH (vibecrafted MainWindowController).
+        let src = r#"
+import AppKit
+
+final class MainWindowController: NSWindowController, NSToolbarDelegate, NSTableViewDataSource, NSTableViewDelegate {
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { [] }
+    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { [] }
+    func numberOfRows(in tableView: NSTableView) -> Int { 0 }
+    func tableViewSelectionDidChange(_ notification: Notification) {}
+    private func layoutHelper() {}
+}
+"#;
+        let analysis = analyze_swift_file(src, "MainWindowController.swift".to_string());
+        for credited in [
+            "toolbarDefaultItemIdentifiers",
+            "toolbarAllowedItemIdentifiers",
+            "numberOfRows",
+            "tableViewSelectionDidChange",
+        ] {
+            assert!(
+                analysis.local_uses.iter().any(|u| u == credited),
+                "AppKit delegate requirement `{credited}` must be credited as framework-dispatched"
+            );
+        }
+        assert!(
+            !analysis.local_uses.iter().any(|u| u == "layoutHelper"),
+            "a plain helper on a delegate type must not be force-credited"
+        );
+        // Conformance alone must not credit the type (same rule as View).
+        assert!(
+            !analysis
+                .local_uses
+                .iter()
+                .any(|u| u == "MainWindowController"),
+            "a delegate conformer must not be force-credited by conformance alone"
+        );
+    }
+
+    #[test]
+    fn credits_delegate_requirements_via_extension_conformance() {
+        let src = r#"
+import AppKit
+
+final class PaletteController: NSObject {
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { [] }
+    func orphanCallback() {}
+}
+
+extension PaletteController: NSToolbarDelegate {}
+"#;
+        let analysis = analyze_swift_file(src, "PaletteController.swift".to_string());
+        assert!(
+            analysis
+                .local_uses
+                .iter()
+                .any(|u| u == "toolbarDefaultItemIdentifiers"),
+            "delegate requirement must be credited when conformance arrives via extension"
+        );
+        assert!(
+            !analysis.local_uses.iter().any(|u| u == "orphanCallback"),
+            "non-requirement methods must stay uncredited without other signals"
+        );
+    }
+
+    #[test]
+    fn does_not_credit_delegate_method_names_without_protocol() {
+        // Same method names outside a curated protocol conformance are not
+        // framework-dispatched and must stay dead candidates.
+        let src = r#"
+import Foundation
+
+struct ToolbarCatalog {
+    func toolbarDefaultItemIdentifiers() -> [String] { [] }
+    func numberOfRows() -> Int { 0 }
+}
+"#;
+        let analysis = analyze_swift_file(src, "ToolbarCatalog.swift".to_string());
+        for name in ["toolbarDefaultItemIdentifiers", "numberOfRows"] {
+            assert!(
+                !analysis.local_uses.iter().any(|u| u == name),
+                "`{name}` without AppKit delegate conformance must not be credited"
+            );
+        }
+    }
+
+    #[test]
+    fn credits_delegate_requirements_across_multiline_conformance() {
+        // Real AppKit controllers often wrap long conformance lists. The
+        // trailing protocols (NSTableViewDelegate here) must still gate credit.
+        let src = r#"
+import AppKit
+
+final class MainWindowController: NSWindowController,
+    NSToolbarDelegate,
+    NSTableViewDataSource,
+    NSTableViewDelegate
+{
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { [] }
+    func numberOfRows(in tableView: NSTableView) -> Int { 0 }
+    func tableViewSelectionDidChange(_ notification: Notification) {}
+    private func layoutHelper() {}
+}
+"#;
+        let analysis = analyze_swift_file(src, "MainWindowController.swift".to_string());
+        for credited in [
+            "toolbarDefaultItemIdentifiers",
+            "numberOfRows",
+            "tableViewSelectionDidChange",
+        ] {
+            assert!(
+                analysis.local_uses.iter().any(|u| u == credited),
+                "multi-line conformance must still credit `{credited}`"
+            );
+        }
+        assert!(
+            !analysis.local_uses.iter().any(|u| u == "layoutHelper"),
+            "helpers must stay uncredited under multi-line conformance"
         );
     }
 

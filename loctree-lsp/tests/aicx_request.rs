@@ -5,7 +5,7 @@
 //! end-to-end AICX path requires a live `aicx` binary on PATH and is
 //! exercised by the daemon smoke harness rather than this unit test.
 //!
-//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by VetCoders ⓒ 2025-2026 VetCoders
+//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders ⓒ 2025-2026 Vetcoders
 
 use loctree::pack::AuthorityLabel;
 use loctree::pack::MemoryEntry;

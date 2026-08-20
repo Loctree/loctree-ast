@@ -15,7 +15,7 @@
 //!   `snapshot.json` to the global cache, and the LSP backend's
 //!   `SnapshotState::load` swaps the in-RAM `Arc<RwLock<...>>` value.
 //!
-//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by VetCoders ⓒ 2025-2026 VetCoders
+//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders ⓒ 2025-2026 Vetcoders
 
 use std::path::Path;
 use std::time::Duration;

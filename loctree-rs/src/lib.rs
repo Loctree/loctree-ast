@@ -1,7 +1,10 @@
 //! # loctree
 //!
+//! Build provenance is exposed through [`BUILD_VERSION`].
+//!
 //! **AI-oriented Project Analyzer** - Static analysis tool designed for AI agents
 //! and developers building production-ready software.
+
 //!
 //! loctree helps overcome the common AI tendency to generate excessive artifacts
 //! that lead to re-export cascades, circular imports, and spaghetti dependencies.
@@ -65,9 +68,14 @@
 //! exist for backward compatibility, but new non-CLI code should not depend on
 //! them.
 
-#![doc(html_root_url = "https://docs.rs/loctree/0.13.0")]
+#![doc(html_root_url = "https://docs.rs/loctree/0.14.2")]
 #![doc(html_favicon_url = "https://loct.io/assets/loctree-logo.png")]
 #![doc(html_logo_url = "https://loct.io/assets/loctree-logo.png")]
+
+/// Identity of the exact checkout used to build this Loctree artifact.
+pub const BUILD_VERSION: &str = env!("LOCTREE_BUILD_VERSION");
+pub const GIT_COMMIT: &str = env!("LOCTREE_GIT_COMMIT");
+pub const GIT_DIRTY: bool = env!("LOCTREE_GIT_DIRTY").as_bytes()[0] == b'1';
 
 // ============================================================================
 // Core Modules
@@ -88,6 +96,11 @@
 /// - [`analyzer::html`] - HTML report generation
 /// - [`analyzer::sarif`] - SARIF 2.1.0 output for CI
 pub mod analyzer;
+pub mod bundle_identity;
+
+/// Deterministic `loctree.anchors.v1` catalog builder (core domain logic;
+/// the `loct anchors` CLI handler is the emission surface).
+pub mod anchors;
 pub mod body;
 pub(crate) mod context_render;
 pub mod context_scope;
@@ -310,6 +323,10 @@ pub mod diff;
 /// println!("Found {} importers", result.results.len());
 /// ```
 pub mod query;
+
+/// Query receipt identity (`loctree.receipt.v1`) — binds answers to root,
+/// live HEAD, dirty fingerprint, snapshot fingerprint, and binary identity.
+pub mod receipt;
 
 /// Progress UI utilities (spinners, status messages).
 ///

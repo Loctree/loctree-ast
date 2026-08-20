@@ -4,7 +4,7 @@
 //! the default table via `.loctree/config.toml [env_truth] precedence = ...`.
 //! See `docs/env-truth-precedence.md` for the full doctrine.
 //!
-//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents ⓒ 2025-2026 Loctree Team
+//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI
 
 use std::collections::BTreeMap;
 use std::path::Path;

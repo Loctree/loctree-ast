@@ -135,6 +135,13 @@ pub struct ParsedArgs {
     /// `include_ignored` is set, so the scan can gather these files yet still
     /// mark them as ignored.
     pub loctignore_override_patterns: Vec<String>,
+    /// Explicit opt-in to scan a non-git directory
+    /// (`--force-non-git-repository-snapshot`). Default false.
+    pub force_non_git: bool,
+    /// When true, a first scan may append `.loctree/` to the repo `.gitignore`.
+    /// Perception paths (impact/slice/find/context auto-scan) leave this false;
+    /// explicit `loct scan` / `loct auto` / `loct watch` set it true.
+    pub allow_gitignore_mutation: bool,
 }
 
 impl Default for ParsedArgs {
@@ -227,6 +234,8 @@ impl Default for ParsedArgs {
             python_library: false,
             include_ignored: false,
             loctignore_override_patterns: Vec::new(),
+            force_non_git: false,
+            allow_gitignore_mutation: false,
         }
     }
 }

@@ -1,0 +1,30 @@
+# Linker configuration for cross-libc builds on Linux.
+#
+# x86_64-unknown-linux-musl is used to produce static loctree binaries that
+# run on every Linux distro regardless of glibc version (the wide-compat
+# bundle shipped to users on pre-glibc-2.39 systems). The runner must have
+# musl-tools (musl-gcc) installed; release-bundles.yml takes care of that.
+
+# Cargo's future-incompat notice is suppressed here, and nothing else is.
+#
+# The only affected crate is `proc-macro-error2 v2.0.1`, pulled in three levels
+# down by `leptos` (leptos_macro / reactive_stores_macro / rstml) for the
+# `report-leptos` crate. No first-party code is involved and no upstream
+# release fixes it yet, so the notice is unactionable noise that cargo appends
+# to the tail of every build, test and clippy run. That tail is what our
+# delivery gates read, and the package name itself contains the substring
+# "error" — the notice was failing gates on its own name.
+#
+# This does not mute a quality gate: `clippy -D warnings` and the test suite
+# are untouched, and the report stays available on demand via
+# `cargo report future-incompatibilities`. Drop this block once leptos stops
+# depending on proc-macro-error2.
+[future-incompat-report]
+frequency = "never"
+
+[target.x86_64-unknown-linux-musl]
+linker = "musl-gcc"
+rustflags = [
+    "-C", "target-feature=+crt-static",
+    "-C", "link-self-contained=yes",
+]

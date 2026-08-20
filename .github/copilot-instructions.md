@@ -23,7 +23,7 @@ You are an expert Rust/TypeScript developer working on **Loctree** (a static ana
 - **Async:** We use `tokio`. Be careful with `Send` + `Sync` across thread boundaries.
 
 ## 🏗️ Architecture
-- `loctree_rs`: Core CLI logic.
+- `loctree-rs`: Core CLI logic.
 - `reports`: Leptos (WASM) UI components.
 - `landing`: Public website (Leptos CSR).
 

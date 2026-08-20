@@ -14,6 +14,8 @@
 //! inside a 400-line function were invisible to `find`/`tagmap`. The literal
 //! scanner sees them because it does not depend on symbol extraction.
 
+use std::borrow::Cow;
+
 use serde::{Deserialize, Serialize};
 use strsim::levenshtein;
 
@@ -23,7 +25,10 @@ use crate::types::{FileAnalysis, ImportEntry, ReexportKind};
 mod reporting;
 mod summary;
 
-use summary::{role_summary, scope_classification_counts, suggested_next};
+use summary::{
+    conflict_marker_anchor_hint, hit_shape, role_summary, scope_classification_counts,
+    suggested_next,
+};
 
 /// Local, single-line classification of what an occurrence *looks like*.
 ///
@@ -122,6 +127,10 @@ pub enum MatchMode {
     IdentifierBoundary,
     WholeTokenBoundary,
     FixedString,
+    /// Union of two or more exact-literal patterns (multi-arg or `A|B` form).
+    /// Each pattern is scanned with normal literal rules; results are merged.
+    /// This is **not** regex — it exists so agents stop grepping for OR.
+    MultiLiteral,
     /// Free regex over raw file text (no identifier boundary). Used by
     /// `find --regex` / the pattern-scan surface for security/privacy audits.
     Regex,
@@ -352,6 +361,48 @@ pub struct SymbolAnchor {
     pub symbol_id: String,
 }
 
+/// Proven graph facts about the enclosing symbol / file of one literal hit.
+///
+/// Built only from snapshot edges and the symbol table — never guessed. When a
+/// language has no export/local coverage for the hit, this field is omitted
+/// rather than filled with `SemanticGuess` filler.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct EnclosingFacts {
+    /// Number of snapshot import edges pointing at the hit's file (fan-in).
+    pub fan_in: usize,
+    /// True when the enclosing symbol is a snapshot export (not merely local).
+    pub exported: bool,
+    /// Kind of the enclosing symbol when known (`func`, `var`, `class`, …).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub symbol_kind: Option<String>,
+    /// Authority of these facts. Edge fan-in is `repo_verified`; export membership
+    /// is `loctree_derived` from the analyzer symbol table.
+    pub authority: &'static str,
+}
+
+/// Distribution shape of a literal hit set — what the role rollup *means*.
+///
+/// Labels degrade to `unknown` when roles are too sparse or mixed to claim a
+/// clean pattern. Authority is `loctree_derived` only when at least one
+/// definition role was proven by the symbol table (high-confidence definition);
+/// pure lexical patterns stay `semantic_guess`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct HitShape {
+    /// Compact shape label: `single_writer`, `read_only`, `definition_only`,
+    /// `test_only`, `mixed`, `reference_only`, or `unknown`.
+    pub label: &'static str,
+    pub definitions: usize,
+    /// Mutation / field-emission sites.
+    pub writers: usize,
+    /// Reference / local-binding sites.
+    pub readers: usize,
+    /// Authority of the shape claim.
+    pub authority: &'static str,
+    /// One-line agent-facing note when the shape is informative.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
 /// 1-based point in a literal occurrence range.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct OccurrencePoint {
@@ -411,6 +462,10 @@ pub struct LiteralOccurrence {
     /// rg-complete while still exposing twin ambiguity explicitly.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub definition_candidates: Vec<SymbolAnchor>,
+    /// Snapshot-proven graph facts for the enclosing symbol/file. Omitted when
+    /// enrichment did not run or the snapshot has nothing to say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enclosing_facts: Option<EnclosingFacts>,
     /// True when this hit lives in a file normally excluded by `.loctignore`,
     /// surfaced only because the read ran with `--include-ignored`. Set during
     /// snapshot enrichment; `false` on default (clean-universe) reads.
@@ -445,6 +500,238 @@ pub struct OccurrencePage {
     pub next_offset: Option<usize>,
 }
 
+/// Whether one file class participates in the indexed result universe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UniverseInclusion {
+    Included,
+    Excluded,
+    Conditional,
+}
+
+/// Accounting for one required universe class.
+///
+/// `files=None` is deliberate: snapshots currently do not retain Git's
+/// tracked-vs-untracked origin. Returning an invented zero would turn an
+/// implementation gap into a false completeness claim.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UniverseSlice {
+    pub inclusion: UniverseInclusion,
+    pub files: Option<usize>,
+    pub note: String,
+}
+
+/// One explicit boundary outside the indexed universe.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UniverseExclusion {
+    pub kind: String,
+    pub files: Option<usize>,
+    pub reason: String,
+}
+
+/// Machine-readable declaration of the file universe behind a result.
+///
+/// This is intentionally additive to the legacy `scope` counters. Every
+/// required class is always present, even when its count is unknown, so a
+/// consumer can distinguish "zero" from "the snapshot cannot prove it".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IndexedUniverse {
+    pub indexed_files: usize,
+    pub scanned_files: usize,
+    pub scan_complete: bool,
+    pub tracked: UniverseSlice,
+    pub untracked: UniverseSlice,
+    pub ignored: UniverseSlice,
+    pub generated: UniverseSlice,
+    pub fixtures: UniverseSlice,
+    pub exclusions: Vec<UniverseExclusion>,
+}
+
+impl Default for IndexedUniverse {
+    fn default() -> Self {
+        Self::from_counts(
+            0,
+            0,
+            crate::analyzer::classify::ArtifactFenceStats::default(),
+            0,
+        )
+    }
+}
+
+impl IndexedUniverse {
+    fn from_counts(
+        indexed_files: usize,
+        scanned_files: usize,
+        stats: crate::analyzer::classify::ArtifactFenceStats,
+        ignored_files: usize,
+    ) -> Self {
+        let unreadable = indexed_files.saturating_sub(scanned_files);
+        let mut exclusions = vec![UniverseExclusion {
+            kind: "outside_snapshot".to_string(),
+            files: None,
+            reason: "ignored, unsupported, heavy build, or otherwise unindexed paths are outside this result; the snapshot does not retain their count".to_string(),
+        }];
+        if unreadable > 0 {
+            exclusions.push(UniverseExclusion {
+                kind: "unreadable_or_non_utf8".to_string(),
+                files: Some(unreadable),
+                reason: "indexed paths whose bytes could not be scanned as UTF-8 text".to_string(),
+            });
+        }
+
+        Self {
+            indexed_files,
+            scanned_files,
+            scan_complete: indexed_files == scanned_files,
+            tracked: UniverseSlice {
+                inclusion: UniverseInclusion::Conditional,
+                files: None,
+                note: "included when present in the snapshot; tracked origin is not retained"
+                    .to_string(),
+            },
+            untracked: UniverseSlice {
+                inclusion: UniverseInclusion::Conditional,
+                files: None,
+                note: "included when present in the snapshot; untracked origin is not retained"
+                    .to_string(),
+            },
+            ignored: UniverseSlice {
+                inclusion: if ignored_files > 0 {
+                    UniverseInclusion::Conditional
+                } else {
+                    UniverseInclusion::Excluded
+                },
+                files: Some(ignored_files),
+                note: if ignored_files > 0 {
+                    "ephemeral include-ignored paths present and marked; other ignored paths remain outside the snapshot"
+                } else {
+                    "excluded by default; use include-ignored to build an ephemeral superset"
+                }
+                .to_string(),
+            },
+            generated: UniverseSlice {
+                inclusion: UniverseInclusion::Included,
+                files: Some(stats.generated),
+                note: "indexed generated paths are scanned and flagged, not silently dropped"
+                    .to_string(),
+            },
+            fixtures: UniverseSlice {
+                inclusion: UniverseInclusion::Included,
+                files: Some(stats.fixtures),
+                note: "indexed fixture paths are scanned and flagged, not silently dropped"
+                    .to_string(),
+            },
+            exclusions,
+        }
+    }
+
+    /// Build accounting from a structural snapshot and an optional file scope.
+    pub fn from_snapshot(snapshot: &Snapshot, scope: FileScope<'_>, scanned_files: usize) -> Self {
+        let mut stats = crate::analyzer::classify::ArtifactFenceStats::default();
+        let mut indexed_files = 0;
+        let mut ignored_files = 0;
+        for file in snapshot
+            .files
+            .iter()
+            .filter(|file| scope.matches(&file.path))
+        {
+            indexed_files += 1;
+            if file.ignored {
+                ignored_files += 1;
+            }
+            let class = crate::analyzer::classify::artifact_class(&file.path, None);
+            if file.is_generated && class == crate::analyzer::classify::ArtifactClass::Product {
+                stats.record(crate::analyzer::classify::ArtifactClass::Generated);
+            } else {
+                stats.record(class);
+            }
+        }
+        Self::from_counts(
+            indexed_files,
+            scanned_files.min(indexed_files),
+            stats,
+            ignored_files,
+        )
+    }
+
+    /// Build accounting for analyzer-backed discovery results.
+    ///
+    /// Discovery operates on the acquired snapshot's `FileAnalysis` rows, so
+    /// every row is both indexed and scanned. Git tracked/untracked origin is
+    /// still intentionally unknown; [`Self::from_counts`] preserves that
+    /// distinction instead of inventing zeros.
+    pub fn from_analyses(analyses: &[FileAnalysis]) -> Self {
+        let mut stats = crate::analyzer::classify::ArtifactFenceStats::default();
+        let mut ignored_files = 0;
+        for file in analyses {
+            if file.ignored {
+                ignored_files += 1;
+            }
+            let class = crate::analyzer::classify::artifact_class(&file.path, None);
+            if file.is_generated && class == crate::analyzer::classify::ArtifactClass::Product {
+                stats.record(crate::analyzer::classify::ArtifactClass::Generated);
+            } else {
+                stats.record(class);
+            }
+        }
+        Self::from_counts(analyses.len(), analyses.len(), stats, ignored_files)
+    }
+
+    /// Compact human line mirroring the JSON contract without hiding unknowns.
+    pub fn summary_line(&self) -> String {
+        format!(
+            "universe: indexed={}, scanned={}, tracked=unknown, untracked=unknown, ignored={}, generated={}, fixtures={}, exclusions={}{}",
+            self.indexed_files,
+            self.scanned_files,
+            self.ignored.files.unwrap_or(0),
+            self.generated.files.unwrap_or(0),
+            self.fixtures.files.unwrap_or(0),
+            self.exclusions.len(),
+            if self.scan_complete {
+                ""
+            } else {
+                "; coverage incomplete"
+            }
+        )
+    }
+
+    /// True when any exclusion boundary is declared (including the permanent
+    /// `outside_snapshot` gap for unindexed/ignored/unsupported paths).
+    ///
+    /// Absolute whole-repo "not found" claims are unsafe when this is true:
+    /// absence is only proven for the scanned/indexed universe.
+    pub fn has_exclusion_boundary(&self) -> bool {
+        !self.exclusions.is_empty()
+    }
+
+    /// Human-readable exclusion list: `outside_snapshot, unreadable_or_non_utf8(1)`.
+    pub fn exclusion_kinds_summary(&self) -> String {
+        self.exclusions
+            .iter()
+            .map(|entry| match entry.files {
+                Some(n) => format!("{}({})", entry.kind, n),
+                None => entry.kind.clone(),
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    /// Compact caveat appended to zero-hit human output when exclusions exist.
+    ///
+    /// Returns `None` only when there is no exclusion boundary (absolute
+    /// absence could still be claimed for the scanned surface).
+    pub fn absence_exclusion_caveat(&self) -> Option<String> {
+        if !self.has_exclusion_boundary() {
+            return None;
+        }
+        let kinds = self.exclusion_kinds_summary();
+        let n = self.exclusions.len();
+        Some(format!(
+            "absence trustworthy for scanned universe; {n} exclusion boundary(ies): {kinds} — unindexed/ignored/unsupported paths may still match"
+        ))
+    }
+}
+
 /// Aggregated literal-occurrence result for one identifier query.
 ///
 /// New fields (`total`, `by_file`, `slim`, `page`) are **additive** and
@@ -462,6 +749,93 @@ pub struct LiteralScopeStats {
     pub fixtures: usize,
     pub generated: usize,
     pub templates: usize,
+}
+
+/// Resolution receipt for an explicitly requested file scope.
+///
+/// A selector is authoritative only when it resolves to exactly one indexed
+/// snapshot path. `indexed` remains separate from `resolved` so an ambiguous
+/// basename reports that indexed candidates exist without silently searching
+/// all of them or laundering the ambiguity into a polished zero.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FileScopeResolution {
+    pub requested: String,
+    pub normalized: String,
+    pub resolved: bool,
+    pub indexed: bool,
+    pub status: &'static str,
+    pub matched_paths: Vec<String>,
+}
+
+impl FileScopeResolution {
+    /// Resolve a CLI/MCP selector against the canonical paths stored in the
+    /// snapshot. Full relative paths and unique suffixes win first; a unique
+    /// extensionless basename (for example `adapter_brute_force`) is accepted
+    /// as the final compatibility form.
+    pub fn resolve<'a, I>(requested: &str, snapshot_paths: I) -> Self
+    where
+        I: IntoIterator<Item = &'a str>,
+    {
+        let normalized = normalize_scope_path(requested);
+        let paths = snapshot_paths
+            .into_iter()
+            .map(normalize_scope_path)
+            .collect::<Vec<_>>();
+
+        let mut matched_paths = paths
+            .iter()
+            .filter(|path| {
+                **path == normalized
+                    || path.ends_with(&format!("/{normalized}"))
+                    || normalized.ends_with(&format!("/{path}"))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+
+        if matched_paths.is_empty()
+            && !normalized.is_empty()
+            && !normalized.contains('/')
+            && !normalized.contains('.')
+        {
+            matched_paths = paths
+                .iter()
+                .filter(|path| {
+                    path.rsplit('/').next().is_some_and(|filename| {
+                        filename.rsplit_once('.').map_or(filename, |(stem, _)| stem) == normalized
+                    })
+                })
+                .cloned()
+                .collect();
+        }
+
+        matched_paths.sort();
+        matched_paths.dedup();
+        let (resolved, status) = match matched_paths.len() {
+            0 => (false, "unresolved"),
+            1 => (true, "resolved"),
+            _ => (false, "ambiguous"),
+        };
+
+        Self {
+            requested: requested.to_string(),
+            normalized,
+            resolved,
+            indexed: !matched_paths.is_empty(),
+            status,
+            matched_paths,
+        }
+    }
+
+    /// Convert a resolution receipt into the scanner's exact path scope.
+    /// Unresolved or ambiguous selectors intentionally match no path.
+    pub fn scan_scope(&self) -> FileScope<'_> {
+        let file = if self.resolved {
+            self.matched_paths.first().map(String::as_str)
+        } else {
+            Some("")
+        };
+        FileScope { file }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -483,6 +857,12 @@ pub struct OccurrenceResults {
     pub files_matched: usize,
     /// Total number of occurrences found, independent of `slim` truncation.
     pub total: usize,
+    /// Number of occurrence rows actually emitted after shaping.
+    pub emitted: usize,
+    /// Zero-based offset applied to the emitted list.
+    pub offset: usize,
+    /// True whenever `emitted < total` (pagination or slim/count-only output).
+    pub truncated: bool,
     /// Per-file occurrence rollup. `Some` only when `group_by_file` is requested.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub by_file: Option<Vec<FileCount>>,
@@ -497,12 +877,18 @@ pub struct OccurrenceResults {
     pub page: Option<OccurrencePage>,
     /// Provenance marker for the whole result set. Always `"literal"`.
     pub source: &'static str,
-    /// Coverage line: "scanned 723 of 767 repo files; excluded: generated(28), vendored(9), fixtures(7)"
+    /// Coverage line: "scanned 723 of 767 indexed files; artifact-flagged: generated(28), …"
     #[serde(default)]
     pub coverage_line: String,
     /// Detailed scope statistics.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<LiteralScopeStats>,
+    /// Required universe declaration. Unlike legacy `scope`, this names
+    /// tracked/untracked/ignored policy and every known exclusion boundary.
+    pub universe: IndexedUniverse,
+    /// Explicit receipt for `--file`, omitted for repository-wide queries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_scope: Option<FileScopeResolution>,
     /// Counts by coarse file-scope bucket for the result set.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub scope_classifications: Vec<ScopeClassificationCount>,
@@ -523,6 +909,271 @@ pub struct OccurrenceResults {
     /// snapshot enrichment ran or no edges were proven. Additive.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub file_context: Vec<FileContext>,
+    /// Distribution shape of the hit set (single-writer, read-only, …).
+    /// Populated whenever there is at least one hit. Additive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hit_shape: Option<HitShape>,
+}
+
+/// Expand agent multi-pattern forms into individual exact-literal patterns.
+///
+/// Forms accepted:
+/// - multiple strings → each is one pattern
+/// - a single string with unescaped `|` where every segment is a *simple*
+///   literal (no regex metacharacters) → split into OR of exact literals
+///
+/// This closes the loctree-fail class where agents type
+/// `find 'global_async_runtime|get_tokio_runtime'`, get `fixed_string` total 0
+/// (looking for the pipe character), and fall back to `grep -E`.
+///
+/// Escaped `\|` keeps the pipe inside a segment. Segments that look like real
+/// regex (contain `.+*?[]()…`) do **not** trigger split — use `--regex`.
+pub fn expand_literal_patterns(raw_queries: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for raw in raw_queries {
+        let q = raw.trim();
+        if q.is_empty() {
+            continue;
+        }
+        if q.contains('|') && looks_like_multi_literal_or(q) {
+            for part in split_unescaped_pipes(q) {
+                let p = part.trim();
+                if !p.is_empty() {
+                    push_unique_pattern(&mut out, p);
+                }
+            }
+        } else {
+            push_unique_pattern(&mut out, q);
+        }
+    }
+    out
+}
+
+fn looks_like_multi_literal_or(q: &str) -> bool {
+    let parts = split_unescaped_pipes(q);
+    parts.len() >= 2 && parts.iter().all(|s| is_simple_literal_segment(s.trim()))
+}
+
+/// Split on `|` that is not preceded by an odd number of backslashes.
+fn split_unescaped_pipes(q: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut cur = String::new();
+    let mut chars = q.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            if chars.peek() == Some(&'|') {
+                chars.next();
+                cur.push('|');
+            } else {
+                cur.push('\\');
+            }
+            continue;
+        }
+        if c == '|' {
+            parts.push(std::mem::take(&mut cur));
+            continue;
+        }
+        cur.push(c);
+    }
+    parts.push(cur);
+    parts
+}
+
+fn is_simple_literal_segment(s: &str) -> bool {
+    if s.is_empty() {
+        return false;
+    }
+    // Reject regex metacharacters; allow identifier / path-ish tokens.
+    !s.chars().any(|c| {
+        matches!(
+            c,
+            '\\' | '[' | ']' | '(' | ')' | '{' | '}' | '+' | '*' | '?' | '^' | '$' | '.'
+        )
+    })
+}
+
+fn push_unique_pattern(out: &mut Vec<String>, pattern: &str) {
+    if !out.iter().any(|p| p == pattern) {
+        out.push(pattern.to_string());
+    }
+}
+
+/// Merge multiple single-pattern literal scans into one result set.
+///
+/// Occurrences are unioned and sorted by (file, line, column, matched_text).
+/// Exact duplicates (same location + same matched text) are collapsed.
+/// Callers should still run `apply_report` for paging/slim after merge.
+pub fn merge_occurrence_results(
+    display_query: &str,
+    parts: Vec<OccurrenceResults>,
+) -> OccurrenceResults {
+    if parts.is_empty() {
+        return scan_files_with(
+            std::iter::empty::<(&str, &str)>(),
+            display_query,
+            ScanOptions::default(),
+        );
+    }
+    if parts.len() == 1 {
+        let mut only = parts.into_iter().next().expect("len checked");
+        only.query = display_query.to_string();
+        return only;
+    }
+
+    let mut occurrences = Vec::new();
+    let mut coverage_line = String::new();
+    let mut universe = parts[0].universe.clone();
+    let mut scope = parts[0].scope.clone();
+    let mut near_matches = Vec::new();
+    let mut file_scope = parts[0].file_scope.clone();
+
+    for part in parts {
+        if coverage_line.is_empty() && !part.coverage_line.is_empty() {
+            coverage_line = part.coverage_line.clone();
+        }
+        // Prefer the richest universe declaration.
+        if part.universe.indexed_files >= universe.indexed_files {
+            universe = part.universe.clone();
+        }
+        if scope.is_none() {
+            scope = part.scope.clone();
+        }
+        if file_scope.is_none() {
+            file_scope = part.file_scope.clone();
+        }
+        occurrences.extend(part.occurrences);
+        near_matches.extend(part.near_matches);
+    }
+
+    occurrences.sort_by(|a, b| {
+        a.file
+            .cmp(&b.file)
+            .then(a.line.cmp(&b.line))
+            .then(a.column.cmp(&b.column))
+            .then(a.matched_text.cmp(&b.matched_text))
+    });
+    occurrences.dedup_by(|a, b| {
+        a.file == b.file
+            && a.line == b.line
+            && a.column == b.column
+            && a.matched_text == b.matched_text
+    });
+
+    let files_matched = {
+        let mut seen = std::collections::BTreeSet::new();
+        for occ in &occurrences {
+            seen.insert(occ.file.clone());
+        }
+        seen.len()
+    };
+    let total = occurrences.len();
+
+    // Drop near-matches when we have real hits (same contract as single scan).
+    if total > 0 {
+        near_matches.clear();
+    } else {
+        near_matches.sort_by(|a, b| a.symbol.cmp(&b.symbol).then(a.file.cmp(&b.file)));
+        near_matches.dedup_by(|a, b| a.symbol == b.symbol && a.file == b.file);
+    }
+
+    let scope_classifications = scope_classification_counts(&occurrences);
+    let suggested_next = suggested_next(display_query, &occurrences);
+    let role = role_summary(&occurrences);
+    let shape = hit_shape(&occurrences);
+
+    OccurrenceResults {
+        query: display_query.to_string(),
+        query_kind: query_kind(display_query),
+        match_mode: MatchMode::MultiLiteral,
+        occurrences,
+        files_matched,
+        total,
+        emitted: total,
+        offset: 0,
+        truncated: false,
+        by_file: None,
+        slim: false,
+        page: None,
+        source: "literal",
+        coverage_line,
+        scope,
+        universe,
+        file_scope,
+        scope_classifications,
+        suggested_next,
+        near_matches,
+        role_summary: role,
+        file_context: Vec::new(),
+        hit_shape: shape,
+    }
+}
+
+/// Scan one or more exact-literal patterns and merge into a single result set.
+///
+/// Shared by CLI, MCP, and LSP so multi-pattern OR (`A|B` / multi-arg) never
+/// forks a second scanner. Single-pattern calls stay identical to
+/// [`scan_files_with_scope`].
+pub fn scan_files_multi_literal(
+    files: &[(&str, &str)],
+    patterns: &[String],
+    opts: ScanOptions,
+    scope: FileScope<'_>,
+) -> OccurrenceResults {
+    if patterns.is_empty() {
+        return scan_files_with_scope(files.iter().copied(), "", opts, scope);
+    }
+    if patterns.len() == 1 {
+        return scan_files_with_scope(files.iter().copied(), patterns[0].as_str(), opts, scope);
+    }
+    let parts: Vec<OccurrenceResults> = patterns
+        .iter()
+        .map(|pattern| scan_files_with_scope(files.iter().copied(), pattern.as_str(), opts, scope))
+        .collect();
+    merge_occurrence_results(&patterns.join("|"), parts)
+}
+
+/// Expand a raw agent query (pipe OR and/or multi-arg) then scan with
+/// [`scan_files_multi_literal`].
+pub fn scan_files_for_literal_query(
+    files: &[(&str, &str)],
+    raw_query: &str,
+    opts: ScanOptions,
+    scope: FileScope<'_>,
+) -> OccurrenceResults {
+    let patterns = expand_literal_patterns(&[raw_query.to_string()]);
+    if patterns.is_empty() {
+        return scan_files_with_scope(files.iter().copied(), raw_query.trim(), opts, scope);
+    }
+    scan_files_multi_literal(files, &patterns, opts, scope)
+}
+
+impl OccurrenceResults {
+    /// Replace iterator-local accounting with the owning snapshot universe.
+    /// Call after reading snapshot files so unreadable/non-UTF8 paths become an
+    /// explicit exclusion instead of disappearing from the denominator.
+    pub fn declare_snapshot_universe(&mut self, snapshot: &Snapshot, scope: FileScope<'_>) {
+        let scanned_files = self.scope.as_ref().map_or(0, |stats| stats.files_scanned);
+        self.universe = IndexedUniverse::from_snapshot(snapshot, scope, scanned_files);
+        if let Some(stats) = &mut self.scope {
+            stats.files_in_universe = self.universe.indexed_files;
+            stats.files_scanned = self.universe.scanned_files;
+            stats.fixtures = self.universe.fixtures.files.unwrap_or(0);
+            stats.generated = self.universe.generated.files.unwrap_or(0);
+            let artifacts = crate::analyzer::classify::ArtifactFenceStats {
+                vendored: stats.vendored,
+                fixtures: stats.fixtures,
+                generated: stats.generated,
+                templates: stats.templates,
+            };
+            self.coverage_line = format!(
+                "{}; {}",
+                coverage_line_for(stats.files_scanned, stats.files_in_universe, &artifacts),
+                self.universe.summary_line()
+            );
+        } else {
+            self.coverage_line = self.universe.summary_line();
+        }
+    }
 }
 
 #[inline]
@@ -1185,14 +1836,22 @@ fn classify_token(lang: TokenLang, line: &str, ident: &str, col_1based: usize) -
             if prefix.ends_with("data-") {
                 return OccurrenceKind::DataAttribute;
             }
-        }
-        TokenLang::Rust => {
+            // TS/JS share the same line-local let/assignment/field shapes as Rust.
             let role = classify_occurrence(line, ident, col_1based);
             if role != OccurrenceKind::Unknown {
                 return role;
             }
         }
-        TokenLang::Other => {}
+        TokenLang::Rust | TokenLang::Other => {
+            // Mutation (`x = …`) and `let` binding shapes are language-agnostic
+            // single-line facts. Swift/Go/Python/etc. land in `Other` — without
+            // this branch, `client.flag = false` stays a plain identifier and
+            // the hit set never surfaces a writer.
+            let role = classify_occurrence(line, ident, col_1based);
+            if role != OccurrenceKind::Unknown {
+                return role;
+            }
+        }
     }
 
     if is_identifier(ident) {
@@ -1241,9 +1900,28 @@ fn derive_match_role(
         .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
         .rfind(|token| !token.is_empty());
 
+    // Common declaration introducers across supported languages. This is a
+    // *lexical* signal only — snapshot enrichment may still upgrade/override
+    // via the symbol table when an export sits on this exact line.
     if matches!(
         previous_token,
-        Some("fn" | "struct" | "enum" | "trait" | "type" | "mod" | "const" | "static")
+        Some(
+            "fn" | "struct"
+                | "enum"
+                | "trait"
+                | "type"
+                | "mod"
+                | "const"
+                | "static"
+                | "class"
+                | "func"
+                | "protocol"
+                | "extension"
+                | "actor"
+                | "interface"
+                | "def"
+                | "var" // Swift/TS property & binding introducer
+        )
     ) {
         MatchRole::Definition
     } else {
@@ -1257,12 +1935,17 @@ fn derive_match_role(
 /// classifies instead of excluding, so the line reports `artifact-flagged:`
 /// buckets — deliberately NOT the shared `excluded:` summary shape, which
 /// still means real exclusion in diff/watch/analysis fences.
+///
+/// Denominator is the **indexed** universe, not the full working tree. Saying
+/// "repo files" here was a false-completeness signal when gitignored /
+/// unindexed paths still held matches (loctree-fail: absolute "absence is
+/// trustworthy" while `exclusions>0`).
 fn coverage_line_for(
     files_scanned: usize,
     files_in_universe: usize,
     stats: &crate::analyzer::classify::ArtifactFenceStats,
 ) -> String {
-    let mut line = format!("scanned {files_scanned} of {files_in_universe} repo files");
+    let mut line = format!("scanned {files_scanned} of {files_in_universe} indexed files");
     let mut parts = Vec::new();
     if stats.vendored > 0 {
         parts.push(format!("vendored({})", stats.vendored));
@@ -1290,18 +1973,82 @@ const MAX_CONTEXT_CHARS: usize = 240;
 /// Chars kept on each side of the match when a long line is windowed.
 const CONTEXT_WINDOW_CHARS: usize = 100;
 
+/// Stand-in for a codepoint that must never reach a terminal verbatim and has
+/// no dedicated visible glyph of its own.
+const SANITIZED_REPLACEMENT: char = '\u{FFFD}';
+
+/// Does this codepoint reprogram (or reorder) the reader's terminal when a
+/// match excerpt is printed?
+const fn is_terminal_hostile(c: char) -> bool {
+    matches!(
+        c,
+        '\u{0}'..='\u{1F}'          // C0 controls (incl. SO 0x0E, ESC 0x1B)
+            | '\u{7F}'              // DEL
+            | '\u{80}'..='\u{9F}'   // C1 controls (incl. the 1-char CSI U+009B)
+            | '\u{200E}'            // LRM
+            | '\u{200F}'            // RLM
+            | '\u{202A}'..='\u{202E}' // bidi embeddings/overrides
+            | '\u{2066}'..='\u{2069}' // bidi isolates
+    )
+}
+
+/// Make a file-content excerpt safe to *print*.
+///
+/// A match excerpt is quoted file content, not a command — so it is rendered,
+/// never executed. The failure this closes: a `find --regex` hit inside a
+/// terminal-capture fixture carried a raw Shift-Out (`0x0E`), which switched
+/// the reading pane into the DEC Special Graphics charset for the rest of the
+/// session; everything after the excerpt rendered as box-drawing runes.
+///
+/// Mapping (each replacement is exactly one char, so windowing stays bounded):
+///
+/// * C0 controls `0x00..=0x1F` → Unicode Control Pictures `U+2400 + code`
+///   (`0x0E` → `␎`, `0x1B` → `␛`). A snippet is single-line by construction,
+///   so a tab here is decoration, not layout.
+/// * `DEL` (`0x7F`) → `␡` (U+2421).
+/// * C1 controls `U+0080..=U+009F` → U+FFFD (no Control Pictures glyphs exist).
+/// * Bidi direction controls → U+FFFD. Trojan-Source hygiene: they can make a
+///   printed excerpt read in a different order than the bytes on disk, which
+///   would turn this very audit surface into a lie.
+///
+/// [`LiteralOccurrence::matched_text`] and `range` stay RAW truth — JSON
+/// escapes control characters itself, and machine consumers must keep the
+/// real bytes. Only the human-facing `context` is rewritten.
+fn sanitize_context(text: &str) -> Cow<'_, str> {
+    if !text.chars().any(is_terminal_hostile) {
+        return Cow::Borrowed(text);
+    }
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '\u{0}'..='\u{1F}' => {
+                out.push(char::from_u32(0x2400 + c as u32).unwrap_or(SANITIZED_REPLACEMENT));
+            }
+            '\u{7F}' => out.push('\u{2421}'),
+            other if is_terminal_hostile(other) => out.push(SANITIZED_REPLACEMENT),
+            other => out.push(other),
+        }
+    }
+    Cow::Owned(out)
+}
+
 /// Trimmed context line, windowed around the match when the raw line exceeds
 /// [`MAX_CONTEXT_CHARS`]. `col` is the 1-based char column of the match start.
+///
+/// This is the single choke point for human-facing excerpt text: every
+/// occurrence's `context` (literal scan and regex scan alike) is built here,
+/// so [`sanitize_context`] applied here covers both paths.
 fn context_snippet(raw_line: &str, col: usize, match_chars: usize) -> String {
     let trimmed = raw_line.trim_end();
     let total = trimmed.chars().count();
     if total <= MAX_CONTEXT_CHARS {
-        return trimmed.to_string();
+        return sanitize_context(trimmed).into_owned();
     }
     let match_start = col.saturating_sub(1);
     let start = match_start.saturating_sub(CONTEXT_WINDOW_CHARS);
     let end = (match_start + match_chars + CONTEXT_WINDOW_CHARS).min(total);
     let window: String = trimmed.chars().skip(start).take(end - start).collect();
+    let window = sanitize_context(&window);
     let prefix = if start > 0 { "…" } else { "" };
     let suffix = if end < total { "…" } else { "" };
     format!("{prefix}{window}{suffix}")
@@ -1351,6 +2098,7 @@ pub fn scan_text_with(
                 enclosing_symbol: None,
                 resolved_definition: None,
                 definition_candidates: Vec::new(),
+                enclosing_facts: None,
                 ignored: false,
             });
         }
@@ -1425,18 +2173,27 @@ where
     }
 
     let files_in_universe = files_scanned;
-    let coverage_line = coverage_line_for(files_scanned, files_in_universe, &stats);
+    let universe = IndexedUniverse::from_counts(files_in_universe, files_scanned, stats, 0);
+    let coverage_line = format!(
+        "{}; {}",
+        coverage_line_for(files_scanned, files_in_universe, &stats),
+        universe.summary_line()
+    );
 
     let total = occurrences.len();
     let scope_classifications = scope_classification_counts(&occurrences);
     let suggested_next = suggested_next(ident, &occurrences);
     let role = role_summary(&occurrences);
+    let shape = hit_shape(&occurrences);
     OccurrenceResults {
         query: ident.to_string(),
         query_kind: query_kind(ident),
         match_mode: match_mode(ident, opts.whole_token),
         files_matched: seen.len(),
         total,
+        emitted: total,
+        offset: 0,
+        truncated: false,
         occurrences,
         by_file: None,
         slim: false,
@@ -1451,11 +2208,14 @@ where
             generated: stats.generated,
             templates: stats.templates,
         }),
+        universe,
+        file_scope: None,
         scope_classifications,
         suggested_next,
         near_matches: Vec::new(),
         role_summary: role,
         file_context: Vec::new(),
+        hit_shape: shape,
     }
 }
 
@@ -1495,6 +2255,7 @@ pub fn scan_text_regex(path: &str, text: &str, re: &regex::Regex) -> Vec<Literal
                 enclosing_symbol: None,
                 resolved_definition: None,
                 definition_candidates: Vec::new(),
+                enclosing_facts: None,
                 ignored: false,
             });
         }
@@ -1547,19 +2308,34 @@ where
     }
 
     let files_in_universe = files_scanned;
-    let coverage_line = coverage_line_for(files_scanned, files_in_universe, &stats);
+    let universe = IndexedUniverse::from_counts(files_in_universe, files_scanned, stats, 0);
+    let coverage_line = format!(
+        "{}; {}",
+        coverage_line_for(files_scanned, files_in_universe, &stats),
+        universe.summary_line()
+    );
 
     let pattern = re.as_str().to_string();
     let total = occurrences.len();
     let scope_classifications = scope_classification_counts(&occurrences);
-    let suggested_next = suggested_next(&pattern, &occurrences);
+    let mut suggested_next = suggested_next(&pattern, &occurrences);
+    // Anchor advice rides at the FRONT: an unanchored conflict-marker sweep is
+    // dominated by banner-line noise, so the shape fix outranks the generic
+    // "now go slice the first hit" moves.
+    if let Some(hint) = conflict_marker_anchor_hint(&pattern) {
+        suggested_next.insert(0, hint);
+    }
     let role = role_summary(&occurrences);
+    let shape = hit_shape(&occurrences);
     OccurrenceResults {
         query: pattern,
         query_kind: QueryKind::Symbolic,
         match_mode: MatchMode::Regex,
         files_matched: seen.len(),
         total,
+        emitted: total,
+        offset: 0,
+        truncated: false,
         occurrences,
         by_file: None,
         slim: false,
@@ -1574,16 +2350,25 @@ where
             generated: stats.generated,
             templates: stats.templates,
         }),
+        universe,
+        file_scope: None,
         scope_classifications,
         suggested_next,
         near_matches: Vec::new(),
         role_summary: role,
         file_context: Vec::new(),
+        hit_shape: shape,
     }
 }
 
 /// Add AST/snapshot awareness to literal results without changing the literal
 /// occurrence set.
+///
+/// Also reclassifies [`LiteralOccurrence::match_role`] when the snapshot symbol
+/// table proves a definition (or local binding) at the hit's exact file+line.
+/// Text heuristics remain the scan-time fallback; the symbol table wins when
+/// present. Languages without symbol coverage keep the lexical role (never
+/// invent a definition).
 pub fn enrich_with_snapshot(results: &mut OccurrenceResults, snapshot: &Snapshot) {
     if results.occurrences.is_empty() || results.query.is_empty() {
         return;
@@ -1596,15 +2381,66 @@ pub fn enrich_with_snapshot(results: &mut OccurrenceResults, snapshot: &Snapshot
         .map(|f| f.path.as_str())
         .collect();
 
+    let fan_in = file_fan_in(snapshot);
     let index = SnapshotOccurrenceIndex::new(snapshot, &results.query, &results.occurrences);
     for occ in &mut results.occurrences {
         occ.definition_candidates = index.definition_candidates.clone();
+        // Symbol-table role first so resolve_occurrence sees the corrected role.
+        index.reclassify_role(occ);
         occ.enclosing_symbol = index.enclosing_symbol(occ);
         occ.resolved_definition = index.resolve_occurrence(occ);
+        occ.enclosing_facts = enclosing_facts_for(occ, &fan_in);
         occ.ignored = !ignored_files.is_empty() && ignored_files.contains(occ.file.as_str());
     }
+    // Role-dependent rollups must refresh after symbol-table reclassification.
+    results.role_summary = role_summary(&results.occurrences);
+    results.hit_shape = hit_shape(&results.occurrences);
     results.file_context = file_contexts(snapshot, &results.occurrences);
     results.suggested_next = suggested_next(&results.query, &results.occurrences);
+}
+
+/// Count import-edge fan-in per file from the snapshot graph.
+///
+/// `implicit_symbol` edges (Swift module-scope guesses) are excluded so
+/// enclosing_facts fan-in matches hub/metrics truth after eed8b22b — never
+/// report module-cluster size as "fan-in".
+fn file_fan_in(snapshot: &Snapshot) -> std::collections::HashMap<String, usize> {
+    let mut fan_in: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for edge in &snapshot.edges {
+        if edge.is_implicit_symbol() {
+            continue;
+        }
+        *fan_in.entry(edge.to.clone()).or_default() += 1;
+    }
+    fan_in
+}
+
+fn enclosing_facts_for(
+    occ: &LiteralOccurrence,
+    fan_in: &std::collections::HashMap<String, usize>,
+) -> Option<EnclosingFacts> {
+    let enclosing = occ.enclosing_symbol.as_ref()?;
+    // File-level fallback anchors are not structural insight.
+    if enclosing.kind == "file" {
+        return None;
+    }
+    let exported = occ.definition_candidates.iter().any(|def| {
+        def.file == enclosing.file
+            && def.name == enclosing.name
+            && (def.line.is_none() || def.line == enclosing.line)
+    }) || occ
+        .resolved_definition
+        .as_ref()
+        .is_some_and(|def| def.symbol_id == enclosing.symbol_id)
+        || (occ.match_role == MatchRole::Definition
+            && enclosing.name == occ.matched_text
+            && enclosing.line == Some(occ.line));
+    Some(EnclosingFacts {
+        fan_in: fan_in.get(&occ.file).copied().unwrap_or(0),
+        exported,
+        symbol_kind: Some(enclosing.kind.clone()),
+        authority: "loctree_derived",
+    })
 }
 
 pub fn attach_near_matches(results: &mut OccurrenceResults, analyses: &[FileAnalysis]) {
@@ -1923,18 +2759,18 @@ impl SnapshotOccurrenceIndex {
                 .definition_candidates
                 .iter()
                 .find(|def| def.file == occ.file && def.line == Some(occ.line))
-                .cloned(),
+                .cloned()
+                .or_else(|| {
+                    // Line numbers can drift one off in rare extractors; fall
+                    // back to same-file unique definition when proven.
+                    self.definition_at_file(&occ.file)
+                }),
             MatchRole::LocalBinding => None,
             MatchRole::Import => self.imports.get(&occ.file).cloned(),
-            MatchRole::Reference => self
+            MatchRole::Reference | MatchRole::Mutation | MatchRole::FieldEmission => self
                 .local_binding_before(occ)
                 .or_else(|| self.imports.get(&occ.file).cloned())
-                .or_else(|| {
-                    self.definition_candidates
-                        .iter()
-                        .find(|def| def.file == occ.file)
-                        .cloned()
-                })
+                .or_else(|| self.definition_at_file(&occ.file))
                 .or_else(|| {
                     (self.definition_candidates.len() == 1)
                         .then(|| self.definition_candidates.first().cloned())
@@ -1942,6 +2778,79 @@ impl SnapshotOccurrenceIndex {
                 }),
             _ => None,
         }
+    }
+
+    /// When the snapshot symbol table proves this hit *is* the definition
+    /// (export or local symbol of the query at this file+line), upgrade
+    /// `match_role` so role_summary / hit_shape stop lying.
+    ///
+    /// Non-code and import roles stay untouched — those are already
+    /// high-confidence lexical facts.
+    fn reclassify_role(&self, occ: &mut LiteralOccurrence) {
+        if matches!(
+            occ.match_role,
+            MatchRole::Comment
+                | MatchRole::StringLiteral
+                | MatchRole::DataAttribute
+                | MatchRole::StyleProperty
+                | MatchRole::ClassToken
+                | MatchRole::StyleVariable
+                | MatchRole::Import
+        ) {
+            return;
+        }
+
+        // Exact definition site from the export table.
+        if let Some(def) = self.definition_at_line(&occ.file, occ.line) {
+            occ.match_role = MatchRole::Definition;
+            occ.confidence = MatchConfidence::High;
+            // Keep occurrence_kind lexical; role is the agent-facing claim.
+            let _ = def;
+            return;
+        }
+
+        // Local (non-export) symbol table entry at this line.
+        if self.local_symbol_at_line(&occ.file, occ.line).is_some() {
+            // Don't demote a proven mutation on the same line.
+            if matches!(
+                occ.match_role,
+                MatchRole::Mutation | MatchRole::FieldEmission
+            ) {
+                return;
+            }
+            occ.match_role = MatchRole::LocalBinding;
+            occ.confidence = MatchConfidence::High;
+        }
+    }
+
+    fn definition_at_line(&self, file: &str, line: usize) -> Option<&SymbolAnchor> {
+        self.definition_candidates
+            .iter()
+            .find(|def| def.file == file && def.line == Some(line))
+    }
+
+    fn definition_at_file(&self, file: &str) -> Option<SymbolAnchor> {
+        let mut matches = self
+            .definition_candidates
+            .iter()
+            .filter(|def| def.file == file);
+        let first = matches.next().cloned()?;
+        if matches.next().is_none() {
+            Some(first)
+        } else {
+            // Multiple same-name defs in one file — refuse to pick.
+            None
+        }
+    }
+
+    fn local_symbol_at_line(&self, file: &str, line: usize) -> Option<&SymbolAnchor> {
+        self.enclosing.get(file).and_then(|symbols| {
+            symbols.iter().find(|symbol| {
+                symbol.name == self.query
+                    && symbol.line == Some(line)
+                    && symbol.symbol_id.contains("::local::")
+            })
+        })
     }
 
     fn local_binding_before(&self, occ: &LiteralOccurrence) -> Option<SymbolAnchor> {
@@ -2649,8 +3558,49 @@ mod tests {
     }
 
     #[test]
+    fn file_scope_resolution_accepts_unique_extensionless_snapshot_stem() {
+        let resolution = FileScopeResolution::resolve(
+            "adapter_brute_force",
+            [
+                "crates/aicx-retrieve/src/adapter_brute_force.rs",
+                "crates/aicx-retrieve/src/lib.rs",
+            ],
+        );
+
+        assert!(resolution.resolved);
+        assert!(resolution.indexed);
+        assert_eq!(resolution.status, "resolved");
+        assert_eq!(
+            resolution.matched_paths,
+            vec!["crates/aicx-retrieve/src/adapter_brute_force.rs"]
+        );
+        assert!(
+            resolution
+                .scan_scope()
+                .matches("crates/aicx-retrieve/src/adapter_brute_force.rs")
+        );
+    }
+
+    #[test]
+    fn file_scope_resolution_distinguishes_unresolved_and_ambiguous() {
+        let unresolved = FileScopeResolution::resolve("missing", ["src/lib.rs"]);
+        assert!(!unresolved.resolved);
+        assert!(!unresolved.indexed);
+        assert_eq!(unresolved.status, "unresolved");
+
+        let ambiguous = FileScopeResolution::resolve(
+            "mod",
+            ["src/alpha/mod.rs", "src/beta/mod.rs", "src/lib.rs"],
+        );
+        assert!(!ambiguous.resolved);
+        assert!(ambiguous.indexed);
+        assert_eq!(ambiguous.status, "ambiguous");
+        assert_eq!(ambiguous.matched_paths.len(), 2);
+    }
+
+    #[test]
     fn scan_files_with_regex_finds_pattern_and_labels_context() {
-        // loctree-feedback.md (2026-06-21): `--literal` false-cleans a regex query
+        // loctree-fail.md (2026-06-21): `--literal` false-cleans a regex query
         // like `100\.[0-9]+\.[0-9]+`. `--regex` actually evaluates the pattern.
         let re = regex::Regex::new(r"100\.[0-9]+\.[0-9]+\.[0-9]+").unwrap();
         let res = scan_files_with_regex(
@@ -2733,6 +3683,129 @@ mod tests {
             snip.chars().count() <= 2 * CONTEXT_WINDOW_CHARS + 6 + 2,
             "window stays bounded, got {} chars",
             snip.chars().count()
+        );
+    }
+
+    /// Nothing a printed excerpt can carry may reprogram or reorder the pane.
+    fn assert_terminal_safe(rendered: &str) {
+        for c in rendered.chars() {
+            assert!(
+                !is_terminal_hostile(c),
+                "sanitized excerpt still carries U+{:04X}: {rendered:?}",
+                c as u32
+            );
+        }
+    }
+
+    #[test]
+    fn sanitize_context_neutralizes_terminal_hostile_codepoints() {
+        // The field failure: a raw Shift-Out inside a terminal-capture fixture
+        // switched the operator's pane into DEC Special Graphics for the rest
+        // of the session. Each hostile codepoint gets a *visible* stand-in so
+        // the excerpt stays readable evidence, not a silent deletion.
+        for (raw, expected) in [
+            ('\u{0E}', '␎'),          // SO — the charset switch that poisoned the pane
+            ('\u{1B}', '␛'),          // ESC — CSI/OSC sequence lead-in
+            ('\u{00}', '␀'),          // NUL
+            ('\u{09}', '␉'),          // TAB — snippets are single-line, so it is decoration
+            ('\u{7F}', '␡'),          // DEL
+            ('\u{9B}', '\u{FFFD}'),   // C1 CSI — one byte, full escape power
+            ('\u{202E}', '\u{FFFD}'), // RLO — Trojan Source reordering
+        ] {
+            let input = format!("a{raw}b");
+            let rendered = sanitize_context(&input);
+            assert_eq!(
+                rendered,
+                format!("a{expected}b"),
+                "U+{:04X} must render as its visible stand-in",
+                raw as u32
+            );
+            assert_terminal_safe(&rendered);
+        }
+
+        // Clean text is passed through untouched and never reallocated.
+        let clean = "let secret = \"…ąę🦀\";";
+        assert!(matches!(sanitize_context(clean), Cow::Borrowed(_)));
+        assert_eq!(sanitize_context(clean), clean);
+    }
+
+    #[test]
+    fn context_snippet_sanitizes_control_bytes_inside_windowed_line() {
+        // Both halves of the fix on one line: the excerpt must be windowed
+        // (long minified/capture line) AND sanitized.
+        let long = format!(
+            "{}\u{0E}secret\u{1B}[31m{}",
+            "a".repeat(500),
+            "b".repeat(500)
+        );
+        let snip = context_snippet(&long, 502, 6);
+        assert!(snip.contains("secret"), "match must survive: {snip:?}");
+        assert!(snip.contains('␎'), "SO must be visible: {snip:?}");
+        assert!(snip.contains('␛'), "ESC must be visible: {snip:?}");
+        assert!(
+            snip.starts_with('…') && snip.ends_with('…'),
+            "still windowed"
+        );
+        assert_terminal_safe(&snip);
+
+        // Short lines take the non-windowed path — sanitizing must cover it too.
+        let short = context_snippet("x = \u{0E}y\u{7F}", 5, 1);
+        assert_eq!(short, "x = ␎y␡");
+        assert_terminal_safe(&short);
+    }
+
+    #[test]
+    fn regex_scan_sanitizes_context_but_keeps_matched_text_raw() {
+        // `context` is the human-printed surface and gets rewritten; `matched_text`
+        // stays raw truth for machine consumers (serde escapes it on its own).
+        let re = regex::Regex::new("secret").unwrap();
+        let res = scan_files_with_regex(
+            [("capture.log", "pre\u{0E}secret\u{1B}post\n")],
+            &re,
+            FileScope::default(),
+        );
+        assert_eq!(res.total, 1);
+        let occ = &res.occurrences[0];
+        assert_eq!(occ.context, "pre␎secret␛post");
+        assert_eq!(occ.matched_text, "secret", "matched text stays raw");
+    }
+
+    #[test]
+    fn unanchored_conflict_marker_regex_gets_anchor_hint() {
+        // `=======` is periodic: it matches every 7th column of a decorative
+        // banner. The scan still reports raw truth; the hint teaches the shape.
+        let re = regex::Regex::new("<<<<<<<|=======|>>>>>>>").unwrap();
+        let res = scan_files_with_regex(
+            [("docs/banner.md", "# ==================================\n")],
+            &re,
+            FileScope::default(),
+        );
+        assert!(
+            res.total > 1,
+            "banner line yields periodic hits: {}",
+            res.total
+        );
+        assert!(
+            res.suggested_next
+                .first()
+                .is_some_and(|s| s.command.contains("^(<{7} |={7}$|>{7} )")),
+            "anchor hint must lead the suggestions: {:?}",
+            res.suggested_next
+        );
+
+        // Already-anchored callers own the shape — no hint.
+        let anchored = regex::Regex::new("^={7}$").unwrap();
+        let res = scan_files_with_regex(
+            [("docs/banner.md", "=======\n")],
+            &anchored,
+            FileScope::default(),
+        );
+        assert!(
+            !res.suggested_next
+                .iter()
+                .any(|s| s.command.contains("^(<{7} ")),
+            "anchored query must not be re-taught: {:?}",
+            res.suggested_next
         );
     }
 
@@ -2850,13 +3923,197 @@ mod tests {
     }
 
     #[test]
+    fn hit_shape_withholds_the_dataflow_story_for_a_module_declaration() {
+        // `loct find health_score` narrated "1 definition, 1 write site, 60
+        // read site(s) — state flag / single-writer pattern" when the sole
+        // definition was `pub mod health_score;`. Role *counts* cannot tell a
+        // module from a variable; the introducer can, and the narrative must
+        // not outrun it.
+        //
+        // The fixture deliberately does NOT spell `health_score`: the
+        // grep-impossible eval runs `loct find health_score` against this very
+        // repository, so a test using that name would add a definition to the
+        // live hit set and quietly disarm the question this test protects.
+        let src = "\
+pub mod shape_probe_score;\n\
+shape_probe_score = 5;\n\
+read_one(shape_probe_score);\n\
+read_two(shape_probe_score);\n";
+        let res = scan_files([("src/analyzer/mod.rs", src)], "shape_probe_score");
+
+        let shape = res.hit_shape.as_ref().expect("hit_shape present");
+        assert_eq!(
+            (shape.definitions, shape.writers, shape.readers),
+            (1, 1, 2),
+            "precondition: the counts alone still look like a single-writer flag"
+        );
+        assert_ne!(
+            shape.label, "single_writer",
+            "a module declaration is not a state flag: {shape:?}"
+        );
+        let note = shape.note.clone().unwrap_or_default();
+        assert!(
+            !note.contains("state flag"),
+            "state-flag wording survived: {note}"
+        );
+        assert!(
+            note.contains("`mod`"),
+            "the withheld shape must name what the definition actually is: {note}"
+        );
+    }
+
+    #[test]
+    fn hit_shape_still_narrates_a_real_value_declaration() {
+        // The gate is about *what* the definition is, not about muting the
+        // shape layer: a genuine value declaration keeps its story.
+        let src = "\
+const shape_probe_score: u8 = 1;\n\
+shape_probe_score = 5;\n\
+read_one(shape_probe_score);\n";
+        let res = scan_files([("src/state.rs", src)], "shape_probe_score");
+
+        let shape = res.hit_shape.as_ref().expect("hit_shape present");
+        assert_eq!(
+            shape.label, "single_writer",
+            "const + write + read is exactly the shape this label exists for: {shape:?}"
+        );
+    }
+
+    #[test]
+    fn swift_var_is_definition_and_assignment_is_mutation() {
+        // Operator proof case (trustAgentConnection): Swift `var` declaration
+        // and a later assignment must not all collapse to `reference` with
+        // definitions: 0. Lexical introducers + cross-lang mutation cover the
+        // line-local half; symbol-table enrichment seals the definition role.
+        let src = "\
+class SSHClient {\n\
+    var trustAgentConnection: Bool = true\n\
+    func connect() {\n\
+        client.trustAgentConnection = false\n\
+    }\n\
+}\n\
+class AgentConstraints {\n\
+    func enforce() {\n\
+        return client.trustAgentConnection\n\
+    }\n\
+}\n";
+        let mut res = scan_files([("SSHClient.swift", src)], "trustAgentConnection");
+        assert_eq!(res.total, 3, "decl + write + read");
+
+        let roles: Vec<MatchRole> = res.occurrences.iter().map(|o| o.match_role).collect();
+        assert!(
+            roles.contains(&MatchRole::Definition),
+            "var introducer must yield definition, got {roles:?}"
+        );
+        assert!(
+            roles.contains(&MatchRole::Mutation),
+            "assignment must yield mutation, got {roles:?}"
+        );
+        assert!(
+            roles.contains(&MatchRole::Reference),
+            "bare read must stay reference, got {roles:?}"
+        );
+
+        let summary = res.role_summary.as_ref().expect("role_summary present");
+        assert_eq!(summary.definitions, 1);
+        assert!(summary.callsites >= 2);
+
+        let shape = res.hit_shape.as_ref().expect("hit_shape present");
+        assert_eq!(
+            shape.label, "single_writer",
+            "1 def + 1 write + reads → single_writer, got {:?}",
+            shape
+        );
+
+        // Snapshot with the export proves symbol-table reclassification path.
+        let snapshot: Snapshot = serde_json::from_str(
+            r#"{
+                "metadata": {},
+                "files": [{
+                    "path": "SSHClient.swift",
+                    "exports": [
+                        {"name": "SSHClient", "kind": "class", "export_type": "named", "line": 1},
+                        {"name": "trustAgentConnection", "kind": "var", "export_type": "named", "line": 2},
+                        {"name": "connect", "kind": "func", "export_type": "named", "line": 3},
+                        {"name": "AgentConstraints", "kind": "class", "export_type": "named", "line": 7},
+                        {"name": "enforce", "kind": "func", "export_type": "named", "line": 8}
+                    ]
+                }],
+                "edges": [
+                    {"from": "AgentConstraints.swift", "to": "SSHClient.swift", "label": "import"}
+                ]
+            }"#,
+        )
+        .expect("swift snapshot deserializes");
+        enrich_with_snapshot(&mut res, &snapshot);
+
+        let def = res
+            .occurrences
+            .iter()
+            .find(|o| o.match_role == MatchRole::Definition)
+            .expect("definition role survives enrichment");
+        assert_eq!(def.line, 2);
+        assert_eq!(def.confidence, MatchConfidence::High);
+        assert!(
+            def.resolved_definition
+                .as_ref()
+                .is_some_and(|d| d.name == "trustAgentConnection"),
+            "definition site resolves to itself via symbol table"
+        );
+        assert!(
+            def.enclosing_facts
+                .as_ref()
+                .is_some_and(|f| f.fan_in == 1 && f.exported),
+            "enclosing facts carry proven fan-in and export flag"
+        );
+
+        let post = res
+            .role_summary
+            .as_ref()
+            .expect("role_summary after enrich");
+        assert_eq!(post.definitions, 1, "symbol table must not drop the def");
+        assert_eq!(
+            res.hit_shape.as_ref().map(|s| s.label),
+            Some("single_writer")
+        );
+    }
+
+    #[test]
+    fn enrich_promotes_export_line_to_definition_over_reference() {
+        // Even when the lexical introducer is unknown (no keyword), a snapshot
+        // export on the exact line must win over a bare reference role.
+        let mut res = scan_files(
+            [("Weird.xyz", "    trustAgentConnection\n")],
+            "trustAgentConnection",
+        );
+        assert_eq!(res.occurrences[0].match_role, MatchRole::Reference);
+
+        let snapshot: Snapshot = serde_json::from_str(
+            r#"{
+                "metadata": {},
+                "files": [{
+                    "path": "Weird.xyz",
+                    "exports": [
+                        {"name": "trustAgentConnection", "kind": "var", "export_type": "named", "line": 1}
+                    ]
+                }]
+            }"#,
+        )
+        .expect("snapshot");
+        enrich_with_snapshot(&mut res, &snapshot);
+        assert_eq!(res.occurrences[0].match_role, MatchRole::Definition);
+        assert_eq!(res.occurrences[0].confidence, MatchConfidence::High);
+        assert_eq!(res.role_summary.as_ref().unwrap().definitions, 1);
+    }
+
+    #[test]
     fn zero_results_suggest_broadening_without_fuzzy_evidence() {
         let res = scan_files([("src/lib.rs", "pub fn present() {}")], "MissingSymbol");
         assert_eq!(res.total, 0);
         assert_eq!(res.query_kind, QueryKind::Identifier);
         assert!(res.scope_classifications.is_empty());
         assert!(res.suggested_next.iter().any(|s| {
-            s.command == "loct find 'MissingSymbol' --json"
+            s.command == "loct find --discover 'MissingSymbol' --json"
                 && s.reason
                     .contains("without treating suggestions as evidence")
         }));
@@ -3006,6 +4263,9 @@ mod tests {
         let page = res.page.expect("limit populates page metadata");
         assert_eq!(res.total, 3, "total remains the full occurrence count");
         assert_eq!(res.occurrences.len(), 1);
+        assert_eq!(res.emitted, 1);
+        assert_eq!(res.offset, 1);
+        assert!(res.truncated);
         assert_eq!(res.occurrences[0].line, 2);
         assert_eq!(page.offset, 1);
         assert_eq!(page.limit, 1);
@@ -3054,9 +4314,75 @@ mod tests {
         assert_eq!(scope.templates, 0);
         assert_eq!(scope.files_in_universe, 3);
         assert_eq!(scope.files_scanned, scope.files_in_universe);
-        assert!(res.coverage_line.contains("scanned 3 of 3 repo files"));
+        assert!(res.coverage_line.contains("scanned 3 of 3 indexed files"));
         assert!(res.coverage_line.contains("fixtures(1)"));
         assert!(res.coverage_line.contains("generated(1)"));
+        assert_eq!(res.universe.indexed_files, 3);
+        assert_eq!(res.universe.scanned_files, 3);
+        assert!(res.universe.scan_complete);
+        assert_eq!(res.universe.tracked.files, None);
+        assert_eq!(res.universe.untracked.files, None);
+        assert_eq!(res.universe.ignored.files, Some(0));
+        assert_eq!(res.universe.generated.files, Some(1));
+        assert_eq!(res.universe.fixtures.files, Some(1));
+        assert!(!res.universe.exclusions.is_empty());
+        assert!(res.universe.has_exclusion_boundary());
+        let caveat = res
+            .universe
+            .absence_exclusion_caveat()
+            .expect("outside_snapshot makes absolute absence conditional");
+        assert!(caveat.contains("scanned universe"));
+        assert!(caveat.contains("outside_snapshot"));
+    }
+
+    #[test]
+    fn snapshot_universe_exposes_unreadable_delta_without_inventing_git_counts() {
+        let mut snapshot = Snapshot::new(vec!["src".to_string()]);
+        snapshot
+            .files
+            .push(FileAnalysis::new("src/readable.rs".into()));
+        snapshot
+            .files
+            .push(FileAnalysis::new("src/non_utf8.bin".into()));
+
+        let mut res = scan_files([("src/readable.rs", "pub fn needle() {}")], "needle");
+        res.declare_snapshot_universe(&snapshot, FileScope::default());
+
+        assert_eq!(res.universe.indexed_files, 2);
+        assert_eq!(res.universe.scanned_files, 1);
+        assert!(!res.universe.scan_complete);
+        assert!(res.coverage_line.contains("coverage incomplete"));
+        let unreadable = res
+            .universe
+            .exclusions
+            .iter()
+            .find(|entry| entry.kind == "unreadable_or_non_utf8")
+            .expect("silent indexed/scanned delta must become an exclusion");
+        assert_eq!(unreadable.files, Some(1));
+        assert_eq!(res.universe.tracked.files, None);
+        assert_eq!(res.universe.untracked.files, None);
+    }
+
+    #[test]
+    fn analyzer_universe_declares_generated_fixtures_and_ignored_policy() {
+        let product = FileAnalysis::new("src/lib.rs".into());
+        let mut generated = FileAnalysis::new("src/generated/client.rs".into());
+        generated.is_generated = true;
+        let fixture = FileAnalysis::new("tests/fixtures/sample.rs".into());
+        let mut ignored = FileAnalysis::new("vendor/ignored.rs".into());
+        ignored.ignored = true;
+
+        let universe = IndexedUniverse::from_analyses(&[product, generated, fixture, ignored]);
+
+        assert_eq!(universe.indexed_files, 4);
+        assert_eq!(universe.scanned_files, 4);
+        assert!(universe.scan_complete);
+        assert_eq!(universe.tracked.files, None);
+        assert_eq!(universe.untracked.files, None);
+        assert_eq!(universe.ignored.files, Some(1));
+        assert_eq!(universe.generated.files, Some(1));
+        assert_eq!(universe.fixtures.files, Some(1));
+        assert!(!universe.exclusions.is_empty());
     }
 
     #[test]
@@ -3076,5 +4402,67 @@ mod tests {
                 format!("\"{label}\"")
             );
         }
+    }
+
+    #[test]
+    fn expand_literal_patterns_splits_agent_pipe_or() {
+        // loctree-fail: agents type A|B as one fixed_string → total 0 + grep.
+        let patterns =
+            expand_literal_patterns(&["global_async_runtime|get_tokio_runtime".to_string()]);
+        assert_eq!(
+            patterns,
+            vec![
+                "global_async_runtime".to_string(),
+                "get_tokio_runtime".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn expand_literal_patterns_multi_arg_or() {
+        let patterns = expand_literal_patterns(&[
+            "Props".to_string(),
+            "Options".to_string(),
+            "ViewModel".to_string(),
+        ]);
+        assert_eq!(patterns, vec!["Props", "Options", "ViewModel"]);
+    }
+
+    #[test]
+    fn expand_literal_patterns_keeps_real_regex_unsplit() {
+        // Real regex still goes to --regex; literal must not silently mangle it.
+        let patterns = expand_literal_patterns(&["foo.*|bar+".to_string()]);
+        assert_eq!(patterns, vec!["foo.*|bar+".to_string()]);
+    }
+
+    #[test]
+    fn expand_literal_patterns_respects_escaped_pipe() {
+        let patterns = expand_literal_patterns(&["a\\|b|c".to_string()]);
+        assert_eq!(patterns, vec!["a|b".to_string(), "c".to_string()]);
+    }
+
+    #[test]
+    fn multi_literal_scan_unions_exact_hits() {
+        let files = [
+            ("a.rs", "fn global_async_runtime() {}"),
+            ("b.rs", "fn get_tokio_runtime() {}"),
+            ("c.rs", "fn other() {}"),
+        ];
+        let patterns = expand_literal_patterns(&["global_async_runtime|get_tokio_runtime".into()]);
+        let parts: Vec<_> = patterns
+            .iter()
+            .map(|p| scan_files_with(files.iter().copied(), p, ScanOptions::default()))
+            .collect();
+        let merged = merge_occurrence_results("global_async_runtime|get_tokio_runtime", parts);
+        assert_eq!(merged.match_mode, MatchMode::MultiLiteral);
+        assert_eq!(merged.total, 2);
+        assert_eq!(merged.files_matched, 2);
+        let texts: Vec<_> = merged
+            .occurrences
+            .iter()
+            .map(|o| o.matched_text.as_str())
+            .collect();
+        assert!(texts.contains(&"global_async_runtime"));
+        assert!(texts.contains(&"get_tokio_runtime"));
     }
 }

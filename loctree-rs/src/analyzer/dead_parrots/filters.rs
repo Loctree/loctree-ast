@@ -627,3 +627,154 @@ pub fn probe_entrypoint_marker(full_path: &std::path::Path, rel_path: &str) -> b
     }
     false
 }
+
+/// Swift protocol-witness names that only a framework ever calls.
+///
+/// These are conformance requirements, not API: SwiftUI calls `makeBody` on a
+/// `ButtonStyle`, `makeNSView`/`updateNSView`/`dismantleNSView` on an
+/// `NSViewRepresentable`, Foundation reads `errorDescription` off a
+/// `LocalizedError`. App code never names them, so "zero references" is what a
+/// correct conformance looks like.
+///
+/// Matching by name rather than by resolved conformance is the deliberate
+/// trade: it needs no type resolution, and the cost of a wrong match is a
+/// downgrade from "high" to "low", never a dropped finding.
+const SWIFT_FRAMEWORK_WITNESSES: &[&str] = &[
+    // SwiftUI view/style/representable machinery
+    "body",
+    "makeBody",
+    "makeCoordinator",
+    "makeNSView",
+    "updateNSView",
+    "dismantleNSView",
+    "makeNSViewController",
+    "updateNSViewController",
+    "makeUIView",
+    "updateUIView",
+    "dismantleUIView",
+    "sizeThatFits",
+    // Foundation / error reporting
+    "errorDescription",
+    "failureReason",
+    "recoverySuggestion",
+    "localizedDescription",
+    // Codable / Equatable / Hashable witnesses
+    "encode",
+    "hash",
+];
+
+/// Declaration-name prefixes owned by Cocoa delegate/observer protocols.
+///
+/// `NSWindowDelegate` calls `windowWillMove(_:)`, `NSTextViewDelegate` calls
+/// `textViewDidChangeSelection(_:)`, `WKNavigationDelegate` calls
+/// `webViewWebContentProcessDidTerminate(_:)`. The dispatch is by selector, so
+/// no Swift call site exists anywhere in the repo — by design.
+const SWIFT_DELEGATE_PREFIXES: &[&str] = &[
+    "window",
+    "application",
+    "textView",
+    "textField",
+    "tableView",
+    "outlineView",
+    "collectionView",
+    "splitView",
+    "scrollView",
+    "webView",
+    "browser",
+    "menu",
+    "control",
+    "document",
+    "sheet",
+    "panel",
+    "toolbar",
+    "tabView",
+    "comboBox",
+    "popover",
+    // Markdown / AST visitors (swift-markdown `MarkupVisitor`)
+    "visit",
+];
+
+/// Is this Swift declaration one that only a framework ever calls?
+///
+/// Three syntactic shapes, none of which need type resolution:
+///
+/// 1. `override` — dispatched by the superclass. AppKit calls `canBecomeKey`;
+///    nobody writes `window.canBecomeKey` in app code.
+/// 2. `@objc` — exposed to the Objective-C runtime precisely so something can
+///    reach it by selector rather than by symbol.
+/// 3. A known protocol-witness or delegate-callback name (see the two tables
+///    above) — conformance requirements that frameworks invoke.
+///
+/// Being wrong here only downgrades a candidate from "high" to "low" confidence,
+/// which keeps it visible in the raw list while barring it from delete
+/// quick-wins. That asymmetry is why name matching is acceptable: a false fence
+/// costs noise in one report, a false delete costs a working close path.
+///
+/// Not covered: `extension` of a type declared outside the repo, and witnesses
+/// whose names collide with ordinary helpers. Those need resolved conformances.
+/// (loctree-fail 2026-08-12, Pensieve report: ~90% of "high-confidence dead"
+/// were AppKit/SwiftUI witnesses.)
+pub fn probe_framework_dispatched_declaration(
+    full_path: &std::path::Path,
+    rel_path: &str,
+    line: Option<usize>,
+) -> bool {
+    if !rel_path.ends_with(".swift") {
+        return false;
+    }
+    let Some(line_no) = line.filter(|n| *n > 0) else {
+        return false;
+    };
+    let Ok(content) = std::fs::read_to_string(full_path) else {
+        return false;
+    };
+    let Some(decl) = content.lines().nth(line_no - 1) else {
+        return false;
+    };
+
+    let modifiers: Vec<&str> = decl
+        .split_whitespace()
+        .take_while(|tok| !tok.starts_with('('))
+        .collect();
+    if modifiers
+        .iter()
+        .any(|tok| *tok == "override" || tok.starts_with("@objc"))
+    {
+        return true;
+    }
+
+    let Some(name) = swift_declaration_name(&modifiers) else {
+        return false;
+    };
+    if SWIFT_FRAMEWORK_WITNESSES.contains(&name) {
+        return true;
+    }
+    // Delegate callbacks read `<subject><Verb>…`: the prefix must be followed by
+    // an uppercase letter so `window` matches `windowWillMove` but not a helper
+    // called `windowsize`.
+    SWIFT_DELEGATE_PREFIXES.iter().any(|prefix| {
+        name.len() > prefix.len()
+            && name.starts_with(prefix)
+            && name[prefix.len()..]
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_uppercase())
+    })
+}
+
+/// Pull the declared name out of a tokenised Swift declaration line.
+///
+/// Handles `func name(`, `var name:`, `let name =` and the `some`/generic
+/// decorations that follow. Returns `None` for lines that declare nothing.
+fn swift_declaration_name<'a>(tokens: &[&'a str]) -> Option<&'a str> {
+    let keyword_at = tokens
+        .iter()
+        .position(|tok| matches!(*tok, "func" | "var" | "let"))?;
+    let raw = tokens.get(keyword_at + 1)?;
+    let name = raw
+        .split(['(', ':', '<', '='])
+        .next()
+        .unwrap_or(raw)
+        .trim_end_matches('?');
+    (!name.is_empty()).then_some(name)
+}

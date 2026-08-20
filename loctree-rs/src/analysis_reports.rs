@@ -10,7 +10,9 @@ use std::path::Path;
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 
-use crate::analyzer::audit_report::{AuditFindings, OrphanFile, ShadowExport};
+use crate::analyzer::audit_report::{
+    AuditFindings, OrphanFile, ReportProvenance, ShadowExport, audit_health,
+};
 use crate::analyzer::coverage_gaps::{CoverageGap, GapKind, Severity, find_coverage_gaps};
 use crate::analyzer::crowd::detect_all_crowds;
 use crate::analyzer::cycles::{CycleCompilability, find_cycles_classified_with_lazy};
@@ -247,13 +249,12 @@ pub fn audit_findings(
         *in_degree.entry(edge.to.clone()).or_insert(0) += 1;
     }
 
+    // Zero-importer files enter the list; role/artifact/entrypoint fences
+    // then extract them into named buckets. Tests are no longer silently
+    // dropped here — they are graph roots and must stay visible.
     let mut orphan_files: Vec<(String, usize)> = in_degree
         .iter()
-        .filter(|(path, count)| {
-            **count == 0
-                && !is_entry_point(path)
-                && (options.include_tests || !is_test_file_path(path))
-        })
+        .filter(|(path, count)| **count == 0 && !is_entry_point(path))
         .map(|(path, _)| {
             let loc = snapshot
                 .files
@@ -266,13 +267,27 @@ pub fn audit_findings(
         .collect();
     orphan_files.sort_by_key(|(_, loc)| std::cmp::Reverse(*loc));
 
-    // Artifact fence: generated files, lockfiles, vendored code, fixtures and
-    // docs are not actionable "orphans to review" — separate, don't drop.
-    let (artifact_orphans, orphan_files): (Vec<_>, Vec<_>) =
-        orphan_files.into_iter().partition(|(path, _)| {
-            crate::analyzer::classify::artifact_class(path, None).is_artifact()
-                || crate::analyzer::classify::resource_kind(path) == Some("doc")
-        });
+    // Role fence: test / script / doc / manifest are graph roots by role.
+    // Extracted, never silently dropped — same shape as artifact_orphans.
+    let (test_orphans, orphan_files): (Vec<_>, Vec<_>) = orphan_files
+        .into_iter()
+        .partition(|(path, _)| is_test_file_path(path));
+    let (script_orphans, orphan_files): (Vec<_>, Vec<_>) = orphan_files
+        .into_iter()
+        .partition(|(path, _)| is_script_role_path(path));
+    let (doc_orphans, orphan_files): (Vec<_>, Vec<_>) = orphan_files
+        .into_iter()
+        .partition(|(path, _)| is_doc_role_path(path));
+    let (manifest_orphans, orphan_files): (Vec<_>, Vec<_>) = orphan_files
+        .into_iter()
+        .partition(|(path, _)| is_manifest_role_path(path));
+
+    // Artifact fence: generated files, lockfiles, vendored code and fixtures
+    // are not actionable "orphans to review" — separate, don't drop.
+    // Docs are a role (above), not an artifact.
+    let (artifact_orphans, orphan_files): (Vec<_>, Vec<_>) = orphan_files
+        .into_iter()
+        .partition(|(path, _)| crate::analyzer::classify::artifact_class(path, None).is_artifact());
 
     // Entry-point fence: runtime entries (Cargo [[bin]], package.json
     // main/bin, shebang scripts, detected main markers) legitimately have no
@@ -319,6 +334,10 @@ pub fn audit_findings(
             .into_iter()
             .map(|(path, loc)| OrphanFile { path, loc })
             .collect(),
+        test_orphans: to_orphan_files(test_orphans),
+        script_orphans: to_orphan_files(script_orphans),
+        doc_orphans: to_orphan_files(doc_orphans),
+        manifest_orphans: to_orphan_files(manifest_orphans),
         shadow_exports: shadow_exports
             .into_iter()
             .map(|(name, total_locations, dead_locations)| ShadowExport {
@@ -330,6 +349,22 @@ pub fn audit_findings(
         crowds: detect_all_crowds(&snapshot.files),
         total_files: snapshot.files.len(),
         total_loc: snapshot.files.iter().map(|file| file.loc).sum(),
+        provenance: Some(ReportProvenance {
+            version: crate::BUILD_VERSION.to_string(),
+            generated_at: if snapshot.metadata.generated_at.is_empty() {
+                time::OffsetDateTime::now_utc()
+                    .format(&time::format_description::well_known::Iso8601::DEFAULT)
+                    .unwrap_or_else(|_| "unknown".to_string())
+            } else {
+                snapshot.metadata.generated_at.clone()
+            },
+            root: root.display().to_string(),
+            git_commit: snapshot
+                .metadata
+                .git_commit
+                .clone()
+                .filter(|commit| !commit.is_empty()),
+        }),
     }
 }
 
@@ -398,6 +433,32 @@ pub fn audit_json_report(findings: &AuditFindings, limit: Option<usize>) -> Valu
         limit,
     );
 
+    let mut test_orphans = Map::new();
+    test_orphans.insert("total".to_string(), json!(findings.test_orphans.len()));
+    insert_audit_collection(&mut test_orphans, "files", &findings.test_orphans, limit);
+
+    let mut script_orphans = Map::new();
+    script_orphans.insert("total".to_string(), json!(findings.script_orphans.len()));
+    insert_audit_collection(
+        &mut script_orphans,
+        "files",
+        &findings.script_orphans,
+        limit,
+    );
+
+    let mut doc_orphans = Map::new();
+    doc_orphans.insert("total".to_string(), json!(findings.doc_orphans.len()));
+    insert_audit_collection(&mut doc_orphans, "files", &findings.doc_orphans, limit);
+
+    let mut manifest_orphans = Map::new();
+    manifest_orphans.insert("total".to_string(), json!(findings.manifest_orphans.len()));
+    insert_audit_collection(
+        &mut manifest_orphans,
+        "files",
+        &findings.manifest_orphans,
+        limit,
+    );
+
     let mut shadow_exports = Map::new();
     shadow_exports.insert("total".to_string(), json!(findings.shadow_exports.len()));
     insert_audit_collection(
@@ -424,6 +485,13 @@ pub fn audit_json_report(findings: &AuditFindings, limit: Option<usize>) -> Valu
             "entrypoint_orphans".to_string(),
             Value::Object(entrypoint_orphans),
         ),
+        ("test_orphans".to_string(), Value::Object(test_orphans)),
+        ("script_orphans".to_string(), Value::Object(script_orphans)),
+        ("doc_orphans".to_string(), Value::Object(doc_orphans)),
+        (
+            "manifest_orphans".to_string(),
+            Value::Object(manifest_orphans),
+        ),
         ("shadow_exports".to_string(), Value::Object(shadow_exports)),
         ("crowds".to_string(), Value::Object(crowds)),
         (
@@ -431,6 +499,7 @@ pub fn audit_json_report(findings: &AuditFindings, limit: Option<usize>) -> Valu
             json!({
                 "total_files": findings.total_files,
                 "total_loc": findings.total_loc,
+                "health_score": audit_health(findings).health,
             }),
         ),
     ]))
@@ -502,23 +571,94 @@ fn is_entry_point(path: &str) -> bool {
         || path == "index.ts"
 }
 
-fn is_test_file_path(path: &str) -> bool {
-    path.contains("/test/")
-        || path.contains("/tests/")
-        || path.contains("/__tests__/")
-        || path.contains("/spec/")
-        || path.ends_with(".test.ts")
-        || path.ends_with(".test.tsx")
-        || path.ends_with(".test.js")
-        || path.ends_with(".test.jsx")
-        || path.ends_with(".spec.ts")
-        || path.ends_with(".spec.tsx")
-        || path.ends_with(".spec.js")
-        || path.ends_with(".spec.jsx")
-        || path.ends_with("_test.rs")
-        || path.ends_with("_test.py")
-        || path.starts_with("test_")
-        || path.contains("/test_")
+fn to_orphan_files(files: Vec<(String, usize)>) -> Vec<OrphanFile> {
+    files
+        .into_iter()
+        .map(|(path, loc)| OrphanFile { path, loc })
+        .collect()
+}
+
+/// Path looks like a test file by role. Graph root, not an orphan to review.
+///
+/// Swift/SPM uses capitalised `Tests/`, `*Tests/` (e.g. `PensieveTests/`),
+/// `*Tests.swift` and `*Spec.swift`. Directory matching is case-insensitive
+/// on whole segments; filename matching is suffix-bound so
+/// `Sources/App/Contest.swift` is not a test.
+pub fn is_test_file_path(path: &str) -> bool {
+    let normalized = path.replace('\\', "/");
+    let lower = normalized.to_ascii_lowercase();
+
+    if has_test_directory_segment(&lower) {
+        return true;
+    }
+
+    lower.contains("/__tests__/")
+        || lower.starts_with("__tests__/")
+        || lower.contains("/spec/")
+        || lower.starts_with("spec/")
+        || lower.ends_with(".test.ts")
+        || lower.ends_with(".test.tsx")
+        || lower.ends_with(".test.js")
+        || lower.ends_with(".test.jsx")
+        || lower.ends_with(".spec.ts")
+        || lower.ends_with(".spec.tsx")
+        || lower.ends_with(".spec.js")
+        || lower.ends_with(".spec.jsx")
+        || lower.ends_with("_test.rs")
+        || lower.ends_with("_test.py")
+        || lower.starts_with("test_")
+        || lower.contains("/test_")
+        || swift_test_filename(&lower)
+}
+
+fn has_test_directory_segment(lower_path: &str) -> bool {
+    lower_path.split('/').any(|segment| {
+        !segment.is_empty()
+            && (segment == "test"
+                || segment == "tests"
+                || segment == "__tests__"
+                || segment == "spec"
+                || (segment.len() > 5 && segment.ends_with("tests")))
+    })
+}
+
+fn swift_test_filename(lower_path: &str) -> bool {
+    let file = lower_path.rsplit('/').next().unwrap_or(lower_path);
+    let Some(stem) = file.strip_suffix(".swift") else {
+        return false;
+    };
+    stem.ends_with("tests") || stem.ends_with("spec")
+}
+
+fn is_script_role_path(path: &str) -> bool {
+    let lower = path.replace('\\', "/").to_ascii_lowercase();
+    if lower.contains("/scripts/") || lower.starts_with("scripts/") {
+        return true;
+    }
+    let file = lower.rsplit('/').next().unwrap_or(lower.as_str());
+    file.ends_with(".sh") || file.ends_with(".bash") || file.ends_with(".zsh")
+}
+
+fn is_doc_role_path(path: &str) -> bool {
+    crate::analyzer::classify::resource_kind(path) == Some("doc")
+}
+
+fn is_manifest_role_path(path: &str) -> bool {
+    let file = path
+        .replace('\\', "/")
+        .rsplit('/')
+        .next()
+        .unwrap_or(path)
+        .to_ascii_lowercase();
+    matches!(
+        file.as_str(),
+        "package.swift"
+            | "package.json"
+            | "cargo.toml"
+            | "pyproject.toml"
+            | "podfile"
+            | "package.resolved"
+    )
 }
 
 #[cfg(test)]
@@ -652,11 +792,115 @@ mod tests {
             .collect();
         assert!(artifact_paths.contains(&"package-lock.json"));
         assert!(artifact_paths.contains(&"public_dist/index.html"));
-        assert!(artifact_paths.contains(&"docs/guide.md"));
+        assert!(
+            !artifact_paths.contains(&"docs/guide.md"),
+            "docs are a role root, not an artifact"
+        );
+        let doc_paths: Vec<&str> = findings
+            .doc_orphans
+            .iter()
+            .map(|o| o.path.as_str())
+            .collect();
+        assert!(
+            doc_paths.contains(&"docs/guide.md"),
+            "docs must land in the named doc-role bucket (was: {:?})",
+            doc_paths
+        );
 
         // Extracted, not silently dropped: JSON report carries them.
         let json = audit_json_report(&findings, None);
-        assert!(json["artifact_orphans"]["total"].as_u64().unwrap() >= 3);
+        assert!(json["artifact_orphans"]["total"].as_u64().unwrap() >= 2);
+        assert!(json["doc_orphans"]["total"].as_u64().unwrap() >= 1);
+    }
+
+    #[test]
+    fn role_root_conventions_are_tests() {
+        assert!(
+            is_test_file_path("Tests/AppTests/AppTests.swift"),
+            "Tests/ is the SPM test root"
+        );
+        assert!(
+            is_test_file_path("PensieveTests/IndexTests.swift"),
+            "PensieveTests/ is a Swift test target directory"
+        );
+        assert!(
+            is_test_file_path("Sources/App/RoleRootsHelperTests.swift"),
+            "*Tests.swift is a test file even outside Tests/"
+        );
+        assert!(
+            is_test_file_path("Sources/App/RoleRootsSpec.swift"),
+            "*Spec.swift is a test file"
+        );
+        assert!(
+            is_test_file_path("AppTests/RoleRootsHelperTests.swift"),
+            "AppTests/ is a *Tests directory"
+        );
+        assert!(
+            is_test_file_path("src/tests/lib_test.rs"),
+            "lowercase /tests/ stays a test path"
+        );
+    }
+
+    #[test]
+    fn role_root_contest_is_not_a_test() {
+        assert!(
+            !is_test_file_path("Sources/App/Contest.swift"),
+            "Contest.swift must not match a test suffix — the 'test' letters are mid-stem"
+        );
+        assert!(!is_test_file_path("Sources/App/RoleRootsHelper.swift"));
+        assert!(!is_test_file_path("Sources/App/RoleRootsApp.swift"));
+    }
+
+    #[test]
+    fn role_root_buckets_appear_in_audit_json() {
+        let mut snapshot = sample_snapshot();
+        let mut xctest = FileAnalysis::new("PensieveTests/IndexTests.swift".to_string());
+        xctest.loc = 20;
+        xctest.language = "swift".to_string();
+        let mut spec = FileAnalysis::new("Tests/AppSpec.swift".to_string());
+        spec.loc = 8;
+        spec.language = "swift".to_string();
+        let mut script = FileAnalysis::new("scripts/build-role-roots.sh".to_string());
+        script.loc = 6;
+        script.language = "shell".to_string();
+        let mut manifest = FileAnalysis::new("Package.swift".to_string());
+        manifest.loc = 12;
+        let mut product = FileAnalysis::new("src/forgotten.rs".to_string());
+        product.loc = 40;
+        snapshot
+            .files
+            .extend([xctest, spec, script, manifest, product]);
+
+        let findings = audit_findings(&snapshot, Path::new("."), AuditReportOptions::default());
+        let json = audit_json_report(&findings, None);
+
+        assert_eq!(
+            json["orphan_files"]["total"].as_u64().unwrap(),
+            1,
+            "only the real product orphan stays on the review list: {:?}",
+            findings
+                .orphan_files
+                .iter()
+                .map(|o| o.path.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert!(json["test_orphans"]["total"].as_u64().unwrap() >= 2);
+        assert!(json["script_orphans"]["total"].as_u64().unwrap() >= 1);
+        assert_eq!(json["manifest_orphans"]["total"].as_u64().unwrap(), 1);
+        assert!(json.get("doc_orphans").is_some());
+
+        let test_paths: Vec<&str> = findings
+            .test_orphans
+            .iter()
+            .map(|o| o.path.as_str())
+            .collect();
+        assert!(test_paths.contains(&"PensieveTests/IndexTests.swift"));
+        assert!(test_paths.contains(&"Tests/AppSpec.swift"));
+        assert_eq!(
+            findings.script_orphans[0].path,
+            "scripts/build-role-roots.sh"
+        );
+        assert_eq!(findings.manifest_orphans[0].path, "Package.swift");
     }
 
     #[test]

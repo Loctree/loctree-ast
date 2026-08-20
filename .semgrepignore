@@ -1,0 +1,81 @@
+# Semgrep ignore patterns
+# 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI
+
+# ============================================================================
+# STATIC HTML TEMPLATES
+# These files use innerHTML with static HTML strings only (no user input).
+# Converting to DOM API would make code unreadable without security benefit.
+# ============================================================================
+
+# Graph visualization - static UI templates for toolbar, panels
+reports/src/graph_bootstrap.js
+
+# ============================================================================
+# CLI ENTRY POINTS
+# args()/args_os() is required pattern for any CLI tool.
+# Not used for security-sensitive decisions, only CLI flag parsing.
+# ============================================================================
+
+# Main binary entry points
+loctree-rs/src/bin/loct.rs
+loctree-rs/src/bin/loctree.rs
+loctree-rs/src/args.rs
+# Shared CLI dispatcher (both `loct` and `loctree` delegate here for arg reads)
+loctree-rs/src/cli/entrypoint.rs
+
+# ============================================================================
+# TEST FILES
+# Test code uses controlled fixture paths, not user input.
+# Path traversal rules don't apply to test infrastructure.
+# ============================================================================
+
+loctree-rs/tests/
+
+# ============================================================================
+# VENDORED MINIFIED GRAPH ASSETS
+# Cytoscape/Dagre are pinned third-party report assets consumed as static
+# browser libraries. Prototype-pollution loops inside minified vendor bundles
+# are not app-authored Loctree code; update the vendored asset version instead
+# of editing minified source.
+# ============================================================================
+
+loctree-rs/src/analyzer/assets/cytoscape.min.js
+loctree-rs/src/analyzer/assets/dagre.min.js
+
+# ============================================================================
+# HTML SCRIPT-DETECTION FIXTURES
+# These files intentionally model external script shapes as passive analyzer
+# input fixtures. They are not shipped pages and are not served to users.
+# ============================================================================
+
+tools/fixtures/html-scripts/vue-style.html
+
+# ============================================================================
+# DYNAMIC-CODE TEST FIXTURES
+# These Python files intentionally use exec()/eval()/compile() with template
+# strings as INPUT MATERIAL for loctree's dynamic-code detection analyzer
+# (see loctree-rs/src/analyzer/py/dynamic.rs).
+#
+# They are passive scan targets, not production code, never imported, never
+# executed by tests. Refactoring the exec/eval out would defeat their purpose.
+# The fixture path itself is the policy boundary: this directory IS untrusted
+# test material by design.
+# ============================================================================
+
+tools/fixtures/python-exec/
+
+# ============================================================================
+# VALIDATION LAYER (path canonicalization helpers)
+# This file IS the path-traversal defense for Layer 3 semantic analyzers.
+# It implements validate_and_canonicalize() + boundary checks; consumers
+# (shell.rs, make.rs, idioms/loader.rs) call into it specifically so the
+# raw filesystem reads happen behind a validated boundary.
+#
+# Self-scanning a sanitizer flags its own sink (the read after the check)
+# as if the check did not exist. That is the well-known taint-mode false
+# positive class for validation libraries. Excluding this single file
+# preserves the rule's value everywhere else while letting the sanitizer
+# do its job.
+# ============================================================================
+
+loctree-rs/src/semantic/io.rs

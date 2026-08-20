@@ -30,6 +30,7 @@ use crate::aicx::{
     is_aicx_available, score_intent, summarize_entry,
 };
 use crate::analyzer::classify::{ArtifactClass, artifact_class};
+use crate::analyzer::env_truth::source_reads::collect_source_env_reads;
 use crate::cli::command::GlobalOptions;
 use crate::cli::dispatch::DispatchResult;
 use crate::context_render::chunk_ref;
@@ -40,6 +41,7 @@ use crate::context_stack::{
 };
 use crate::metrics::{importer_counts_direct, top_hubs_by_importers_direct};
 use crate::query::query_who_imports;
+use crate::receipt::QueryReceipt;
 use crate::semantic::{
     Classifier, DispatchEdge, DispatchKind, EnvContract, IdiomTag, ReachReason, RuntimeRole,
     SemanticFacts, TagSource,
@@ -50,7 +52,8 @@ use crate::snapshot::{
 };
 use crate::types::{ImportKind, ImportResolutionKind, OutputMode};
 
-pub const CONTEXT_SCHEMA_VERSION: &str = "1.0";
+// 1.1: additive `receipt` field (loctree.receipt.v1 identity binding, W1-A).
+pub const CONTEXT_SCHEMA_VERSION: &str = "1.1";
 const MAKE_RUNTIME_TARGET_LIMIT: usize = 6;
 
 /// Options for composing a ContextPack.
@@ -138,6 +141,10 @@ pub struct ContextPack {
     pub action: ActionSlice,
     pub memory: MemorySlice,
     pub authority: AuthoritySlice,
+    /// Identity receipt binding this pack to root, live HEAD, dirty state,
+    /// snapshot fingerprint, and the answering binary (`loctree.receipt.v1`).
+    #[serde(default)]
+    pub receipt: QueryReceipt,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -261,6 +268,18 @@ pub struct RuntimeSlice {
     /// Framework-specific reachability hints — FastAPI/Flask routes, pytest
     /// fixtures, Rust trait/impl methods, Python decorator handlers, entrypoints.
     pub framework_hints: Vec<RuntimeFrameworkHint>,
+    /// What the repository-wide runtime inventory actually inspected. This is
+    /// intentionally explicit so an omitted class can never masquerade as a
+    /// proven zero in rendered cards.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inventory_coverage: Option<RuntimeInventoryCoverage>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RuntimeInventoryCoverage {
+    pub owner_classes: Vec<String>,
+    pub env_read_classes: Vec<String>,
+    pub source_files_scanned: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -530,6 +549,15 @@ pub struct MemorySlice {
     /// — three states that previously all looked like an empty `entries` array.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diagnostic: Option<MemoryDiagnostic>,
+    /// C0-01 intent layer for the bare path (I1-01): typed theses from the
+    /// cached `aicx overlay` emission, full-key identity, and an explicit
+    /// freshness verdict. The bare render never waits for the producer —
+    /// this is always served from `.loctree/aicx-overlay.v1.json`, with the
+    /// detached refresh converging the cache between invocations. `None` on
+    /// non-bare compositions and under `--no-aicx` / `--with-aicx` (the
+    /// patient `entries` path above stays the forensic-recall surface).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overlay: Option<crate::aicx::overlay::OverlayRenderState>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -609,14 +637,28 @@ impl ContextPack {
             action: ActionSlice::default(),
             memory: MemorySlice::default(),
             authority: AuthoritySlice::default(),
+            receipt: QueryReceipt::unbound(),
         }
     }
 }
 
 #[derive(Debug)]
 pub enum ContextLoadError {
-    NoSnapshotNoScanMode { root: PathBuf },
-    StaleInCiMode { current: String, snapshot: String },
+    NoSnapshotNoScanMode {
+        root: PathBuf,
+    },
+    StaleInCiMode {
+        current: String,
+        snapshot: String,
+    },
+    /// Wrong-commit class (audit LCT-D/E/L): a snapshot loaded right after a
+    /// scan — including `--fresh` — names a different commit than live git.
+    /// Fail closed: no receipt may claim fresh authority over that answer.
+    PostScanIdentityMismatch {
+        live_head: String,
+        snapshot_commit: String,
+        root: PathBuf,
+    },
     ScanFailed(io::Error),
     IncrementalRescanFailed(io::Error),
     PostScanLoadFailed(io::Error),
@@ -637,6 +679,17 @@ impl std::fmt::Display for ContextLoadError {
             ContextLoadError::StaleInCiMode { current, snapshot } => write!(
                 f,
                 "snapshot is stale (current git {current}, snapshot {snapshot}) and --fail-stale in effect"
+            ),
+            ContextLoadError::PostScanIdentityMismatch {
+                live_head,
+                snapshot_commit,
+                root,
+            } => write!(
+                f,
+                "identity mismatch after scan in {}: live HEAD {} vs snapshot {} — authority refused",
+                root.display(),
+                short_sha(live_head),
+                short_sha(snapshot_commit)
             ),
             ContextLoadError::ScanFailed(err) => write!(f, "scan failed: {err}"),
             ContextLoadError::IncrementalRescanFailed(err) => {
@@ -662,6 +715,7 @@ impl std::error::Error for ContextLoadError {
             | ContextLoadError::LatestSnapshotLoadFailed(err) => Some(err),
             ContextLoadError::NoSnapshotNoScanMode { .. }
             | ContextLoadError::StaleInCiMode { .. }
+            | ContextLoadError::PostScanIdentityMismatch { .. }
             | ContextLoadError::Scope(_) => None,
         }
     }
@@ -696,17 +750,15 @@ pub(crate) fn compose_context_pack_with_global(
     let mut pack = ContextPack::empty(project_identity(&effective_opts));
     let bare_context = is_bare_context(&effective_opts);
 
-    let aicx_client = build_context_aicx_client(&effective_opts, bare_context);
-    if bare_context && aicx_client.is_some() {
-        // Bare-context auto-overlay: the budgeted client exists, so the
-        // memory composer must actually engage it (see the
-        // `MemorySkipReason::DisabledOptOut` doc — opt-out explicitly does
-        // NOT apply to this path). Costs nothing extra: the scope-seeding
-        // intents fetch already warmed the client cache for the same key.
-        effective_opts.with_aicx = true;
-    }
+    let aicx_client = build_context_aicx_client(&effective_opts);
 
     let snapshot = try_load_snapshot_with_auto_scan(&effective_opts, global)?;
+    pack.receipt = QueryReceipt::bind(&context_snapshot_root(&effective_opts), Some(&snapshot));
+    // I1-01: the bare path consumes the C0-01 `aicx overlay` cache instead
+    // of the budgeted `aicx intents` shell-out (which timed out on 100% of
+    // bare invocations against a live store). Pure read — never waits.
+    let overlay_state =
+        compose_bare_overlay_state(&effective_opts, bare_context, project_root, &snapshot);
     {
         let resolved_scope =
             resolve_context_scope_for_opts(&effective_opts, project_root, &snapshot)?;
@@ -725,7 +777,12 @@ pub(crate) fn compose_context_pack_with_global(
         };
         retain_context_targets(&mut targets);
         if targets.is_empty() && bare_context && resolved_scope.is_none() {
-            targets = compose_default_scope(&snapshot, &effective_opts, aicx_client.as_ref());
+            targets = compose_default_scope(
+                &snapshot,
+                &effective_opts,
+                aicx_client.as_ref(),
+                overlay_state.as_ref(),
+            );
             retain_context_targets(&mut targets);
         }
         if targets.is_empty() && resolved_scope.is_some() {
@@ -790,6 +847,13 @@ pub(crate) fn compose_context_pack_with_global(
             merge_memory_into_authority(&pack.memory, &mut pack.authority);
         }
     }
+    if bare_context && pack.scope.is_none() {
+        enrich_repo_runtime_inventory(project_root, &snapshot, &mut pack.runtime);
+        dedup_runtime(&mut pack.runtime);
+        merge_runtime_into_authority(&pack.runtime, &mut pack.authority);
+        dedup_authority(&mut pack.authority);
+    }
+    pack.memory.overlay = overlay_state;
     apply_scope_cache_marker(&mut pack);
 
     // Spec: when --with-aicx is requested but the binary is missing, log the
@@ -817,13 +881,14 @@ pub fn compose_context_pack_from_snapshot(
     effective_opts.project = Some(project_root.to_path_buf());
 
     let mut pack = ContextPack::empty(project_identity(&effective_opts));
+    pack.receipt = QueryReceipt::bind(&context_snapshot_root(&effective_opts), Some(snapshot));
     let bare_context = is_bare_context(&effective_opts);
-    let aicx_client = build_context_aicx_client(&effective_opts, bare_context);
-    if bare_context && aicx_client.is_some() {
-        // Bare-context auto-overlay — same contract as
-        // `compose_context_pack_with_global` above.
-        effective_opts.with_aicx = true;
-    }
+    let aicx_client = build_context_aicx_client(&effective_opts);
+    // I1-01 — same overlay-cache contract as
+    // `compose_context_pack_with_global` above. Pure read, never spawns:
+    // this entry point also serves the LSP.
+    let overlay_state =
+        compose_bare_overlay_state(&effective_opts, bare_context, project_root, snapshot);
 
     let resolved_scope = resolve_context_scope_for_opts(&effective_opts, project_root, snapshot)?;
     if effective_opts.file.is_some() && !effective_opts.scopes.is_empty() {
@@ -841,7 +906,12 @@ pub fn compose_context_pack_from_snapshot(
     };
     retain_context_targets(&mut targets);
     if targets.is_empty() && bare_context && resolved_scope.is_none() {
-        targets = compose_default_scope(snapshot, &effective_opts, aicx_client.as_ref());
+        targets = compose_default_scope(
+            snapshot,
+            &effective_opts,
+            aicx_client.as_ref(),
+            overlay_state.as_ref(),
+        );
         retain_context_targets(&mut targets);
     }
 
@@ -901,6 +971,13 @@ pub fn compose_context_pack_from_snapshot(
         merge_memory_into_authority(&pack.memory, &mut pack.authority);
     }
 
+    if bare_context && pack.scope.is_none() {
+        enrich_repo_runtime_inventory(project_root, snapshot, &mut pack.runtime);
+        dedup_runtime(&mut pack.runtime);
+        merge_runtime_into_authority(&pack.runtime, &mut pack.authority);
+        dedup_authority(&mut pack.authority);
+    }
+    pack.memory.overlay = overlay_state;
     apply_scope_cache_marker(&mut pack);
 
     Ok(pack)
@@ -915,6 +992,7 @@ pub(crate) fn missing_snapshot_context_pack(
         effective_opts.project = Some(project_root.to_path_buf());
     }
     let mut pack = ContextPack::empty(project_identity(&effective_opts));
+    pack.receipt = QueryReceipt::bind(project_root, None);
     pack.risk = RiskSlice::missing_snapshot();
     merge_risk_action_into_authority(&pack.risk, &pack.action, &mut pack.authority);
     pack
@@ -934,6 +1012,7 @@ pub fn run(opts: &ContextOptions, global: &GlobalOptions) -> DispatchResult {
                 effective_opts.project = Some(project_root.clone());
             }
             let mut pack = ContextPack::empty(project_identity(&effective_opts));
+            pack.receipt = QueryReceipt::bind(&project_root, None);
             pack.risk = RiskSlice::missing_snapshot();
             merge_risk_action_into_authority(&pack.risk, &pack.action, &mut pack.authority);
             pack
@@ -945,6 +1024,19 @@ pub fn run(opts: &ContextOptions, global: &GlobalOptions) -> DispatchResult {
                 short_sha(&snapshot)
             );
             return DispatchResult::Exit(3);
+        }
+        Err(ContextLoadError::PostScanIdentityMismatch {
+            live_head,
+            snapshot_commit,
+            root,
+        }) => {
+            eprintln!(
+                "[loct][context] identity mismatch after scan in {}: live HEAD {} vs snapshot {} — authority: refused (wrong-commit class; not emitting a fresh receipt)",
+                root.display(),
+                short_sha(&live_head),
+                short_sha(&snapshot_commit)
+            );
+            return DispatchResult::Exit(4);
         }
         Err(ContextLoadError::Scope(err)) => {
             eprintln!("{err}");
@@ -990,7 +1082,7 @@ fn try_load_snapshot_with_auto_scan(
             "[loct][context] --fresh requested for {}, rescanning...",
             root.display()
         );
-        run_context_scan(&root, &roots, true, ScanKind::Fresh)?;
+        run_context_scan(&root, &roots, true, ScanKind::Fresh, global.force_non_git)?;
         return load_snapshot_after_scan(&root);
     }
 
@@ -1006,7 +1098,13 @@ fn try_load_snapshot_with_auto_scan(
                     "[loct][context] no snapshot found in {}, scanning... (use --no-scan to skip)",
                     root.display()
                 );
-                run_context_scan(&root, &roots, false, ScanKind::Initial)?;
+                run_context_scan(
+                    &root,
+                    &roots,
+                    false,
+                    ScanKind::Initial,
+                    global.force_non_git,
+                )?;
                 load_snapshot_after_scan(&root)
             }
             Err(err) => Err(ContextLoadError::LatestSnapshotLoadFailed(err)),
@@ -1049,7 +1147,7 @@ fn ensure_fresh_with_mtime_check(
             short_sha(&snapshot_head),
             short_sha(&current_head)
         );
-        run_context_scan(root, roots, true, ScanKind::Full)?;
+        run_context_scan(root, roots, true, ScanKind::Full, global.force_non_git)?;
         return load_snapshot_after_scan(root);
     }
 
@@ -1090,20 +1188,52 @@ fn ensure_fresh_with_mtime_check(
             format_duration(max_age)
         );
     }
-    run_context_scan(root, roots, false, ScanKind::Incremental)?;
+    run_context_scan(
+        root,
+        roots,
+        false,
+        ScanKind::Incremental,
+        global.force_non_git,
+    )?;
     load_snapshot_after_scan(root)
 }
 
 fn load_snapshot_after_scan(root: &Path) -> Result<Snapshot, ContextLoadError> {
-    match Snapshot::load(root) {
-        Ok(snapshot) => Ok(snapshot),
+    let snapshot = match Snapshot::load(root) {
+        Ok(snapshot) => snapshot,
         Err(err) if err.kind() == io::ErrorKind::NotFound => match load_latest_snapshot(root) {
-            Ok(Some(snapshot)) => Ok(snapshot),
-            Ok(None) => Err(ContextLoadError::PostScanLoadFailed(err)),
-            Err(latest_err) => Err(ContextLoadError::PostScanLoadFailed(latest_err)),
+            Ok(Some(snapshot)) => snapshot,
+            Ok(None) => return Err(ContextLoadError::PostScanLoadFailed(err)),
+            Err(latest_err) => return Err(ContextLoadError::PostScanLoadFailed(latest_err)),
         },
-        Err(err) => Err(ContextLoadError::PostScanLoadFailed(err)),
+        Err(err) => return Err(ContextLoadError::PostScanLoadFailed(err)),
+    };
+    verify_post_scan_identity(&snapshot, root)?;
+    Ok(snapshot)
+}
+
+/// Fail-closed identity gate for every snapshot loaded right after a scan
+/// (`--fresh` included). The `load_latest_snapshot` fallback above can hand
+/// back an artifact from a different commit than the tree we just scanned —
+/// exactly the audit wrong-commit class. When both identities are known and
+/// disagree, refuse instead of emitting fresh authority.
+///
+/// Non-git roots and snapshots without a recorded commit pass through: there
+/// is no identity to contradict, and the receipt already reports `unknown`.
+fn verify_post_scan_identity(snapshot: &Snapshot, root: &Path) -> Result<(), ContextLoadError> {
+    let live_head = current_git_head(root).unwrap_or_default();
+    let snapshot_commit = snapshot.metadata.git_commit.clone().unwrap_or_default();
+    if live_head.is_empty() || snapshot_commit.is_empty() {
+        return Ok(());
     }
+    if !crate::receipt::commits_identity_compatible(&live_head, &snapshot_commit) {
+        return Err(ContextLoadError::PostScanIdentityMismatch {
+            live_head,
+            snapshot_commit,
+            root: root.to_path_buf(),
+        });
+    }
+    Ok(())
 }
 
 fn run_context_scan(
@@ -1111,6 +1241,7 @@ fn run_context_scan(
     roots: &[PathBuf],
     full_scan: bool,
     kind: ScanKind,
+    force_non_git: bool,
 ) -> Result<(), ContextLoadError> {
     let scan_roots = if roots.is_empty() {
         vec![root.to_path_buf()]
@@ -1124,6 +1255,7 @@ fn run_context_scan(
     parsed.root_list = scan_roots.clone();
     parsed.full_scan = full_scan;
     parsed.output = OutputMode::Human;
+    parsed.force_non_git = force_non_git;
 
     let scan_start = Instant::now();
     crate::snapshot::run_init_with_options(&scan_roots, &parsed, true).map_err(
@@ -1434,6 +1566,170 @@ pub fn compose_runtime_slice(opts: &ContextOptions, snapshot: &Snapshot) -> Runt
     slice
 }
 
+/// W5-A: widen only the bare repository card with executable ownership and
+/// named environment reads. File/task/scoped packs retain their local slice.
+/// The inventory never reads environment values and records the classes it
+/// knows how to inspect so absence cannot be presented as exhaustive truth.
+fn enrich_repo_runtime_inventory(
+    project_root: &Path,
+    snapshot: &Snapshot,
+    slice: &mut RuntimeSlice,
+) {
+    if let Some(facts) = snapshot.semantic_facts.as_ref() {
+        for contract in &facts.env_contracts {
+            slice
+                .env_contracts
+                .push(runtime_env_contract_from_semantic(contract));
+        }
+    }
+
+    let source_env = collect_source_env_reads(project_root, snapshot);
+    for read in &source_env.reads {
+        slice.env_contracts.push(RuntimeEnvContract {
+            name: read.name.clone(),
+            used_in_files: vec![read.file.clone()],
+            required_for: Vec::new(),
+            occurrences: vec![RuntimeEnvOccurrence {
+                file: read.file.clone(),
+                line: read.line,
+                access_kind: read.access_kind.clone(),
+                default: None,
+                required: false,
+            }],
+            required: false,
+            authority: AuthorityLabel::RepoVerified,
+        });
+    }
+
+    for entrypoint in &snapshot.metadata.entrypoints {
+        slice.framework_hints.push(RuntimeFrameworkHint {
+            kind: "executable_owner".to_string(),
+            symbol: if entrypoint.kinds.is_empty() {
+                "code_entrypoint".to_string()
+            } else {
+                entrypoint.kinds.join("+")
+            },
+            file: entrypoint.path.clone(),
+            line: None,
+            detail: Some("snapshot entrypoint inventory".to_string()),
+            authority: AuthorityLabel::RepoVerified,
+        });
+    }
+
+    for file in &snapshot.files {
+        collect_swift_application_hints(snapshot, file, slice);
+        if file.path.ends_with("Cargo.toml") {
+            collect_cargo_owner_hints(project_root, &file.path, slice);
+        }
+    }
+
+    if let Some(facts) = snapshot.semantic_facts.as_ref() {
+        for (symbol, tags) in &facts.idiom_tags {
+            let Some((file, target)) = symbol.split_once("::") else {
+                continue;
+            };
+            if !file.ends_with("Makefile") && !file.ends_with("makefile") {
+                continue;
+            }
+            if tags.iter().any(|tag| {
+                matches!(
+                    tag.classifier,
+                    Classifier::PrimaryEntrypoint
+                        | Classifier::UserFacingEntrypoint
+                        | Classifier::PublicEntrypoint
+                )
+            }) {
+                slice.framework_hints.push(RuntimeFrameworkHint {
+                    kind: "make_target_owner".to_string(),
+                    symbol: target.to_string(),
+                    file: file.to_string(),
+                    line: None,
+                    detail: Some("executable Make target".to_string()),
+                    authority: AuthorityLabel::LoctreeDerived,
+                });
+            }
+        }
+    }
+
+    slice.inventory_coverage = Some(RuntimeInventoryCoverage {
+        owner_classes: vec![
+            "cargo_bin".to_string(),
+            "cargo_default_run".to_string(),
+            "cargo_library_crate_type".to_string(),
+            "code_entrypoint".to_string(),
+            "make_public_target".to_string(),
+            "swiftpm_executable_target".to_string(),
+            "swiftui_main".to_string(),
+        ],
+        env_read_classes: source_env.classes,
+        source_files_scanned: source_env.files_scanned,
+    });
+}
+
+fn collect_cargo_owner_hints(project_root: &Path, manifest_path: &str, slice: &mut RuntimeSlice) {
+    let Ok(raw) = std::fs::read_to_string(project_root.join(manifest_path)) else {
+        return;
+    };
+    let Ok(manifest) = toml::from_str::<toml::Value>(&raw) else {
+        return;
+    };
+
+    if let Some(default_run) = manifest
+        .get("package")
+        .and_then(toml::Value::as_table)
+        .and_then(|package| package.get("default-run"))
+        .and_then(toml::Value::as_str)
+    {
+        push_owner_hint(
+            slice,
+            "cargo_default_run",
+            default_run,
+            manifest_path,
+            "Cargo package default-run",
+        );
+    }
+    if let Some(bins) = manifest.get("bin").and_then(toml::Value::as_array) {
+        for bin in bins.iter().filter_map(toml::Value::as_table) {
+            let Some(name) = bin.get("name").and_then(toml::Value::as_str) else {
+                continue;
+            };
+            let detail = bin
+                .get("path")
+                .and_then(toml::Value::as_str)
+                .map(|path| format!("Cargo [[bin]] path `{path}`"))
+                .unwrap_or_else(|| "Cargo [[bin]] target".to_string());
+            push_owner_hint(slice, "cargo_bin", name, manifest_path, &detail);
+        }
+    }
+    if let Some(crate_types) = manifest
+        .get("lib")
+        .and_then(toml::Value::as_table)
+        .and_then(|lib| lib.get("crate-type"))
+        .and_then(toml::Value::as_array)
+    {
+        for crate_type in crate_types.iter().filter_map(toml::Value::as_str) {
+            push_owner_hint(
+                slice,
+                "cargo_library_crate_type",
+                crate_type,
+                manifest_path,
+                "Cargo [lib] crate-type",
+            );
+        }
+    }
+}
+
+fn push_owner_hint(slice: &mut RuntimeSlice, kind: &str, symbol: &str, file: &str, detail: &str) {
+    slice.framework_hints.push(RuntimeFrameworkHint {
+        kind: kind.to_string(),
+        symbol: symbol.to_string(),
+        file: file.to_string(),
+        line: None,
+        detail: Some(detail.to_string()),
+        authority: AuthorityLabel::RepoVerified,
+    });
+}
+
 fn cap_make_runtime_targets(slice: &mut RuntimeSlice) {
     retain_with_cap(&mut slice.idiom_tags, |tag| tag.name == ".PHONY");
     retain_with_cap(&mut slice.reachability, |reach| {
@@ -1607,31 +1903,34 @@ fn collect_env_contracts(facts: &SemanticFacts, target: &str, slice: &mut Runtim
         if !env_contract_in_scope(contract, target) {
             continue;
         }
-        let occurrences: Vec<RuntimeEnvOccurrence> = contract
-            .occurrences
-            .iter()
-            .map(|o| RuntimeEnvOccurrence {
-                file: o.file.clone(),
-                line: o.line,
-                access_kind: o.access_kind.clone(),
-                default: o.default.clone(),
-                required: o.required,
-            })
-            .collect();
-        // Aggregate `required`: any required occurrence makes the var required.
-        // When occurrences are absent (Make/Shell analyzers), default to false
-        // — those analyzers track usage, not enforcement.
-        let required = occurrences.iter().any(|o| o.required);
-        slice.env_contracts.push(RuntimeEnvContract {
-            name: contract.name.clone(),
-            used_in_files: contract.used_in_files.clone(),
-            required_for: contract.required_for.clone(),
-            occurrences,
-            required,
-            authority: AuthorityLabel::LoctreeDerived,
-        });
+        slice
+            .env_contracts
+            .push(runtime_env_contract_from_semantic(contract));
     }
     slice.env_contracts.sort_by(|a, b| a.name.cmp(&b.name));
+}
+
+fn runtime_env_contract_from_semantic(contract: &EnvContract) -> RuntimeEnvContract {
+    let occurrences: Vec<RuntimeEnvOccurrence> = contract
+        .occurrences
+        .iter()
+        .map(|o| RuntimeEnvOccurrence {
+            file: o.file.clone(),
+            line: o.line,
+            access_kind: o.access_kind.clone(),
+            default: o.default.clone(),
+            required: o.required,
+        })
+        .collect();
+    let required = occurrences.iter().any(|o| o.required);
+    RuntimeEnvContract {
+        name: contract.name.clone(),
+        used_in_files: contract.used_in_files.clone(),
+        required_for: contract.required_for.clone(),
+        occurrences,
+        required,
+        authority: AuthorityLabel::LoctreeDerived,
+    }
 }
 
 fn env_contract_in_scope(contract: &EnvContract, target: &str) -> bool {
@@ -1732,6 +2031,7 @@ fn collect_framework_hints(snapshot: &Snapshot, target: &str, slice: &mut Runtim
                 authority: AuthorityLabel::RepoVerified,
             });
         }
+        collect_swift_application_hints(snapshot, file, slice);
     }
 
     if let Some(facts) = snapshot.semantic_facts.as_ref() {
@@ -1801,6 +2101,87 @@ fn collect_framework_hints(snapshot: &Snapshot, target: &str, slice: &mut Runtim
             .then_with(|| a.kind.cmp(&b.kind))
             .then_with(|| a.symbol.cmp(&b.symbol))
     });
+}
+
+/// Lift Swift application ownership into the runtime surface from facts the
+/// snapshot already carries. `@main` is emitted as `swift-main`; a SwiftUI
+/// import identifies the framework; and the enclosing `Package.swift` must
+/// explicitly list the matching target in an executable product before we
+/// claim SwiftPM ownership.
+fn collect_swift_application_hints(
+    snapshot: &Snapshot,
+    file: &crate::types::FileAnalysis,
+    slice: &mut RuntimeSlice,
+) {
+    if file.language != "swift" || !file.entry_points.iter().any(|entry| entry == "swift-main") {
+        return;
+    }
+
+    if file
+        .imports
+        .iter()
+        .any(|import| import.source == "SwiftUI" || import.source_raw == "SwiftUI")
+    {
+        slice.framework_hints.push(RuntimeFrameworkHint {
+            kind: "swiftui_app".to_string(),
+            symbol: "swift-main".to_string(),
+            file: file.path.clone(),
+            line: None,
+            detail: Some("SwiftUI application entrypoint (`@main` + `import SwiftUI`)".to_string()),
+            authority: AuthorityLabel::RepoVerified,
+        });
+    }
+
+    let Some((target_name, manifest_path, line)) = swiftpm_executable_owner(snapshot, &file.path)
+    else {
+        return;
+    };
+    slice.framework_hints.push(RuntimeFrameworkHint {
+        kind: "swiftpm_executable_target".to_string(),
+        symbol: target_name,
+        file: manifest_path.clone(),
+        line: Some(line as u32),
+        detail: Some(format!(
+            "declares the SwiftPM executable product target that owns `{}`",
+            file.path
+        )),
+        authority: AuthorityLabel::RepoVerified,
+    });
+}
+
+fn swiftpm_executable_owner(
+    snapshot: &Snapshot,
+    entrypoint_path: &str,
+) -> Option<(String, String, usize)> {
+    for manifest in &snapshot.files {
+        let Some(package_dir) = manifest.path.strip_suffix("Package.swift") else {
+            continue;
+        };
+        if !manifest.imports.iter().any(|import| {
+            import.source == "PackageDescription" || import.source_raw == "PackageDescription"
+        }) {
+            continue;
+        }
+        let sources_prefix = format!("{package_dir}Sources/");
+        let Some(relative) = entrypoint_path.strip_prefix(&sources_prefix) else {
+            continue;
+        };
+        let Some(target_name) = relative.split('/').next().map(str::trim) else {
+            continue;
+        };
+        if target_name.is_empty() {
+            continue;
+        }
+        let quoted_target = format!("\"{target_name}\"");
+        if let Some(usage) = manifest.symbol_usages.iter().find(|usage| {
+            usage.name == "executable"
+                && usage.context.contains("targets:")
+                && usage.context.contains(&quoted_target)
+        }) {
+            return Some((target_name.to_string(), manifest.path.clone(), usage.line));
+        }
+    }
+    None
 }
 
 fn route_detail(route: &crate::types::RouteInfo) -> String {
@@ -2178,10 +2559,17 @@ pub fn compose_risk_slice(opts: &ContextOptions, snapshot: &Snapshot) -> RiskSli
         })
         .collect();
 
+    // Successful zero-file corpus is not `missing_snapshot` and not a normal
+    // populated `fresh` tree — consumers need an explicit empty state
+    // (loctree-fail 2026-08-11 empty-directory scan).
+    let empty_corpus = snapshot.files.is_empty();
+
     RiskSlice {
         hotspots,
         high_fan_in,
-        snapshot_health: Some(snapshot_health_label(stale_snapshot, dirty_worktree).to_string()),
+        snapshot_health: Some(
+            snapshot_health_label(stale_snapshot, dirty_worktree, empty_corpus).to_string(),
+        ),
         cache_scope: cache_scope.clone(),
         cache_scope_authority: cache_scope_authority(&cache_scope),
         stale_snapshot,
@@ -2600,6 +2988,7 @@ pub fn compose_memory_slice(
             skip_reason,
             semantic_readiness,
         }),
+        overlay: None,
     }
 }
 
@@ -2810,7 +3199,16 @@ fn cache_scope_for(
     RiskCacheScope::Clean
 }
 
-fn snapshot_health_label(stale_snapshot: bool, dirty_worktree: bool) -> &'static str {
+fn snapshot_health_label(
+    stale_snapshot: bool,
+    dirty_worktree: bool,
+    empty_corpus: bool,
+) -> &'static str {
+    // Empty successful snapshot wins the clean label so agents can separate
+    // "verified zero files" from "no authority / missing snapshot".
+    if empty_corpus && !stale_snapshot && !dirty_worktree {
+        return "empty_snapshot";
+    }
     match (stale_snapshot, dirty_worktree) {
         (true, true) => "stale_dirty",
         (true, false) => "stale",
@@ -3505,67 +3903,88 @@ fn is_bare_context(opts: &ContextOptions) -> bool {
     opts.file.is_none() && !opts.changed && opts.task.is_none() && opts.scopes.is_empty()
 }
 
-/// Wall-clock budget for the bare-context auto-overlay, in milliseconds.
-///
-/// `loct context` with no flags is the doctrinal first move of every
-/// session — it must stay fast even when the AICX store is slow, so the
-/// opportunistic overlay gets a hard budget (default 300 ms; measured on
-/// loctree-suite the rest of the warm compose is ~0.9 s, so the whole
-/// `loct context` lands well under the 2 s session-start contract even
-/// when the budget burns dry). Overruns surface as an explicit
-/// "skipped (timeout)" in the pill, never a silent gap.
-///
-/// - `LOCT_CONTEXT_AICX_BUDGET_MS=<n>` overrides the ceiling,
-/// - `LOCT_CONTEXT_AICX_BUDGET_MS=0` removes it (patient overlay),
-/// - explicit `--with-aicx` is always patient — the operator asked for
-///   memory, so the per-call `LOCT_AICX_TIMEOUT_SECS` ceiling applies
-///   instead.
-const CONTEXT_AICX_BUDGET_ENV: &str = "LOCT_CONTEXT_AICX_BUDGET_MS";
-const CONTEXT_AICX_BUDGET_DEFAULT_MS: u64 = 300;
-
-fn context_overlay_budget() -> Option<Duration> {
-    match std::env::var(CONTEXT_AICX_BUDGET_ENV)
-        .ok()
-        .and_then(|raw| raw.parse::<u64>().ok())
-    {
-        Some(0) => None,
-        Some(ms) => Some(Duration::from_millis(ms)),
-        None => Some(Duration::from_millis(CONTEXT_AICX_BUDGET_DEFAULT_MS)),
-    }
-}
-
 /// Construct the AICX client for a `loct context` composition, honoring the
 /// overlay opt-in/opt-out matrix:
 /// - `--no-aicx` → no client,
-/// - `--with-aicx` → patient client (operator explicitly asked for memory),
-/// - bare context → budgeted client ([`context_overlay_budget`]) so the
-///   session-start pill is never hostage to a slow AICX store.
-fn build_context_aicx_client(opts: &ContextOptions, bare_context: bool) -> Option<AicxClient> {
+/// - `--with-aicx` → patient client (operator explicitly asked for memory;
+///   the per-call `LOCT_AICX_TIMEOUT_SECS` ceiling applies),
+/// - anything else (including the bare session-start path) → no client.
+///
+/// I1-01 retired the bare-path budgeted client: the 300 ms budget timed out
+/// on 100% of bare invocations against a live store (`aicx intents` needs
+/// tens of seconds there), so the bare path now consumes the C0-01
+/// `aicx overlay` cache instead — see [`compose_bare_overlay_state`]. The
+/// budgeted [`AicxClient::new_budgeted`] machinery stays for callers that
+/// genuinely want a bounded synchronous transport.
+fn build_context_aicx_client(opts: &ContextOptions) -> Option<AicxClient> {
     if opts.no_aicx {
         return None;
     }
     if opts.with_aicx {
         return Some(AicxClient::new(aicx_project_bucket(opts)));
     }
-    if bare_context && is_aicx_available() {
-        return Some(AicxClient::new_budgeted(
-            aicx_project_bucket(opts),
-            context_overlay_budget(),
-        ));
-    }
     None
+}
+
+/// Compose the C0-01 overlay render state for the bare path.
+///
+/// Local truth is what loctree can prove without asking the producer:
+/// the snapshot commit and the `loctree.anchors.v1` catalog revision (both
+/// derived from the loaded snapshot — [`crate::anchors::build_anchor_catalog`]
+/// is pure in-process work, ~tens of ms) plus the repo identity.
+/// Producer-side revisions are trusted as signed and converged by the
+/// detached refresh.
+fn compose_bare_overlay_state(
+    opts: &ContextOptions,
+    bare_context: bool,
+    project_root: &Path,
+    snapshot: &Snapshot,
+) -> Option<crate::aicx::overlay::OverlayRenderState> {
+    if !bare_context || opts.no_aicx || opts.with_aicx {
+        return None;
+    }
+    let mut local = crate::aicx::overlay::LocalTruth {
+        repo_id: None,
+        snapshot_commit: snapshot
+            .metadata
+            .git_commit
+            .as_ref()
+            .filter(|commit| !commit.is_empty())
+            .cloned(),
+        anchor_catalog_revision: None,
+    };
+    if let Ok(catalog) = crate::anchors::build_anchor_catalog(snapshot, project_root) {
+        local.repo_id = Some(catalog.repo_id);
+        local.anchor_catalog_revision = Some(catalog.anchor_catalog_revision);
+    }
+    Some(crate::aicx::overlay::compose_overlay_state(
+        project_root,
+        &local,
+    ))
 }
 
 pub fn compose_default_scope(
     snapshot: &Snapshot,
     opts: &ContextOptions,
     aicx: Option<&AicxClient>,
+    overlay: Option<&crate::aicx::overlay::OverlayRenderState>,
 ) -> Vec<String> {
     let mut targets = Vec::new();
 
+    // Runtime roots are the safest first anchors for a repo-wide context.
+    // They must not disappear merely because eight high-fan-in or high-LOC
+    // files outrank them.
+    targets.extend(
+        snapshot
+            .metadata
+            .entrypoints
+            .iter()
+            .map(|entrypoint| entrypoint.path.clone()),
+    );
     targets.extend(top_hub_files(snapshot, 8));
     targets.extend(recently_changed_files(opts, snapshot, 48, 4));
     targets.extend(aicx_intent_scope_files(snapshot, aicx, 5));
+    targets.extend(overlay_scope_files(snapshot, overlay));
     retain_context_targets(&mut targets);
 
     if targets.is_empty() {
@@ -3665,6 +4084,26 @@ fn recently_changed_files(
     changed.dedup();
     changed.truncate(limit);
     changed
+}
+
+/// Seed the default scope from the cached overlay's attributed targets.
+/// Zero-cost replacement for the retired bare-path intents probe: the
+/// producer already resolved intent→anchor attributions, so the target
+/// paths are typed joins, not keyword guesses. Only paths that exist in
+/// the current snapshot survive.
+fn overlay_scope_files(
+    snapshot: &Snapshot,
+    overlay: Option<&crate::aicx::overlay::OverlayRenderState>,
+) -> Vec<String> {
+    let Some(overlay) = overlay else {
+        return Vec::new();
+    };
+    overlay
+        .scope_paths
+        .iter()
+        .filter(|path| snapshot.files.iter().any(|file| &&file.path == path))
+        .cloned()
+        .collect()
 }
 
 fn aicx_intent_scope_files(
@@ -3879,6 +4318,9 @@ fn merge_runtime(dest: &mut RuntimeSlice, src: RuntimeSlice) {
     dest.tauri_commands.extend(src.tauri_commands);
     dest.tauri_events.extend(src.tauri_events);
     dest.framework_hints.extend(src.framework_hints);
+    if dest.inventory_coverage.is_none() {
+        dest.inventory_coverage = src.inventory_coverage;
+    }
 }
 
 fn dedup_runtime(dest: &mut RuntimeSlice) {
@@ -3899,7 +4341,39 @@ fn dedup_runtime(dest: &mut RuntimeSlice) {
     dest.reachability.dedup_by(|a, b| a.symbol == b.symbol);
 
     dest.env_contracts.sort_by(|a, b| a.name.cmp(&b.name));
-    dest.env_contracts.dedup_by(|a, b| a.name == b.name);
+    let mut merged_env: Vec<RuntimeEnvContract> = Vec::with_capacity(dest.env_contracts.len());
+    for mut contract in dest.env_contracts.drain(..) {
+        if let Some(existing) = merged_env
+            .last_mut()
+            .filter(|item| item.name == contract.name)
+        {
+            existing.used_in_files.append(&mut contract.used_in_files);
+            existing.required_for.append(&mut contract.required_for);
+            existing.occurrences.append(&mut contract.occurrences);
+            existing.required |= contract.required;
+            if contract.authority == AuthorityLabel::RepoVerified {
+                existing.authority = AuthorityLabel::RepoVerified;
+            }
+        } else {
+            merged_env.push(contract);
+        }
+    }
+    for contract in &mut merged_env {
+        contract.used_in_files.sort();
+        contract.used_in_files.dedup();
+        contract.required_for.sort();
+        contract.required_for.dedup();
+        contract.occurrences.sort_by(|a, b| {
+            a.file
+                .cmp(&b.file)
+                .then_with(|| a.line.cmp(&b.line))
+                .then_with(|| a.access_kind.cmp(&b.access_kind))
+        });
+        contract.occurrences.dedup_by(|a, b| {
+            a.file == b.file && a.line == b.line && a.access_kind == b.access_kind
+        });
+    }
+    dest.env_contracts = merged_env;
 
     dest.tauri_commands.sort_by(|a, b| a.name.cmp(&b.name));
     dest.tauri_commands.dedup_by(|a, b| a.name == b.name);
@@ -3911,6 +4385,21 @@ fn dedup_runtime(dest: &mut RuntimeSlice) {
         .sort_by(|a, b| a.file.cmp(&b.file).then_with(|| a.symbol.cmp(&b.symbol)));
     dest.framework_hints
         .dedup_by(|a, b| a.file == b.file && a.symbol == b.symbol && a.kind == b.kind);
+}
+
+fn dedup_authority(authority: &mut AuthoritySlice) {
+    for claims in [
+        &mut authority.repo_verified,
+        &mut authority.loctree_derived,
+        &mut authority.aicx_operator,
+        &mut authority.aicx_agent,
+        &mut authority.aicx_failure,
+        &mut authority.semantic_guess,
+        &mut authority.stale_or_unknown,
+    ] {
+        claims.sort();
+        claims.dedup();
+    }
 }
 
 fn merge_risk(dest: &mut RiskSlice, src: RiskSlice) {
@@ -3996,6 +4485,9 @@ fn merge_memory(dest: &mut MemorySlice, src: MemorySlice) {
         if take {
             dest.diagnostic = Some(src_diag);
         }
+    }
+    if dest.overlay.is_none() {
+        dest.overlay = src.overlay;
     }
 }
 
@@ -4096,7 +4588,53 @@ pub fn format_context_pack_markdown(pack: &ContextPack) -> String {
     }
     md.push('\n');
 
-    // W6.4 / loctree-feedback.md 3352: synthesis-first for --full so Risk/Action survive
+    md.push_str(
+        "## Receipt (loctree.receipt.v1)
+
+",
+    );
+    md.push_str(&format!(
+        "- **Authority**: `{:?}`
+",
+        pack.receipt.authority
+    ));
+    if let Some(head) = &pack.receipt.head_full {
+        md.push_str(&format!(
+            "- **Live HEAD**: `{}`
+",
+            head
+        ));
+    }
+    md.push_str(&format!(
+        "- **Dirty**: `{}`
+",
+        pack.receipt
+            .dirty_fingerprint
+            .as_deref()
+            .unwrap_or("unknown")
+    ));
+    if let Some(fingerprint) = &pack.receipt.snapshot_fingerprint {
+        md.push_str(&format!(
+            "- **Snapshot FP**: `{}`
+",
+            fingerprint
+        ));
+    }
+    md.push_str(&format!(
+        "- **Binary**: `{}`
+",
+        pack.receipt.binary_id
+    ));
+    for diagnostic in &pack.receipt.diagnostics {
+        md.push_str(&format!(
+            "- **Diagnostic**: {}
+",
+            diagnostic
+        ));
+    }
+    md.push('\n');
+
+    // W6.4 / loctree-fail.md 3352: synthesis-first for --full so Risk/Action survive
     // read-truncation (Read tool ~450 lines, MCP token caps). Pill is already
     // synthesis-first; --full was enumeration wall first. Move Risk+Action here
     // (after identity, before bulk Files/Symbols/Imports/Consumers tables).
@@ -4500,59 +5038,10 @@ pub fn format_context_pack_markdown(pack: &ContextPack) -> String {
         md.push('\n');
     }
 
-    // (W6.4) synthesis Risk+Action moved early (after identity) for truncation safety.
-    // This late Risk block neutralized; early synthesis is the one that survives caps.
-
-    if !pack.risk.hotspots.is_empty() {
-        md.push_str(
-            "### Hotspots
-
-",
-        );
-        md.push_str(
-            "| File | Importers | Authority |
-",
-        );
-        md.push_str(
-            "|---|---|---|
-",
-        );
-        for hotspot in &pack.risk.hotspots {
-            md.push_str(&format!(
-                "| `{}` | {} | *{:?}* |
-",
-                hotspot.file, hotspot.importers, hotspot.authority
-            ));
-        }
-        md.push('\n');
-    }
-
-    if !pack.risk.high_fan_in.is_empty() {
-        md.push_str(
-            "### High Fan-In
-
-",
-        );
-        md.push_str(
-            "| File | Importers | Authority |
-",
-        );
-        md.push_str(
-            "|---|---|---|
-",
-        );
-        for hfi in &pack.risk.high_fan_in {
-            md.push_str(&format!(
-                "| `{}` | {} | *{:?}* |
-",
-                hfi.file, hfi.importers, hfi.authority
-            ));
-        }
-        md.push('\n');
-    }
-
-    // (W6.4) late synthesis neutralized (Risk+Action emitted early after identity for truncation safety).
-    // No dupe, no late emission. Memory follows.
+    // Risk Hotspots / High Fan-In tables are emitted once in the early Risk
+    // Slice (synthesis-first, above). Do not re-emit them here — a prior
+    // "neutralized" late block still duplicated those tables and a comment
+    // falsely claimed "No dupe" (audit ad28ded / pack trust review 2026-07-23).
     md.push_str(
         "## Memory Slice
 
@@ -4576,7 +5065,7 @@ pub fn format_context_pack_markdown(pack: &ContextPack) -> String {
             );
             for entry in &pack.memory.entries {
                 let text = summarize_entry(&entry.text).text.replace('|', "\\|");
-                // loctree-feedback hak 2026-05-23 #2: never leak raw
+                // loctree-fail hak 2026-05-23 #2: never leak raw
                 // `~/.aicx/store/...` absolute paths into commitable markdown
                 // output. Use the same opaque `chunk:<hash>` reference the
                 // pill renderer emits.
@@ -4667,7 +5156,10 @@ pub fn format_context_pack_markdown(pack: &ContextPack) -> String {
 mod tests {
     use super::*;
     use crate::snapshot::{EntrypointSummary, GraphEdge};
-    use crate::types::{ExportSymbol, FileAnalysis, ImportEntry, ImportSymbol, RouteInfo};
+    use crate::types::{
+        ExportSymbol, FileAnalysis, ImportEntry, ImportSymbol, RouteInfo, SymbolUsage,
+    };
+    use std::collections::BTreeSet;
 
     #[test]
     fn context_pack_serde_roundtrip() {
@@ -5243,6 +5735,152 @@ mod tests {
         assert_eq!(reach.authority, AuthorityLabel::RepoVerified);
     }
 
+    #[test]
+    fn compose_runtime_slice_recognizes_swiftui_app_and_swiftpm_executable() {
+        let mut snapshot = Snapshot::new(vec![".".to_string()]);
+        let app_path = "Pensieve/Sources/Pensieve/App/PensieveApp.swift";
+
+        let mut app = FileAnalysis::new(app_path.to_string());
+        app.language = "swift".to_string();
+        app.entry_points.push("swift-main".to_string());
+        app.imports
+            .push(ImportEntry::new("SwiftUI".to_string(), ImportKind::Static));
+        snapshot.files.push(app);
+
+        let mut manifest = FileAnalysis::new("Pensieve/Package.swift".to_string());
+        manifest.language = "swift".to_string();
+        manifest.imports.push(ImportEntry::new(
+            "PackageDescription".to_string(),
+            ImportKind::Static,
+        ));
+        manifest.symbol_usages.push(SymbolUsage {
+            name: "executable".to_string(),
+            line: 18,
+            context: ".executable(name: \"Pensieve\", targets: [\"Pensieve\"])".to_string(),
+        });
+        snapshot.files.push(manifest);
+
+        let opts = ContextOptions {
+            file: Some(PathBuf::from(app_path)),
+            ..ContextOptions::default()
+        };
+        let slice = compose_runtime_slice(&opts, &snapshot);
+
+        let kinds: HashSet<&str> = slice
+            .framework_hints
+            .iter()
+            .map(|hint| hint.kind.as_str())
+            .collect();
+        assert!(kinds.contains("entrypoint"), "{slice:#?}");
+        assert!(kinds.contains("swiftui_app"), "{slice:#?}");
+        assert!(kinds.contains("swiftpm_executable_target"), "{slice:#?}");
+
+        let swiftpm = slice
+            .framework_hints
+            .iter()
+            .find(|hint| hint.kind == "swiftpm_executable_target")
+            .expect("SwiftPM executable hint");
+        assert_eq!(swiftpm.symbol, "Pensieve");
+        assert_eq!(swiftpm.file, "Pensieve/Package.swift");
+        assert_eq!(swiftpm.line, Some(18));
+        assert!(
+            swiftpm
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.contains(app_path)),
+            "{swiftpm:#?}"
+        );
+    }
+
+    #[test]
+    fn repo_runtime_inventory_surfaces_env_names_and_executable_owners() {
+        let fixture =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/runtime_inventory");
+        let mut snapshot = Snapshot::new(vec![".".to_string()]);
+
+        let mut rust_main = FileAnalysis::new("src/main.rs".to_string());
+        rust_main.language = "rust".to_string();
+        rust_main.entry_points.push("rust-main".to_string());
+        snapshot.files.push(rust_main);
+
+        let mut cargo = FileAnalysis::new("Cargo.toml".to_string());
+        cargo.language = "toml".to_string();
+        snapshot.files.push(cargo);
+
+        let mut swift_app = FileAnalysis::new("Sources/RuntimeFixture/App.swift".to_string());
+        swift_app.language = "swift".to_string();
+        swift_app.entry_points.push("swift-main".to_string());
+        swift_app
+            .imports
+            .push(ImportEntry::new("SwiftUI".to_string(), ImportKind::Static));
+        snapshot.files.push(swift_app);
+
+        let mut package = FileAnalysis::new("Package.swift".to_string());
+        package.language = "swift".to_string();
+        package.imports.push(ImportEntry::new(
+            "PackageDescription".to_string(),
+            ImportKind::Static,
+        ));
+        package.symbol_usages.push(SymbolUsage {
+            name: "executable".to_string(),
+            line: 5,
+            context: ".executable(name: \"RuntimeFixture\", targets: [\"RuntimeFixture\"])"
+                .to_string(),
+        });
+        snapshot.files.push(package);
+        snapshot.metadata.entrypoints = vec![
+            EntrypointSummary {
+                path: "src/main.rs".to_string(),
+                kinds: vec!["rust-main".to_string()],
+            },
+            EntrypointSummary {
+                path: "Sources/RuntimeFixture/App.swift".to_string(),
+                kinds: vec!["swift-main".to_string()],
+            },
+        ];
+
+        let mut runtime = RuntimeSlice::default();
+        enrich_repo_runtime_inventory(&fixture, &snapshot, &mut runtime);
+        dedup_runtime(&mut runtime);
+
+        let env_names: BTreeSet<&str> = runtime
+            .env_contracts
+            .iter()
+            .map(|contract| contract.name.as_str())
+            .collect();
+        assert_eq!(
+            env_names,
+            BTreeSet::from(["FIXTURE_CACHE_ROOT", "FIXTURE_RUNTIME_ROOT"])
+        );
+        assert!(runtime.env_contracts.iter().all(|contract| {
+            contract
+                .occurrences
+                .iter()
+                .all(|occurrence| occurrence.default.is_none())
+        }));
+
+        let owner_kinds: BTreeSet<&str> = runtime
+            .framework_hints
+            .iter()
+            .map(|hint| hint.kind.as_str())
+            .collect();
+        for expected in [
+            "cargo_bin",
+            "cargo_default_run",
+            "cargo_library_crate_type",
+            "executable_owner",
+            "swiftpm_executable_target",
+            "swiftui_app",
+        ] {
+            assert!(
+                owner_kinds.contains(expected),
+                "missing {expected}: {runtime:#?}"
+            );
+        }
+        let coverage = runtime.inventory_coverage.expect("inventory coverage");
+        assert_eq!(coverage.source_files_scanned, 3);
+    }
+
     /// Acceptance #3 — Tauri command bridges surface in `tauri_commands`.
     #[test]
     fn compose_runtime_slice_with_tauri_command_bridge() {
@@ -5544,6 +6182,131 @@ mod tests {
     }
 
     #[test]
+    fn compose_risk_slice_empty_corpus_is_empty_snapshot_not_missing() {
+        // loctree-fail 2026-08-11: successful zero-file scan must not read as
+        // missing_snapshot — emit empty_snapshot so verified absence is explicit.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut snapshot = Snapshot::new(vec![tmp.path().display().to_string()]);
+        snapshot.metadata.roots = vec![tmp.path().display().to_string()];
+        assert!(snapshot.files.is_empty());
+
+        let opts = ContextOptions {
+            project: Some(tmp.path().to_path_buf()),
+            ..ContextOptions::default()
+        };
+        let risk = compose_risk_slice(&opts, &snapshot);
+
+        assert_eq!(risk.snapshot_health.as_deref(), Some("empty_snapshot"));
+        assert_ne!(risk.snapshot_health.as_deref(), Some("missing_snapshot"));
+        assert!(!risk.stale_snapshot);
+    }
+
+    /// W1-A negative control (audit wrong-commit class LCT-D/E/L): a snapshot
+    /// that names a different commit than live HEAD must be refused right
+    /// after a scan — it can never back a fresh receipt.
+    #[test]
+    fn identity_receipt_post_scan_mismatch_refuses() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        let git = |args: &[&str]| {
+            let out = Command::new("git")
+                .args(args)
+                .current_dir(root)
+                .output()
+                .expect("git");
+            assert!(out.status.success(), "git {args:?} failed");
+        };
+        git(&["init"]);
+        git(&[
+            "-c",
+            "user.email=trust@loctree.test",
+            "-c",
+            "user.name=trust",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "init",
+        ]);
+
+        let mut snapshot = Snapshot::new(vec![root.display().to_string()]);
+        snapshot.metadata.git_commit = Some("1cb669d4".to_string());
+        let err = verify_post_scan_identity(&snapshot, root).expect_err("mismatch must refuse");
+        assert!(
+            matches!(err, ContextLoadError::PostScanIdentityMismatch { .. }),
+            "expected PostScanIdentityMismatch, got: {err}"
+        );
+
+        let live_head = current_git_head(root).expect("live HEAD");
+        snapshot.metadata.git_commit = Some(live_head[..8].to_string());
+        verify_post_scan_identity(&snapshot, root).expect("matching identity passes");
+    }
+
+    /// Non-git roots have no identity to contradict: the gate must pass and
+    /// leave honesty to the receipt's `unknown` authority.
+    #[test]
+    fn identity_receipt_post_scan_gate_passes_without_git_identity() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut snapshot = Snapshot::new(vec![tmp.path().display().to_string()]);
+        snapshot.metadata.git_commit = Some("1cb669d4".to_string());
+        verify_post_scan_identity(&snapshot, tmp.path()).expect("no live git — nothing to refuse");
+    }
+
+    /// A pack emitted without any snapshot must carry a refused receipt, not
+    /// a silently-default one.
+    #[test]
+    fn identity_receipt_missing_snapshot_pack_refuses_authority() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let opts = ContextOptions {
+            project: Some(tmp.path().to_path_buf()),
+            ..ContextOptions::default()
+        };
+
+        let pack = missing_snapshot_context_pack(&opts, tmp.path());
+
+        assert_eq!(
+            pack.receipt.authority,
+            crate::receipt::ReceiptAuthority::Refused
+        );
+        assert_eq!(pack.receipt.binary_id, crate::BUILD_VERSION);
+        assert!(pack.receipt.snapshot_fingerprint.is_none());
+        assert_eq!(
+            pack.receipt.schema_version,
+            crate::receipt::RECEIPT_SCHEMA_VERSION
+        );
+    }
+
+    /// Every composed pack binds a receipt: root + snapshot fingerprint +
+    /// binary identity travel with the answer (MCP inherits this path).
+    #[test]
+    fn identity_receipt_bound_on_compose_from_snapshot() {
+        let snapshot = hub_snapshot(12);
+        let opts = ContextOptions {
+            file: Some(PathBuf::from("types.rs")),
+            no_aicx: true,
+            ..ContextOptions::default()
+        };
+
+        let pack = compose_context_pack_from_snapshot(&opts, Path::new("."), &snapshot)
+            .expect("compose context pack");
+
+        assert_eq!(
+            pack.receipt.schema_version,
+            crate::receipt::RECEIPT_SCHEMA_VERSION
+        );
+        assert_eq!(pack.receipt.binary_id, crate::BUILD_VERSION);
+        assert!(pack.receipt.root.is_some(), "receipt must bind the root");
+        let fingerprint = pack
+            .receipt
+            .snapshot_fingerprint
+            .as_deref()
+            .expect("receipt must bind the snapshot fingerprint");
+        assert!(
+            fingerprint.starts_with("sha256:loctree-snapshot-authority-v1:"),
+            "fingerprint must carry its algorithm: {fingerprint}"
+        );
+    }
+
+    #[test]
     fn compose_action_slice_suggests_loct_slice_for_hub() {
         let snapshot = hub_snapshot(12);
         let opts = ContextOptions {
@@ -5686,7 +6449,7 @@ mod tests {
         let snapshot = hub_snapshot(12);
         let opts = ContextOptions::default();
 
-        let scope = compose_default_scope(&snapshot, &opts, None);
+        let scope = compose_default_scope(&snapshot, &opts, None, None);
 
         assert!(
             scope.contains(&"loctree-rs/src/types.rs".to_string()),
@@ -6194,6 +6957,39 @@ python_version = "3.12"
     }
 
     #[test]
+    fn markdown_hotspots_and_high_fan_in_emit_once() {
+        // Trust audit ad28ded: late Risk tables duplicated early synthesis
+        // tables while a comment claimed "No dupe". Count headers, not rows.
+        let mut pack = ContextPack::empty(ProjectIdentity::default());
+        pack.risk.hotspots.push(HotspotFile {
+            file: "src/hub.rs".to_string(),
+            importers: 12,
+            authority: AuthorityLabel::LoctreeDerived,
+        });
+        pack.risk.high_fan_in.push(HighFanInFile {
+            file: "src/hub.rs".to_string(),
+            importers: 12,
+            threshold: 10,
+            authority: AuthorityLabel::LoctreeDerived,
+        });
+        let md = super::format_context_pack_markdown(&pack);
+        let hotspots = md.matches("### Hotspots\n").count();
+        let fan_in = md.matches("### High Fan-In\n").count();
+        assert_eq!(
+            hotspots, 1,
+            "Hotspots table must appear exactly once (early Risk Slice only):\n{md}"
+        );
+        assert_eq!(
+            fan_in, 1,
+            "High Fan-In table must appear exactly once (early Risk Slice only):\n{md}"
+        );
+        assert!(
+            !md.contains("No dupe, no late emission"),
+            "false-confidence comment must not reappear"
+        );
+    }
+
+    #[test]
     fn markdown_formatter_jsonpacks_round_trip() {
         let mut pack = ContextPack::empty(ProjectIdentity::default());
         pack.structural.files.push(StructuralFile {
@@ -6508,9 +7304,9 @@ python_version = "3.12"
     fn compose_memory_slice_includes_source_chunk_paths() {
         let dir = tempfile::tempdir().expect("tempdir");
         let payload = r#"[
-            {"kind":"decision","summary":"context composer chooses absolute paths","project":"loctree-suite","agent":"claude","date":"2026-04-28","timestamp":"2026-04-28T01:00:00Z","session_id":"sa","source_chunk":"/home/op/.aicx/store/loctree-suite/2026/04/28/sa.md"},
-            {"kind":"task","summary":"context source chunk wiring test","project":"loctree-suite","agent":"codex","date":"2026-04-28","timestamp":"2026-04-28T01:01:00Z","session_id":"sb","source_chunk":"/home/op/.aicx/store/loctree-suite/2026/04/28/sb.md"},
-            {"kind":"task","summary":"another context follow-up referencing same chunk","project":"loctree-suite","agent":"codex","date":"2026-04-28","timestamp":"2026-04-28T01:02:00Z","session_id":"sc","source_chunk":"/home/op/.aicx/store/loctree-suite/2026/04/28/sb.md"}
+            {"kind":"decision","summary":"context composer chooses absolute paths","project":"loctree-suite","agent":"claude","date":"2026-04-28","timestamp":"2026-04-28T01:00:00Z","session_id":"sa","source_chunk":"/Users/op/.aicx/store/loctree-suite/2026/04/28/sa.md"},
+            {"kind":"task","summary":"context source chunk wiring test","project":"loctree-suite","agent":"codex","date":"2026-04-28","timestamp":"2026-04-28T01:01:00Z","session_id":"sb","source_chunk":"/Users/op/.aicx/store/loctree-suite/2026/04/28/sb.md"},
+            {"kind":"task","summary":"another context follow-up referencing same chunk","project":"loctree-suite","agent":"codex","date":"2026-04-28","timestamp":"2026-04-28T01:02:00Z","session_id":"sc","source_chunk":"/Users/op/.aicx/store/loctree-suite/2026/04/28/sb.md"}
         ]"#;
         let script = write_mock_aicx(dir.path(), payload);
 
@@ -6559,12 +7355,12 @@ python_version = "3.12"
         assert!(
             memory
                 .source_chunks
-                .contains(&"/home/op/.aicx/store/loctree-suite/2026/04/28/sa.md".to_string())
+                .contains(&"/Users/op/.aicx/store/loctree-suite/2026/04/28/sa.md".to_string())
         );
         assert!(
             memory
                 .source_chunks
-                .contains(&"/home/op/.aicx/store/loctree-suite/2026/04/28/sb.md".to_string())
+                .contains(&"/Users/op/.aicx/store/loctree-suite/2026/04/28/sb.md".to_string())
         );
     }
 
@@ -6805,7 +7601,7 @@ python_version = "3.12"
     /// (same envelope shape) but asserts on the per-entry `authority`
     /// field rather than the per-entry `retrieval_mode`. Closes the
     /// audit finding documented at
-    /// `~/internal-artifacts/inbox/Loctree/aicx/blockers/loctree-side-needs.md`.
+    /// `~/.vibecrafted/inbox/Loctree/aicx/blockers/loctree-side-needs.md`.
     #[cfg(unix)]
     #[test]
     #[serial_test::serial(aicx_env)]
@@ -7033,7 +7829,7 @@ python_version = "3.12"
             ..ContextOptions::default()
         };
 
-        let targets = compose_default_scope(&snapshot, &opts, None);
+        let targets = compose_default_scope(&snapshot, &opts, None, None);
         assert_eq!(targets, vec!["src/lib.rs".to_string()]);
 
         let pack = compose_context_pack_from_snapshot(&opts, Path::new("."), &snapshot)
@@ -7053,6 +7849,39 @@ python_version = "3.12"
                 .all(|file| !file.path.is_empty()),
             "empty file target must not reach structural slice: {:?}",
             pack.structural.files
+        );
+    }
+
+    #[test]
+    fn bare_context_prioritizes_runtime_entrypoints_over_large_noise_files() {
+        let mut snapshot = Snapshot::new(vec![".".to_string()]);
+        for index in 0..12 {
+            let mut noise = FileAnalysis::new(format!("Sources/Noise{index}.swift"));
+            noise.language = "swift".to_string();
+            noise.loc = 10_000 - index;
+            snapshot.files.push(noise);
+        }
+
+        let app_path = "Pensieve/Sources/Pensieve/App/PensieveApp.swift";
+        let mut app = FileAnalysis::new(app_path.to_string());
+        app.language = "swift".to_string();
+        app.loc = 1;
+        app.entry_points.push("swift-main".to_string());
+        snapshot.files.push(app);
+        snapshot.metadata.entrypoints.push(EntrypointSummary {
+            path: app_path.to_string(),
+            kinds: vec!["swift-main".to_string()],
+        });
+
+        let opts = ContextOptions {
+            project: Some(PathBuf::from(".")),
+            no_aicx: true,
+            ..ContextOptions::default()
+        };
+        let targets = compose_default_scope(&snapshot, &opts, None, None);
+        assert!(
+            targets.iter().any(|target| target == app_path),
+            "runtime entrypoint lost behind LOC ranking: {targets:?}"
         );
     }
 

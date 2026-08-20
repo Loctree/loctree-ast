@@ -1,0 +1,27 @@
+{
+  "schema": "loctree.overlay.intent.v1",
+  "repo_id": "Loctree/loctree-suite",
+  "snapshot_commit": "48a9526d",
+  "anchor_catalog_revision": "acr1:ab12cd34ab12cd34ab12cd34ab12cd34ab12cd34ab12cd34ab12cd34ab12cd34",
+  "store_revision": "sr1:5f0a5f0a5f0a5f0a5f0a5f0a5f0a5f0a5f0a5f0a5f0a5f0a5f0a5f0a5f0a5f0a",
+  "overlay_revision": "ov1:9e3b9e3b9e3b9e3b9e3b9e3b9e3b9e3b9e3b9e3b9e3b9e3b9e3b9e3b9e3b9e3b",
+  "producer_version": "0.12.0",
+  "entries": [
+    {
+      "intent_id": "int1:dddd000011112222",
+      "content_hash": "ch1:44bb44bb44bb44bb44bb44bb44bb44bb44bb44bb44bb44bb44bb44bb44bb44bb",
+      "target": { "kind": "repo" },
+      "thesis": "KONTRAKT ZŁAMANY CELOWO: ref niesie ścieżkę absolutną hosta — bucket leak; refs są opaque (chunk:/session:).",
+      "status": "current",
+      "authority": "operator_confirmed",
+      "verification_status": "verified",
+      "valid_from": "2026-05-14T10:00:00Z",
+      "refs": [
+        {
+          "evidence_event_id": "ev1:claude:c935402e-0000-1111-2222-333344445555:000120:text:00ff11ee22dd33cc",
+          "ref": "session:/Users/polyversai/.claude/projects/loctree/c935402e.jsonl#L120"
+        }
+      ]
+    }
+  ]
+}

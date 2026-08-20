@@ -5,7 +5,7 @@
 //! and the Stage 2 split between [`IMPLEMENTED_SCOPES`] and
 //! [`STUB_SCOPES`].
 //!
-//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by VetCoders ⓒ 2025-2026 VetCoders
+//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders ⓒ 2025-2026 Vetcoders
 
 use loctree::snapshot::{CommandBridge, EventBridge, Snapshot};
 use loctree::types::{CommandRef, FileAnalysis};

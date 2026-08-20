@@ -57,7 +57,11 @@ pub fn run(opts: &EntryOptions) -> std::io::Result<()> {
                     return Ok(());
                 }
                 DispatchResult::ShowVersion => {
-                    println!("{} {}", opts.binary_name, env!("CARGO_PKG_VERSION"));
+                    println!(
+                        "{}",
+                        crate::bundle_identity::core_bundle_identity(opts.binary_name)
+                            .version_line()
+                    );
                     return Ok(());
                 }
                 DispatchResult::Exit(code) => {
@@ -121,7 +125,10 @@ pub fn run(opts: &EntryOptions) -> std::io::Result<()> {
     }
 
     if parsed.show_version {
-        println!("{} {}", opts.binary_name, env!("CARGO_PKG_VERSION"));
+        println!(
+            "{}",
+            crate::bundle_identity::core_bundle_identity(opts.binary_name).version_line()
+        );
         return Ok(());
     }
 
@@ -636,6 +643,7 @@ fn run_findings(
 
 /// Unified search - aggregates symbol, semantic, and dead code results
 fn run_search(root_list: &[PathBuf], parsed: &ParsedArgs) -> std::io::Result<()> {
+    use analyzer::occurrences::IndexedUniverse;
     use analyzer::search::{SearchResults, print_search_results, run_search as do_search};
     use serde_json::{Value, json};
     use std::collections::{HashMap, HashSet};
@@ -649,22 +657,26 @@ fn run_search(root_list: &[PathBuf], parsed: &ParsedArgs) -> std::io::Result<()>
         if symbol_only {
             json!({
                 "query": results.query,
+                "universe": results.universe,
                 "symbol_matches": results.symbol_matches,
                 "param_matches": results.param_matches,
             })
         } else if dead_only {
             json!({
                 "query": results.query,
+                "universe": results.universe,
                 "dead_status": results.dead_status,
             })
         } else if semantic_only {
             json!({
                 "query": results.query,
+                "universe": results.universe,
                 "semantic_matches": results.semantic_matches,
             })
         } else {
             json!({
                 "query": results.query,
+                "universe": results.universe,
                 "symbol_matches": results.symbol_matches,
                 "param_matches": results.param_matches,
                 "semantic_matches": results.semantic_matches,
@@ -745,6 +757,77 @@ fn run_search(root_list: &[PathBuf], parsed: &ParsedArgs) -> std::io::Result<()>
         out
     }
 
+    fn result_count(
+        results: &SearchResults,
+        symbol_only: bool,
+        dead_only: bool,
+        semantic_only: bool,
+    ) -> usize {
+        results.finding_count_for(symbol_only, dead_only, semantic_only)
+    }
+
+    fn attach_accounting(value: &mut Value, total: usize, emitted: usize, limit: Option<usize>) {
+        value["total"] = json!(total);
+        value["emitted"] = json!(emitted);
+        value["offset"] = json!(0);
+        value["truncated"] = json!(emitted < total);
+        value["has_more"] = json!(emitted < total);
+        if let Some(limit) = limit {
+            value["limit"] = json!(limit);
+        }
+    }
+
+    fn apply_global_limit(
+        results: &mut SearchResults,
+        remaining: &mut usize,
+        nested_limit: usize,
+        symbol_only: bool,
+        dead_only: bool,
+        semantic_only: bool,
+    ) -> usize {
+        let before = *remaining;
+        if !dead_only && !semantic_only {
+            for file in &mut results.symbol_matches.files {
+                file.matches.truncate(*remaining);
+                *remaining = remaining.saturating_sub(file.matches.len());
+            }
+            results
+                .symbol_matches
+                .files
+                .retain(|file| !file.matches.is_empty());
+
+            results.param_matches.truncate(*remaining);
+            *remaining = remaining.saturating_sub(results.param_matches.len());
+            results.suppression_matches.truncate(*remaining);
+            *remaining = remaining.saturating_sub(results.suppression_matches.len());
+            results.cross_matches.truncate(*remaining);
+            *remaining = remaining.saturating_sub(results.cross_matches.len());
+            for cross_match in &mut results.cross_matches {
+                cross_match.matched_terms.truncate(nested_limit);
+            }
+        }
+        if !dead_only && !symbol_only {
+            results.semantic_matches.truncate(*remaining);
+            *remaining = remaining.saturating_sub(results.semantic_matches.len());
+        }
+        if !symbol_only && !semantic_only {
+            results.dead_status.dead_in_files.truncate(*remaining);
+            *remaining = remaining.saturating_sub(results.dead_status.dead_in_files.len());
+        }
+        before - *remaining
+    }
+
+    fn page(limit: usize, returned: usize, total: usize) -> Value {
+        json!({
+            "semantics": "global",
+            "limit": limit,
+            "returned": returned,
+            "total": total,
+            "has_more": returned < total,
+            "nested_item_limit": limit,
+        })
+    }
+
     // Snapshot freshness is delegated to the single authority
     // (`snapshot::acquire_snapshot`): commit-only stale snapshots are reused
     // when the content fence proves indexed source bytes did not change, a
@@ -773,15 +856,107 @@ fn run_search(root_list: &[PathBuf], parsed: &ParsedArgs) -> std::io::Result<()>
                 )
             })?;
 
-            let results = do_search(query, &analyses);
-            print_search_results(
-                &results,
-                parsed.output,
-                symbol_only,
-                dead_only,
-                semantic_only,
-                parsed.color,
-            );
+            let mut results = do_search(query, &analyses);
+            let total = result_count(&results, symbol_only, dead_only, semantic_only);
+            if let Some(limit) = parsed.search_limit {
+                let mut remaining = limit;
+                let returned = apply_global_limit(
+                    &mut results,
+                    &mut remaining,
+                    limit,
+                    symbol_only,
+                    dead_only,
+                    semantic_only,
+                );
+                let page = page(limit, returned, total);
+                match parsed.output {
+                    OutputMode::Human => {
+                        print_search_results(
+                            &results,
+                            OutputMode::Human,
+                            symbol_only,
+                            dead_only,
+                            semantic_only,
+                            parsed.color,
+                        );
+                        println!(
+                            "Emitted {} of {} discovery findings (global --limit {}).",
+                            returned, total, limit
+                        );
+                        println!("{}", results.universe.summary_line());
+                        println!(
+                            "accounting: total={total}, emitted={returned}, offset=0, truncated={}, has_more={}",
+                            returned < total,
+                            returned < total
+                        );
+                    }
+                    OutputMode::Json => {
+                        let mut out = search_results_to_json_value(
+                            &results,
+                            symbol_only,
+                            dead_only,
+                            semantic_only,
+                        );
+                        attach_accounting(&mut out, total, returned, Some(limit));
+                        out["page"] = page;
+                        println!("{}", serde_json::to_string_pretty(&out).unwrap());
+                    }
+                    OutputMode::Jsonl => {
+                        let mut data = search_results_to_json_value(
+                            &results,
+                            symbol_only,
+                            dead_only,
+                            semantic_only,
+                        );
+                        attach_accounting(&mut data, total, returned, Some(limit));
+                        println!(
+                            "{}",
+                            json!({
+                                "type": "search.results",
+                                "data": data,
+                                "page": page,
+                            })
+                        )
+                    }
+                }
+            } else {
+                match parsed.output {
+                    OutputMode::Human => {
+                        print_search_results(
+                            &results,
+                            OutputMode::Human,
+                            symbol_only,
+                            dead_only,
+                            semantic_only,
+                            parsed.color,
+                        );
+                        println!("{}", results.universe.summary_line());
+                        println!(
+                            "accounting: total={total}, emitted={total}, offset=0, truncated=false, has_more=false"
+                        );
+                    }
+                    OutputMode::Json => {
+                        let mut out = search_results_to_json_value(
+                            &results,
+                            symbol_only,
+                            dead_only,
+                            semantic_only,
+                        );
+                        attach_accounting(&mut out, total, total, None);
+                        println!("{}", serde_json::to_string_pretty(&out).unwrap());
+                    }
+                    OutputMode::Jsonl => {
+                        let mut data = search_results_to_json_value(
+                            &results,
+                            symbol_only,
+                            dead_only,
+                            semantic_only,
+                        );
+                        attach_accounting(&mut data, total, total, None);
+                        println!("{}", json!({"type": "search.results", "data": data}));
+                    }
+                }
+            }
         }
         SearchQueryMode::Split => {
             if parsed.search_queries.is_empty() {
@@ -802,7 +977,36 @@ fn run_search(root_list: &[PathBuf], parsed: &ParsedArgs) -> std::io::Result<()>
                 results.push((q.clone(), r));
             }
 
-            let cross_files = compute_cross_files(&per_query_files);
+            let mut cross_files = compute_cross_files(&per_query_files);
+            let total = cross_files.len()
+                + results
+                    .iter()
+                    .map(|(_, result)| result_count(result, symbol_only, dead_only, semantic_only))
+                    .sum::<usize>();
+            let mut returned = total;
+            if let Some(limit) = parsed.search_limit {
+                let mut remaining = limit;
+                cross_files.truncate(remaining);
+                for (_, queries) in &mut cross_files {
+                    queries.truncate(limit);
+                }
+                remaining = remaining.saturating_sub(cross_files.len());
+                for (_, result) in &mut results {
+                    apply_global_limit(
+                        result,
+                        &mut remaining,
+                        limit,
+                        symbol_only,
+                        dead_only,
+                        semantic_only,
+                    );
+                }
+                results.truncate(limit);
+                returned = limit.saturating_sub(remaining);
+            }
+            let page = parsed
+                .search_limit
+                .map(|limit| page(limit, returned, total));
 
             match parsed.output {
                 OutputMode::Human => {
@@ -834,15 +1038,35 @@ fn run_search(root_list: &[PathBuf], parsed: &ParsedArgs) -> std::io::Result<()>
                         );
                         println!();
                     }
+                    if let (Some(limit), Some(page)) = (parsed.search_limit, page.as_ref()) {
+                        println!(
+                            "Emitted {} of {} discovery findings (global --limit {}).",
+                            page["returned"], page["total"], limit
+                        );
+                    }
+                    println!(
+                        "{}",
+                        IndexedUniverse::from_analyses(&analyses).summary_line()
+                    );
+                    println!(
+                        "accounting: total={total}, emitted={returned}, offset=0, truncated={}, has_more={}",
+                        returned < total,
+                        returned < total
+                    );
                 }
                 OutputMode::Json => {
-                    let out = json!({
+                    let mut out = json!({
                         "type": "search_multi",
                         "mode": "split",
                         "queries": parsed.search_queries,
                         "cross_files": cross_files.iter().map(|(file, qs)| json!({"file": file, "matched_queries": qs})).collect::<Vec<_>>(),
                         "results": results.iter().map(|(_q, r)| search_results_to_json_value(r, symbol_only, dead_only, semantic_only)).collect::<Vec<_>>(),
                     });
+                    if let Some(page) = page {
+                        out["page"] = page;
+                    }
+                    out["universe"] = json!(IndexedUniverse::from_analyses(&analyses));
+                    attach_accounting(&mut out, total, returned, parsed.search_limit);
                     println!("{}", serde_json::to_string_pretty(&out).unwrap());
                 }
                 OutputMode::Jsonl => {
@@ -853,6 +1077,13 @@ fn run_search(root_list: &[PathBuf], parsed: &ParsedArgs) -> std::io::Result<()>
                             "mode": "split",
                             "queries": parsed.search_queries,
                             "cross_files": cross_files.iter().map(|(file, qs)| json!({"file": file, "matched_queries": qs})).collect::<Vec<_>>(),
+                            "page": page,
+                            "universe": IndexedUniverse::from_analyses(&analyses),
+                            "total": total,
+                            "emitted": returned,
+                            "offset": 0,
+                            "truncated": returned < total,
+                            "has_more": returned < total,
                         })
                     );
                     for (q, r) in &results {
@@ -897,6 +1128,32 @@ fn run_search(root_list: &[PathBuf], parsed: &ParsedArgs) -> std::io::Result<()>
             }
             let mut intersect_files: Vec<String> = intersect.into_iter().collect();
             intersect_files.sort();
+            let total = intersect_files.len()
+                + term_results
+                    .iter()
+                    .map(|(_, result)| result_count(result, symbol_only, dead_only, semantic_only))
+                    .sum::<usize>();
+            let mut returned = total;
+            if let Some(limit) = parsed.search_limit {
+                let mut remaining = limit;
+                intersect_files.truncate(remaining);
+                remaining = remaining.saturating_sub(intersect_files.len());
+                for (_, result) in &mut term_results {
+                    apply_global_limit(
+                        result,
+                        &mut remaining,
+                        limit,
+                        symbol_only,
+                        dead_only,
+                        semantic_only,
+                    );
+                }
+                term_results.truncate(limit);
+                returned = limit.saturating_sub(remaining);
+            }
+            let page = parsed
+                .search_limit
+                .map(|limit| page(limit, returned, total));
 
             match parsed.output {
                 OutputMode::Human => {
@@ -911,15 +1168,35 @@ fn run_search(root_list: &[PathBuf], parsed: &ParsedArgs) -> std::io::Result<()>
                         }
                         println!();
                     }
+                    if let (Some(limit), Some(page)) = (parsed.search_limit, page.as_ref()) {
+                        println!(
+                            "Emitted {} of {} discovery findings (global --limit {}).",
+                            page["returned"], page["total"], limit
+                        );
+                    }
+                    println!(
+                        "{}",
+                        IndexedUniverse::from_analyses(&analyses).summary_line()
+                    );
+                    println!(
+                        "accounting: total={total}, emitted={returned}, offset=0, truncated={}, has_more={}",
+                        returned < total,
+                        returned < total
+                    );
                 }
                 OutputMode::Json => {
-                    let out = json!({
+                    let mut out = json!({
                         "type": "search_multi",
                         "mode": "and",
                         "terms": parsed.search_queries,
                         "intersection_files": intersect_files,
                         "results": term_results.iter().map(|(_t, r)| search_results_to_json_value(r, symbol_only, dead_only, semantic_only)).collect::<Vec<_>>(),
                     });
+                    if let Some(page) = page {
+                        out["page"] = page;
+                    }
+                    out["universe"] = json!(IndexedUniverse::from_analyses(&analyses));
+                    attach_accounting(&mut out, total, returned, parsed.search_limit);
                     println!("{}", serde_json::to_string_pretty(&out).unwrap());
                 }
                 OutputMode::Jsonl => {
@@ -930,6 +1207,13 @@ fn run_search(root_list: &[PathBuf], parsed: &ParsedArgs) -> std::io::Result<()>
                             "mode": "and",
                             "terms": parsed.search_queries,
                             "intersection_files": intersect_files,
+                            "page": page,
+                            "universe": IndexedUniverse::from_analyses(&analyses),
+                            "total": total,
+                            "emitted": returned,
+                            "offset": 0,
+                            "truncated": returned < total,
+                            "has_more": returned < total,
                         })
                     );
                     for (term, r) in &term_results {

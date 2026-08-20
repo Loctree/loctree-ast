@@ -1,0 +1,13 @@
+target_repo=Loctree/loctree-lsp
+license=BUSL-1.1
+readme_src=distribution/component-readmes/lsp.md
+dependency_mode=crates.io registry
+dependency_note=Engine crates (loctree, loctree-ast, report-leptos) are consumed from crates.io at the pinned release version; no vendored sources in this mirror.
+include=loctree-lsp:loctree-lsp
+exclude=.git/
+exclude=.loctree/
+exclude=.vibecrafted/
+exclude=target/
+exclude=.DS_Store
+exclude=loctree-fail.md
+exclude=**/loctree-fail.md

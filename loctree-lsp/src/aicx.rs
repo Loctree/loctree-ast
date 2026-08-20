@@ -18,7 +18,7 @@
 //! - `kinds` filter (default = all): `decision`, `intent`, `outcome`,
 //!   `task`, `failure`. The wire shape mirrors AICX's intent kinds 1:1.
 //!
-//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by VetCoders ⓒ 2025-2026 VetCoders
+//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders ⓒ 2025-2026 Vetcoders
 
 use std::collections::HashSet;
 use std::path::PathBuf;

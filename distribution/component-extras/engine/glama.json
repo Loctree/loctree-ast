@@ -1,0 +1,33 @@
+{
+  "$schema": "https://glama.ai/mcp/schemas/server.json",
+  "maintainers": [
+    "div0-space"
+  ],
+  "name": "loctree",
+  "description": "The loctree engine and loct CLI — the AST/import-graph analyzer that loctree-mcp serves over MCP. Scans a repository once and answers structural questions from the snapshot: dependency and importer graphs, blast radius, dead exports, circular imports, duplicate surfaces, health and audit reports, and the Context Atlas. This repository is the full source workspace and also carries the loctree-mcp server source; the standalone MCP server listing is Loctree/loctree-mcp.",
+  "license": "BUSL-1.1",
+  "homepage": "https://loct.io",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Loctree/loctree"
+  },
+  "categories": [
+    "developer-tools",
+    "code-analysis"
+  ],
+  "tags": [
+    "code-analysis",
+    "static-analysis",
+    "ast",
+    "dependency-graph",
+    "impact-analysis",
+    "dead-code",
+    "cli",
+    "rust"
+  ],
+  "mcpServer": {
+    "package": "loctree-mcp",
+    "listing": "https://github.com/Loctree/loctree-mcp",
+    "note": "This repo ships the engine plus the loctree-mcp source; the MCP surface itself is listed from Loctree/loctree-mcp."
+  }
+}

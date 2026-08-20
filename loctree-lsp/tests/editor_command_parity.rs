@@ -104,3 +104,55 @@ fn lsp_emitted_loctree_commands_have_vscode_and_jetbrains_contributions() {
         "JetBrains LoctreeLspCommandRouter missing when branches: {missing_router:?}"
     );
 }
+
+#[test]
+fn editor_runtime_resolution_contract_is_kept_in_parity() {
+    if !repo_root().join("editors").is_dir() {
+        eprintln!("skipping editor runtime parity: no editors/ tree in this checkout");
+        return;
+    }
+
+    let vscode_client = fs::read_to_string(repo_root().join("editors/vscode/src/client.ts"))
+        .expect("read VS Code runtime resolver");
+    let vscode_status = fs::read_to_string(repo_root().join("editors/vscode/src/statusbar.ts"))
+        .expect("read VS Code runtime status");
+    let jetbrains_resolver = fs::read_to_string(
+        repo_root()
+            .join("editors/jetbrains/src/main/kotlin/io/loct/intellij/binary/BinaryResolver.kt"),
+    )
+    .expect("read JetBrains runtime resolver");
+    let jetbrains_status = fs::read_to_string(repo_root().join(
+        "editors/jetbrains/src/main/kotlin/io/loct/intellij/statusbar/LoctreeStatusBarWidget.kt",
+    ))
+    .expect("read JetBrains runtime status");
+    let neovim = fs::read_to_string(repo_root().join("editors/nvim/loctree.lua"))
+        .expect("read Neovim runtime resolver");
+
+    for (name, resolver) in [
+        ("VS Code", vscode_client.as_str()),
+        ("JetBrains", jetbrains_resolver.as_str()),
+        ("Neovim", neovim.as_str()),
+    ] {
+        assert!(
+            resolver.contains(".local") && resolver.contains("--version"),
+            "{name} must prefer the canonical user install and probe runtime identity"
+        );
+        assert!(
+            resolver.contains("Loctree runtime PATH shadowing:"),
+            "{name} must use the shared PATH-shadow warning contract"
+        );
+    }
+
+    for (name, status) in [
+        ("VS Code", vscode_status.as_str()),
+        ("JetBrains", jetbrains_status.as_str()),
+        ("Neovim", neovim.as_str()),
+    ] {
+        assert!(
+            status.contains("Binary:")
+                && status.contains("Identity:")
+                && status.contains("Source:"),
+            "{name} status surface must expose exact runtime provenance"
+        );
+    }
+}

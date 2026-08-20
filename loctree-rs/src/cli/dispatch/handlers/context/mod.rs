@@ -111,6 +111,17 @@ pub fn run(opts: &ContextOptions, global: &GlobalOptions) -> DispatchResult {
         write_human_html,
     );
 
+    // I1-01 plan B: when the overlay cache is missing, stale, or beyond its
+    // TTL, refresh it in a DETACHED process whose output lands in the cache
+    // for the next invocation. The render itself never waits on the
+    // producer — spawning is fire-and-forget (~1 ms) and only happens on
+    // this CLI path, never inside library composition (LSP stays pure).
+    if let Some(overlay) = pack.memory.overlay.as_ref()
+        && overlay.refresh_recommended
+    {
+        crate::aicx::overlay::spawn_detached_refresh(&snapshot_root);
+    }
+
     if opts.full && opts.markdown && !opts.json && !global.json {
         print!("{}", render_context_pack_markdown(&pack));
         if pack.risk.snapshot_health.as_deref() == Some("missing_snapshot") {
@@ -148,7 +159,13 @@ fn should_write_context_html_artifacts(opts: &ContextOptions, human_status: bool
         return false;
     }
 
-    opts.full || context_request_is_bare(opts)
+    // A bare `loct context` is the latency-sensitive session-start path
+    // (27065f7e, re-landed by I1-01). Rendering the full HTML report clones
+    // the snapshot into report-shaped structures and can add tens of seconds
+    // on a large repository. Keep that product artifact behind the existing
+    // explicit `--full` request; the lightweight Context Atlas cards are
+    // still materialized for every run.
+    opts.full
 }
 
 fn context_request_is_bare(opts: &ContextOptions) -> bool {
@@ -409,6 +426,11 @@ fn mirror_static_asset(src_dir: &Path, dst_dir: &Path, name: StaticAssetName) ->
 }
 
 fn pill_aicx_status(opts: &ContextOptions, pack: &ContextPack) -> pill::AicxRenderStatus {
+    // I1-01: the overlay cache carries its own freshness verdict — the
+    // legacy transport statuses below describe the retired budgeted path.
+    if pack.memory.overlay.is_some() {
+        return pill::AicxRenderStatus::OverlayCache;
+    }
     if !context_aicx_enabled(opts) {
         return pill::AicxRenderStatus::Disabled;
     }
@@ -449,4 +471,34 @@ fn context_aicx_enabled(opts: &ContextOptions) -> bool {
 /// Render a composed ContextPack as full Markdown, without invoking CLI dispatch.
 pub fn render_context_pack_markdown(pack: &ContextPack) -> String {
     format_context_pack_markdown(pack)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Re-landed with I1-01: the 27065f7e TTY regression contract. The bare
+    // session-start path must never synchronously render the full HTML
+    // report — that is the tens-of-seconds cliff behind the <2s budget.
+    #[test]
+    fn bare_context_never_renders_the_full_html_report_on_the_session_start_path() {
+        let opts = ContextOptions::default();
+
+        assert!(context_request_is_bare(&opts));
+        assert!(
+            !should_write_context_html_artifacts(&opts, true),
+            "a real TTY must not turn bare `loct context` into a synchronous full-report render"
+        );
+    }
+
+    #[test]
+    fn full_context_keeps_the_explicit_html_report_path() {
+        let opts = ContextOptions {
+            full: true,
+            ..ContextOptions::default()
+        };
+
+        assert!(should_write_context_html_artifacts(&opts, true));
+        assert!(!should_write_context_html_artifacts(&opts, false));
+    }
 }

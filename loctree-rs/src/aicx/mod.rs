@@ -31,6 +31,7 @@ mod inprocess;
 mod intent_source;
 pub mod intents;
 mod mcp;
+pub mod overlay;
 mod shell;
 
 use serde::{Deserialize, Serialize};
@@ -286,6 +287,19 @@ pub fn is_aicx_available() -> bool {
         }
     }
     shell::is_aicx_available()
+}
+
+/// Transport probe for card renderers (M1-01 intent card): `false` when the
+/// producer binary is unreachable, so a card can flag that its cached layer
+/// cannot converge. In test builds without explicit opt-in this reports
+/// reachable — cold-store staleness is the deterministic test path; transport
+/// staleness is a runtime-only signal and must not make unit tests spawn
+/// probe subprocesses.
+pub(crate) fn transport_reachable_for_render() -> bool {
+    if test_mode_blocks_spawn() {
+        return true;
+    }
+    is_aicx_available()
 }
 
 /// Single intent/decision/outcome/task entry extracted by `aicx intents`.

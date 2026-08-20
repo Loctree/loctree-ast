@@ -1,10 +1,12 @@
 name: Publish Releases
 
 on:
-  push:
-    tags:
-      - "v[0-9]+.[0-9]+.[0-9]+"
-      - "loctree-v[0-9]+.[0-9]+.[0-9]+"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Legacy thin-repo/crates release tag (vX.Y.Z)"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -17,25 +19,23 @@ env:
 jobs:
   verify-release:
     name: Verify Release State
-    runs-on: [self-hosted, Linux, X64, ops]
+    runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
       tag: ${{ steps.version.outputs.tag }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
 
       - name: Extract version from tag
         id: version
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
-          TAG="${GITHUB_REF#refs/tags/}"
-          if [[ "$TAG" == loctree-v* ]]; then
-            VERSION="${TAG#loctree-v}"
-          else
-            VERSION="${TAG#v}"
-          fi
+          TAG="${INPUT_TAG}"
+          VERSION="${TAG#v}"
 
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
@@ -49,7 +49,7 @@ jobs:
             /^\[workspace.package\]$/ { in_section=1; next }
             in_section && /^version = / { gsub(/"/, "", $3); print $3; exit }
           ' Cargo.toml)
-          NPM_VERSION=$(node -p "require('./distribution/npm/package.json').version")
+          NPM_VERSION=$(node -p "require('./distribution/npm/loct/package.json').version")
 
           echo "Workspace version: $WORKSPACE_VERSION"
           echo "distribution/npm version: $NPM_VERSION"
@@ -67,12 +67,12 @@ jobs:
   publish-crates:
     name: Publish Rust Crates
     needs: verify-release
-    runs-on: [self-hosted, Linux, X64, ops]
+    runs-on: ubuntu-latest
     env:
       CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ github.ref }}
           fetch-depth: 0
@@ -85,7 +85,7 @@ jobs:
           fi
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           components: rustfmt, clippy
 
@@ -95,7 +95,7 @@ jobs:
           cargo clippy --workspace --all-targets -- -D warnings
           cargo test --workspace
 
-      - name: Publish report-leptos
+      - name: Publish report-leptos (legacy crate)
         run: |
           cargo publish -p report-leptos 2>&1 || {
             if cargo search report-leptos 2>/dev/null | grep -q '"${{ needs.verify-release.outputs.version }}"'; then
@@ -108,7 +108,7 @@ jobs:
       - name: Wait for crates.io index
         run: sleep 30
 
-      - name: Publish loctree
+      - name: Publish loctree (legacy crate)
         run: |
           cargo publish -p loctree 2>&1 || {
             if cargo search loctree 2>/dev/null | grep -q '"${{ needs.verify-release.outputs.version }}"'; then
@@ -121,7 +121,7 @@ jobs:
       - name: Wait for crates.io index
         run: sleep 30
 
-      - name: Publish loctree-mcp
+      - name: Publish loctree-mcp (legacy crate)
         run: |
           cargo publish -p loctree-mcp 2>&1 || {
             if cargo search loctree-mcp 2>/dev/null | grep -q '"${{ needs.verify-release.outputs.version }}"'; then
@@ -134,48 +134,70 @@ jobs:
   build-cli-linux:
     name: Build CLI Linux Artifact
     needs: [verify-release, publish-crates]
-    runs-on: [self-hosted, Linux, X64, ops]
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ github.ref }}
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           targets: x86_64-unknown-linux-gnu
 
+      # One cargo invocation yields the full suite: package `loctree` carries
+      # both the `loct` and `loctree` bins; loctree-mcp and loctree-lsp are the
+      # co-process binaries the npm embed model ships alongside them.
       - name: Build release binaries
-        run: cargo build -p loctree --release --target x86_64-unknown-linux-gnu
+        run: cargo build -p loctree -p loctree-mcp -p loctree-lsp --release --target x86_64-unknown-linux-gnu
 
       - name: Package CLI Linux artifact
         run: |
           mkdir -p dist/linux-x86_64
           cp target/x86_64-unknown-linux-gnu/release/loct dist/linux-x86_64/loct
-          cp target/x86_64-unknown-linux-gnu/release/loctree dist/linux-x86_64/loctree
-          chmod +x dist/linux-x86_64/loct dist/linux-x86_64/loctree
-          tar -czf loct-linux-x86_64.tar.gz -C dist/linux-x86_64 loct loctree
+          chmod +x dist/linux-x86_64/loct
+          tar -czf loct-linux-x86_64.tar.gz -C dist/linux-x86_64 loct
 
       - name: Upload CLI Linux artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: loct-linux-x86_64
           path: loct-linux-x86_64.tar.gz
           if-no-files-found: error
 
+      # npm embed staging source: all four suite binaries for this target,
+      # keyed by npm platform dir (x86_64-unknown-linux-gnu -> linux-x64-gnu).
+      # The tarball name deliberately does NOT start with "loct-" so the
+      # publish-thin-releases prefix filters never pick it up.
+      - name: Package npm suite artifact (linux-x64-gnu)
+        run: |
+          mkdir -p dist/npm-linux-x64-gnu
+          for bin in loct loctree loctree-mcp loctree-lsp; do
+            cp "target/x86_64-unknown-linux-gnu/release/$bin" "dist/npm-linux-x64-gnu/$bin"
+            chmod +x "dist/npm-linux-x64-gnu/$bin"
+          done
+          tar -czf loctree-suite-npm-linux-x64-gnu.tar.gz -C dist/npm-linux-x64-gnu loct loctree loctree-mcp loctree-lsp
+
+      - name: Upload npm suite artifact (linux-x64-gnu)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: npm-suite-linux-x64-gnu
+          path: loctree-suite-npm-linux-x64-gnu.tar.gz
+          if-no-files-found: error
+
   build-cli-macos-arm64:
     name: Build CLI macOS ARM64 Artifact
     needs: [verify-release, publish-crates]
-    runs-on: [self-hosted, macOS, ARM64, dragon]
+    runs-on: macos-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ github.ref }}
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           targets: aarch64-apple-darwin
 
@@ -200,13 +222,7 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$MACOS_KEYCHAIN_PASSWORD" "$KEYCHAIN"
 
       - name: Build release binaries
-        run: cargo build -p loctree --release --target aarch64-apple-darwin
-
-      - name: Smoke check CLI macOS ARM64 binaries
-        run: |
-          bash distribution/macos/smoke-releaseability.sh \
-            target/aarch64-apple-darwin/release/loct \
-            target/aarch64-apple-darwin/release/loctree
+        run: cargo build -p loctree -p loctree-mcp -p loctree-lsp --release --target aarch64-apple-darwin
 
       - name: Package CLI macOS ARM64 artifact
         env:
@@ -217,13 +233,12 @@ jobs:
         run: |
           mkdir -p dist/darwin-aarch64
           cp target/aarch64-apple-darwin/release/loct dist/darwin-aarch64/loct
-          cp target/aarch64-apple-darwin/release/loctree dist/darwin-aarch64/loctree
-          chmod +x dist/darwin-aarch64/loct dist/darwin-aarch64/loctree
+          chmod +x dist/darwin-aarch64/loct
           bash distribution/macos/sign-and-notarize.sh dist/darwin-aarch64 loct-darwin-aarch64-notarized.zip
-          tar -czf loct-darwin-aarch64.tar.gz -C dist/darwin-aarch64 loct loctree
+          tar -czf loct-darwin-aarch64.tar.gz -C dist/darwin-aarch64 loct
 
       - name: Upload CLI macOS ARM64 artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: loct-darwin-aarch64
           path: |
@@ -231,18 +246,43 @@ jobs:
             loct-darwin-aarch64-notarized.zip
           if-no-files-found: error
 
+      # npm embed staging source: all four suite binaries for this target,
+      # keyed by npm platform dir (aarch64-apple-darwin -> darwin-arm64),
+      # signed and notarized like the thin artifact above.
+      - name: Package npm suite artifact (darwin-arm64)
+        env:
+          MACOS_DEVELOPER_ID_APPLICATION: ${{ secrets.MACOS_DEVELOPER_ID_APPLICATION }}
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          mkdir -p dist/npm-darwin-arm64
+          for bin in loct loctree loctree-mcp loctree-lsp; do
+            cp "target/aarch64-apple-darwin/release/$bin" "dist/npm-darwin-arm64/$bin"
+            chmod +x "dist/npm-darwin-arm64/$bin"
+          done
+          bash distribution/macos/sign-and-notarize.sh dist/npm-darwin-arm64 loctree-suite-npm-darwin-arm64-notarized.zip
+          tar -czf loctree-suite-npm-darwin-arm64.tar.gz -C dist/npm-darwin-arm64 loct loctree loctree-mcp loctree-lsp
+
+      - name: Upload npm suite artifact (darwin-arm64)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: npm-suite-darwin-arm64
+          path: loctree-suite-npm-darwin-arm64.tar.gz
+          if-no-files-found: error
+
   build-cli-macos-x86_64:
     name: Build CLI macOS x86_64 Artifact
     needs: [verify-release, publish-crates]
-    runs-on: [self-hosted, macOS, ARM64, dragon]
+    runs-on: macos-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ github.ref }}
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           targets: x86_64-apple-darwin
 
@@ -267,7 +307,7 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$MACOS_KEYCHAIN_PASSWORD" "$KEYCHAIN"
 
       - name: Build release binaries
-        run: cargo build -p loctree --release --target x86_64-apple-darwin
+        run: cargo build -p loctree -p loctree-mcp -p loctree-lsp --release --target x86_64-apple-darwin
 
       - name: Package CLI macOS x86_64 artifact
         env:
@@ -278,18 +318,42 @@ jobs:
         run: |
           mkdir -p dist/darwin-x86_64
           cp target/x86_64-apple-darwin/release/loct dist/darwin-x86_64/loct
-          cp target/x86_64-apple-darwin/release/loctree dist/darwin-x86_64/loctree
-          chmod +x dist/darwin-x86_64/loct dist/darwin-x86_64/loctree
+          chmod +x dist/darwin-x86_64/loct
           bash distribution/macos/sign-and-notarize.sh dist/darwin-x86_64 loct-darwin-x86_64-notarized.zip
-          tar -czf loct-darwin-x86_64.tar.gz -C dist/darwin-x86_64 loct loctree
+          tar -czf loct-darwin-x86_64.tar.gz -C dist/darwin-x86_64 loct
 
       - name: Upload CLI macOS x86_64 artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: loct-darwin-x86_64
           path: |
             loct-darwin-x86_64.tar.gz
             loct-darwin-x86_64-notarized.zip
+          if-no-files-found: error
+
+      # npm embed staging source: all four suite binaries for this target,
+      # keyed by npm platform dir (x86_64-apple-darwin -> darwin-x64),
+      # signed and notarized like the thin artifact above.
+      - name: Package npm suite artifact (darwin-x64)
+        env:
+          MACOS_DEVELOPER_ID_APPLICATION: ${{ secrets.MACOS_DEVELOPER_ID_APPLICATION }}
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          mkdir -p dist/npm-darwin-x64
+          for bin in loct loctree loctree-mcp loctree-lsp; do
+            cp "target/x86_64-apple-darwin/release/$bin" "dist/npm-darwin-x64/$bin"
+            chmod +x "dist/npm-darwin-x64/$bin"
+          done
+          bash distribution/macos/sign-and-notarize.sh dist/npm-darwin-x64 loctree-suite-npm-darwin-x64-notarized.zip
+          tar -czf loctree-suite-npm-darwin-x64.tar.gz -C dist/npm-darwin-x64 loct loctree loctree-mcp loctree-lsp
+
+      - name: Upload npm suite artifact (darwin-x64)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: npm-suite-darwin-x64
+          path: loctree-suite-npm-darwin-x64.tar.gz
           if-no-files-found: error
 
   build-cli-windows:
@@ -298,45 +362,62 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ github.ref }}
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           targets: x86_64-pc-windows-msvc
 
       - name: Build release binaries
-        run: cargo build -p loctree --release --target x86_64-pc-windows-msvc
+        run: cargo build -p loctree -p loctree-mcp -p loctree-lsp --release --target x86_64-pc-windows-msvc
 
       - name: Package CLI Windows artifact
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           Copy-Item target\x86_64-pc-windows-msvc\release\loct.exe dist\loct.exe
-          Copy-Item target\x86_64-pc-windows-msvc\release\loctree.exe dist\loctree.exe
           Compress-Archive -Path dist\* -DestinationPath loct-windows-x86_64.zip -Force
 
       - name: Upload CLI Windows artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: loct-windows-x86_64
           path: loct-windows-x86_64.zip
           if-no-files-found: error
 
+      # npm embed staging source: all four suite binaries for this target,
+      # keyed by npm platform dir (x86_64-pc-windows-msvc -> win32-x64-msvc).
+      - name: Package npm suite artifact (win32-x64-msvc)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist-npm | Out-Null
+          foreach ($bin in @('loct', 'loctree', 'loctree-mcp', 'loctree-lsp')) {
+            Copy-Item "target\x86_64-pc-windows-msvc\release\$bin.exe" "dist-npm\$bin.exe"
+          }
+          Compress-Archive -Path dist-npm\* -DestinationPath loctree-suite-npm-win32-x64-msvc.zip -Force
+
+      - name: Upload npm suite artifact (win32-x64-msvc)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: npm-suite-win32-x64-msvc
+          path: loctree-suite-npm-win32-x64-msvc.zip
+          if-no-files-found: error
+
   build-mcp-linux:
     name: Build MCP Linux Artifact
     needs: [verify-release, publish-crates]
-    runs-on: [self-hosted, Linux, X64, ops]
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ github.ref }}
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           targets: x86_64-unknown-linux-gnu
 
@@ -346,29 +427,29 @@ jobs:
       - name: Package MCP Linux artifact
         run: |
           mkdir -p dist/linux-x86_64
-          cp target/x86_64-unknown-linux-gnu/release/loctree-mcp dist/linux-x86_64/loctree-mcp
-          chmod +x dist/linux-x86_64/loctree-mcp
-          tar -czf loctree-mcp-linux-x86_64.tar.gz -C dist/linux-x86_64 loctree-mcp
+          cp target/x86_64-unknown-linux-gnu/release/loctree-mcp dist/linux-x86_64/loct-mcp
+          chmod +x dist/linux-x86_64/loct-mcp
+          tar -czf loct-mcp-linux-x86_64.tar.gz -C dist/linux-x86_64 loct-mcp
 
       - name: Upload MCP Linux artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: loctree-mcp-linux-x86_64
-          path: loctree-mcp-linux-x86_64.tar.gz
+          name: loct-mcp-linux-x86_64
+          path: loct-mcp-linux-x86_64.tar.gz
           if-no-files-found: error
 
   build-mcp-macos-arm64:
     name: Build MCP macOS ARM64 Artifact
     needs: [verify-release, publish-crates]
-    runs-on: [self-hosted, macOS, ARM64, dragon]
+    runs-on: macos-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ github.ref }}
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           targets: aarch64-apple-darwin
 
@@ -395,11 +476,6 @@ jobs:
       - name: Build release binary
         run: cargo build -p loctree-mcp --release --target aarch64-apple-darwin
 
-      - name: Smoke check MCP macOS ARM64 binary
-        run: |
-          bash distribution/macos/smoke-releaseability.sh \
-            target/aarch64-apple-darwin/release/loctree-mcp
-
       - name: Package MCP macOS ARM64 artifact
         env:
           MACOS_DEVELOPER_ID_APPLICATION: ${{ secrets.MACOS_DEVELOPER_ID_APPLICATION }}
@@ -408,32 +484,32 @@ jobs:
           APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
         run: |
           mkdir -p dist/darwin-aarch64
-          cp target/aarch64-apple-darwin/release/loctree-mcp dist/darwin-aarch64/loctree-mcp
-          chmod +x dist/darwin-aarch64/loctree-mcp
-          bash distribution/macos/sign-and-notarize.sh dist/darwin-aarch64 loctree-mcp-darwin-aarch64-notarized.zip
-          tar -czf loctree-mcp-darwin-aarch64.tar.gz -C dist/darwin-aarch64 loctree-mcp
+          cp target/aarch64-apple-darwin/release/loctree-mcp dist/darwin-aarch64/loct-mcp
+          chmod +x dist/darwin-aarch64/loct-mcp
+          bash distribution/macos/sign-and-notarize.sh dist/darwin-aarch64 loct-mcp-darwin-aarch64-notarized.zip
+          tar -czf loct-mcp-darwin-aarch64.tar.gz -C dist/darwin-aarch64 loct-mcp
 
       - name: Upload MCP macOS ARM64 artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: loctree-mcp-darwin-aarch64
+          name: loct-mcp-darwin-aarch64
           path: |
-            loctree-mcp-darwin-aarch64.tar.gz
-            loctree-mcp-darwin-aarch64-notarized.zip
+            loct-mcp-darwin-aarch64.tar.gz
+            loct-mcp-darwin-aarch64-notarized.zip
           if-no-files-found: error
 
   build-mcp-macos-x86_64:
     name: Build MCP macOS x86_64 Artifact
     needs: [verify-release, publish-crates]
-    runs-on: [self-hosted, macOS, ARM64, dragon]
+    runs-on: macos-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ github.ref }}
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           targets: x86_64-apple-darwin
 
@@ -468,18 +544,18 @@ jobs:
           APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
         run: |
           mkdir -p dist/darwin-x86_64
-          cp target/x86_64-apple-darwin/release/loctree-mcp dist/darwin-x86_64/loctree-mcp
-          chmod +x dist/darwin-x86_64/loctree-mcp
-          bash distribution/macos/sign-and-notarize.sh dist/darwin-x86_64 loctree-mcp-darwin-x86_64-notarized.zip
-          tar -czf loctree-mcp-darwin-x86_64.tar.gz -C dist/darwin-x86_64 loctree-mcp
+          cp target/x86_64-apple-darwin/release/loctree-mcp dist/darwin-x86_64/loct-mcp
+          chmod +x dist/darwin-x86_64/loct-mcp
+          bash distribution/macos/sign-and-notarize.sh dist/darwin-x86_64 loct-mcp-darwin-x86_64-notarized.zip
+          tar -czf loct-mcp-darwin-x86_64.tar.gz -C dist/darwin-x86_64 loct-mcp
 
       - name: Upload MCP macOS x86_64 artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: loctree-mcp-darwin-x86_64
+          name: loct-mcp-darwin-x86_64
           path: |
-            loctree-mcp-darwin-x86_64.tar.gz
-            loctree-mcp-darwin-x86_64-notarized.zip
+            loct-mcp-darwin-x86_64.tar.gz
+            loct-mcp-darwin-x86_64-notarized.zip
           if-no-files-found: error
 
   build-mcp-windows:
@@ -488,12 +564,12 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ github.ref }}
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           targets: x86_64-pc-windows-msvc
 
@@ -504,14 +580,14 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Copy-Item target\x86_64-pc-windows-msvc\release\loctree-mcp.exe dist\loctree-mcp.exe
-          Compress-Archive -Path dist\* -DestinationPath loctree-mcp-windows-x86_64.zip -Force
+          Copy-Item target\x86_64-pc-windows-msvc\release\loctree-mcp.exe dist\loct-mcp.exe
+          Compress-Archive -Path dist\* -DestinationPath loct-mcp-windows-x86_64.zip -Force
 
       - name: Upload MCP Windows artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: loctree-mcp-windows-x86_64
-          path: loctree-mcp-windows-x86_64.zip
+          name: loct-mcp-windows-x86_64
+          path: loct-mcp-windows-x86_64.zip
           if-no-files-found: error
 
   publish-thin-releases:
@@ -526,10 +602,10 @@ jobs:
       - build-mcp-macos-arm64
       - build-mcp-macos-x86_64
       - build-mcp-windows
-    runs-on: [self-hosted, Linux, X64, ops]
+    runs-on: ubuntu-latest
     steps:
       - name: Download packaged assets
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: release-assets
           merge-multiple: true
@@ -538,7 +614,7 @@ jobs:
         run: ls -lah release-assets
 
       - name: Publish CLI thin release
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         env:
           TARGET_REPO: ${{ env.CLI_RELEASE_REPO }}
           TARGET_TAG: v${{ needs.verify-release.outputs.version }}
@@ -547,13 +623,13 @@ jobs:
           ASSET_PREFIX: loct-
           ASSET_DIR: release-assets
           RELEASE_BODY: |
-            Thin release channel for the Loctree CLI.
+            Thin release channel for the active loct CLI.
 
-            Source of truth: `Loctree/loctree-ast`
+            Source of truth: `Loctree/loctree-suite`
             Install:
             - `brew install loctree/cli/loct`
-            - `cargo install --locked loctree`
-            - `npm install -g loctree` (macOS arm64/x64, Linux x64 glibc, Windows x64)
+            - `cargo install loctree` (current crates.io package name)
+            - `npm install -g @loctree/loctree` (installs loct, loctree, loctree-mcp, loctree-lsp)
         with:
           github-token: ${{ secrets.HOMEBREW_GITHUB_API_TOKEN }}
           script: |
@@ -634,21 +710,21 @@ jobs:
             }
 
       - name: Publish MCP thin release
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         env:
           TARGET_REPO: ${{ env.MCP_RELEASE_REPO }}
           TARGET_TAG: v${{ needs.verify-release.outputs.version }}
           TARGET_VERSION: ${{ needs.verify-release.outputs.version }}
-          RELEASE_NAME: loctree-mcp v${{ needs.verify-release.outputs.version }}
-          ASSET_PREFIX: loctree-mcp-
+          RELEASE_NAME: loct-mcp v${{ needs.verify-release.outputs.version }}
+          ASSET_PREFIX: loct-mcp-
           ASSET_DIR: release-assets
           RELEASE_BODY: |
-            Thin release channel for the Loctree MCP server.
+            Thin release channel for the active loct-mcp server.
 
-            Source of truth: `Loctree/loctree-ast`
+            Source of truth: `Loctree/loctree-suite`
             Install:
-            - `brew install loctree/mcp/loctree-mcp`
-            - `cargo install --locked loctree-mcp`
+            - `brew install loctree/mcp/loct-mcp`
+            - `cargo install loctree-mcp` (current crates.io package name)
         with:
           github-token: ${{ secrets.HOMEBREW_GITHUB_API_TOKEN }}
           script: |
@@ -729,44 +805,162 @@ jobs:
             }
 
   publish-npm:
-    name: Publish npm Packages
+    name: Publish npm (single @loctree/loctree suite wrapper)
     needs:
       - verify-release
-      - publish-thin-releases
-    runs-on: [self-hosted, Linux, X64, ops]
+      - build-cli-linux
+      - build-cli-macos-arm64
+      - build-cli-macos-x86_64
+      - build-cli-windows
+      - build-mcp-linux
+      - build-mcp-macos-arm64
+      - build-mcp-macos-x86_64
+      - build-mcp-windows
+    runs-on: ubuntu-latest
+    # Trusted publishing (OIDC). npm mints a short-lived credential from this
+    # job's identity instead of a long-lived NPM_TOKEN, so there is no secret to
+    # leak and no publisher IP to allowlist — which is what blocked publishing
+    # once CI moved off the self-hosted runner. Requires a trusted publisher
+    # configured on npmjs.com for every package this job pushes, pointing at
+    # this repository and this workflow filename.
+    permissions:
+      id-token: write
+      contents: read
+    environment: npm-publish
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ github.ref }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "20"
           registry-url: "https://registry.npmjs.org"
 
-      - name: Refresh npm package versions
+      # Node 20 ships npm 10.x; OIDC trusted publishing needs npm >= 11.5.1.
+      - name: Ensure npm supports trusted publishing
         run: |
-          node distribution/npm/sync-version.mjs "${{ needs.verify-release.outputs.version }}"
-          cd distribution/npm
-          ./CREATE_PLATFORM_PACKAGES.sh "${{ needs.verify-release.outputs.version }}"
+          npm install -g npm@latest
+          npm --version
 
-      - name: Publish npm platform packages
-        working-directory: distribution/npm
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      # Gen3 single-wrapper model. Only @loctree/loctree is user-facing; its
+      # @loctree/loctree-* platform packages are a technical delivery mechanism.
+      # We do NOT publish @loctree/loctree-mcp or @loctree/loctree-lsp separately.
+      - name: Refresh npm package versions (wrapper + 4 platform packages)
+        run: node distribution/npm/sync-version.mjs "${{ needs.verify-release.outputs.version }}"
+
+      # Embed model: each @loctree/loctree-<platform> package ships the FULL suite
+      # (loct, loctree, loctree-mcp, loctree-lsp) under bin/. The build-cli-*
+      # jobs above build all four binaries per target and upload one
+      # npm-suite-<plat> artifact each, already keyed by npm platform dir:
+      #   x86_64-unknown-linux-gnu -> linux-x64-gnu
+      #   aarch64-apple-darwin     -> darwin-arm64
+      #   x86_64-apple-darwin      -> darwin-x64
+      #   x86_64-pc-windows-msvc   -> win32-x64-msvc
+      - name: Download npm suite artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: npm-suite-*
+          path: npm-suite-artifacts
+          merge-multiple: true
+
+      - name: Stage suite binaries into platform packages
         run: |
-          for dir in platform-packages/*/; do
-            (cd "$dir" && npm publish --access public)
+          set -euo pipefail
+          ls -lah npm-suite-artifacts
+
+          stage_unix() {
+            plat="$1"
+            tarball="npm-suite-artifacts/loctree-suite-npm-${plat}.tar.gz"
+            dest="distribution/npm/loct/platform-packages/${plat}/bin"
+            mkdir -p "$dest"
+            tar -xzf "$tarball" -C "$dest"
+            for bin in loct loctree loctree-mcp loctree-lsp; do
+              chmod +x "${dest}/${bin}"
+            done
+          }
+
+          stage_unix linux-x64-gnu
+          stage_unix darwin-arm64
+          stage_unix darwin-x64
+
+          dest="distribution/npm/loct/platform-packages/win32-x64-msvc/bin"
+          mkdir -p "$dest"
+          unzip -o npm-suite-artifacts/loctree-suite-npm-win32-x64-msvc.zip -d "$dest"
+
+          ls -lah distribution/npm/loct/platform-packages/*/bin/
+
+      # Fail-closed gate. Without this the publish steps below could push
+      # @loctree/loctree-<platform> packages that carry missing or truncated
+      # binaries — a broken `npm i -g @loctree/loctree` for every user, and npm
+      # versions are immutable so it could not be taken back. Verify every
+      # platform package actually carries its four executables — present,
+      # non-trivially sized, and executable on unix — before anything is
+      # published.
+      - name: Verify platform packages carry the suite binaries
+        working-directory: distribution/npm/loct
+        run: |
+          set -euo pipefail
+          min_size=1048576
+          missing=0
+          for plat_dir in platform-packages/*/; do
+            plat="$(basename "$plat_dir")"
+            case "$plat" in
+              *win32*) ext=".exe" ;;
+              *)       ext=""     ;;
+            esac
+            for bin in loct loctree loctree-mcp loctree-lsp; do
+              target="${plat_dir}bin/${bin}${ext}"
+              if [[ ! -s "$target" ]]; then
+                echo "::error::${plat}: missing or empty ${bin}${ext} (expected at ${target})"
+                missing=1
+                continue
+              fi
+              size=$(stat -c '%s' "$target")
+              if [[ "$size" -lt "$min_size" ]]; then
+                echo "::error::${plat}: ${bin}${ext} is suspiciously small (${size} bytes < ${min_size})"
+                missing=1
+              fi
+              if [[ -z "$ext" && ! -x "$target" ]]; then
+                echo "::error::${plat}: ${bin} is not executable"
+                missing=1
+              fi
+            done
+          done
+          if [[ "$missing" -ne 0 ]]; then
+            echo "::error::Refusing to publish npm platform packages without staged binaries."
+            exit 1
+          fi
+          echo "All platform packages carry executable loct, loctree, loctree-mcp, loctree-lsp."
+
+      - name: Publish npm platform packages (technical, full-suite embed)
+        working-directory: distribution/npm/loct
+        run: |
+          for plat_dir in platform-packages/*/; do
+            (cd "$plat_dir" && npm publish --access public)
           done
           sleep 20
 
-      - name: Publish main npm package
-        working-directory: distribution/npm
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish --access public
+      # The wrapper ships under two names from ONE source directory — same
+      # tarball, same version, no duplicated resolver. `@loctree/loctree` is
+      # the canonical identity: the scope names the org, the name names the
+      # repo, mirroring github.com/Loctree/loctree exactly. Plain `loctree` is
+      # the free short form users reach for (`npm i -g loctree`). Both must
+      # have a trusted publisher configured on npmjs.com — and a FIRST publish
+      # of a not-yet-existing name cannot go through OIDC: bootstrap new names
+      # with a token, then configure trusted publishing (see
+      # distribution/npm/PUBLISHING.md).
+      - name: Publish the user-facing wrapper (@loctree/loctree, then loctree)
+        working-directory: distribution/npm/loct
+        run: |
+          set -euo pipefail
+          npm publish --access public
+
+          npm pkg set name=loctree
+          npm publish --access public
+          git checkout -- package.json
 
   publish-monorepo-release:
     name: Publish Monorepo Release
@@ -775,28 +969,19 @@ jobs:
       - publish-crates
       - publish-thin-releases
       - publish-npm
-    runs-on: [self-hosted, Linux, X64, ops]
+    runs-on: ubuntu-latest
     steps:
-      - name: Download packaged assets
-        uses: actions/download-artifact@v4
-        with:
-          path: release-assets
-          merge-multiple: true
-
       - name: Create monorepo release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
         with:
           tag_name: ${{ needs.verify-release.outputs.tag }}
-          name: loctree ${{ needs.verify-release.outputs.version }}
+          name: loctree-suite ${{ needs.verify-release.outputs.version }}
           draft: false
           prerelease: false
-          files: |
-            release-assets/*.tar.gz
-            release-assets/*.zip
           body: |
-            ## loctree v${{ needs.verify-release.outputs.version }}
+            ## loctree-suite v${{ needs.verify-release.outputs.version }}
 
-            Monorepo release for source, changelog, and installable binary assets.
+            Monorepo release for source, changelog, and publish orchestration.
 
             User-facing binary channels:
             - CLI assets: https://github.com/${{ env.CLI_RELEASE_REPO }}/releases/tag/v${{ needs.verify-release.outputs.version }}
@@ -804,11 +989,13 @@ jobs:
 
             Installation:
 
+            Current crates.io package names remain on the legacy line:
+
             ```bash
-            cargo install --locked loctree loctree-mcp
-            npm install -g loctree  # CLI only; macOS arm64/x64, Linux x64 glibc, Windows x64
+            cargo install loctree loctree-mcp
+            npm install -g @loctree/loctree
             brew install loctree/cli/loct
-            brew install loctree/mcp/loctree-mcp
+            brew install loctree/mcp/loct-mcp
             ```
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

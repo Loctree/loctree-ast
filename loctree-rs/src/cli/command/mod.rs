@@ -10,7 +10,7 @@
 //! - `help_texts`: Static help text constants
 //! - `parsed`: ParsedCommand result type
 //!
-//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents ⓒ 2025-2026 Loctree Team
+//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI
 
 mod global;
 mod help;
@@ -23,15 +23,16 @@ mod types;
 pub use crate::pack::ContextOptions;
 pub use global::GlobalOptions;
 pub use options::{
-    AuditOptions, AutoOptions, BodyOptions, CacheAction, CacheOptions, CommandsOptions,
-    CoverageOptions, CrowdOptions, CyclesOptions, DeadOptions, DiffOptions, DistOptions,
-    DoctorOptions, EnvTruthOptions, EventsOptions, FindOptions, FindingsOptions, FocusOptions,
-    FollowOptions, HealthOptions, HelpOptions, HotspotsOptions, ImpactCommandOptions, InfoOptions,
-    InsightsOptions, JqQueryOptions, LayoutmapOptions, LintOptions, ManifestsOptions,
-    OccurrencesOptions, PipelinesOptions, PlanOptions, PrismOptions, PruneOldArtifactsOptions,
-    QueryKind, QueryOptions, RepoViewOptions, ReportOptions, RoutesOptions, ScanOptions,
-    SliceOptions, SniffOptions, SuppressOptions, SuppressionsOptions, TagmapOptions, TraceOptions,
-    TreeOptions, TwinsOptions, WatchMode, WatchOptions, ZombieOptions,
+    AnchorsOptions, AtlasOptions, AuditOptions, AutoOptions, BodyOptions, CacheAction,
+    CacheOptions, CommandsOptions, CoverageOptions, CrowdOptions, CyclesOptions, DeadOptions,
+    DiffOptions, DistOptions, DoctorOptions, EnvTruthOptions, EventsOptions, FindOptions,
+    FindingsOptions, FocusOptions, FollowOptions, HealthOptions, HelpOptions, HotspotsOptions,
+    ImpactCommandOptions, InfoOptions, InsightsOptions, InventoryOptions, JqQueryOptions,
+    LayoutmapOptions, LintOptions, ManifestsOptions, OccurrencesOptions, PipelinesOptions,
+    PlanOptions, PrismOptions, PruneOldArtifactsOptions, QueryKind, QueryOptions, RepoViewOptions,
+    ReportOptions, RoutesOptions, ScanOptions, SliceOptions, SnapshotPathOptions, SniffOptions,
+    SuppressOptions, SuppressionsOptions, TagmapOptions, TraceOptions, TreeOptions, TwinsOptions,
+    WatchMode, WatchOptions, ZombieOptions,
 };
 pub use parsed::ParsedCommand;
 pub use types::Command;

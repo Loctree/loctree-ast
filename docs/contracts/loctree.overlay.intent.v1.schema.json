@@ -1,0 +1,309 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.loctree.dev/loctree.overlay.intent.v1.schema.json",
+  "title": "loctree.overlay.intent.v1",
+  "description": "Frozen contract for the AICX intent overlay consumed by loctree (substrate-makieta v4, C0-01). Carries THREE identities per Doctrine 6: evidence_event_id (stable source event, parser derivation v1), intent_id (persistent cluster identity, minted once by A1, persisted in the aicx side-index, NEVER recomputed from content) and content_hash (revision of the current distillate + relations; changes on merge/append). Relations target intent_id and must carry evidence (evidence_ref + confidence + observed_at). store_revision is produced EXCLUSIVELY by the C6 canonical store and describes the source corpus; overlay_revision is produced by A1 and changes with store_revision, snapshot/anchor catalog, or attribution/dedup/model/threshold versions. An attribution-only change MUST NOT mutate store_revision. Low-confidence attribution candidates live in unresolved_attributions (payload-only, Doctrine 7) and never reach the force-fed card.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "repo_id",
+    "snapshot_commit",
+    "anchor_catalog_revision",
+    "store_revision",
+    "overlay_revision",
+    "producer_version",
+    "entries"
+  ],
+  "properties": {
+    "schema": {
+      "description": "Optional self-describing schema tag for dispatch by consumers (I1-01, M1-01).",
+      "const": "loctree.overlay.intent.v1"
+    },
+    "repo_id": {
+      "description": "Repository identity, org/repo or bare slug. Never an absolute filesystem path.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)?$",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "snapshot_commit": {
+      "description": "Loctree snapshot commit the overlay was aligned against (7-40 hex).",
+      "type": "string",
+      "pattern": "^[0-9a-f]{7,40}$"
+    },
+    "anchor_catalog_revision": {
+      "description": "Revision of the loctree.anchors.v1 catalog (emitted by L0-01) used for attribution.",
+      "$ref": "#/$defs/anchorCatalogRevision"
+    },
+    "store_revision": {
+      "description": "C6 canonical-store revision: sr1:<sha256-hex>. Hash over scoped corpus membership + canonical source content + extraction schema + parser producer version. Attribution versions can never alter it.",
+      "$ref": "#/$defs/storeRevision"
+    },
+    "overlay_revision": {
+      "description": "A1 overlay revision: ov1:<sha256-hex>. Hash over repo_id + store_revision + snapshot_commit + anchor_catalog_revision + overlay schema + attribution/dedup versions + model + threshold.",
+      "$ref": "#/$defs/overlayRevision"
+    },
+    "producer_version": {
+      "description": "Version of the overlay producer (A1) that emitted this document.",
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+([-+][0-9A-Za-z.+-]+)?$"
+    },
+    "entries": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/entry" }
+    },
+    "unresolved_attributions": {
+      "description": "Attribution candidates below the confidence threshold. Payload-only (Doctrine 7): they must never be rendered into a force-fed card.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/unresolvedAttribution" }
+    }
+  },
+  "$defs": {
+    "intentId": {
+      "description": "Persistent intent-cluster identity. Minted once at cluster creation, persisted in the aicx side-index, NEVER recomputed from content (Doctrine 6). Relations target this id, never content_hash.",
+      "type": "string",
+      "pattern": "^int1:[0-9a-f]{16,64}$"
+    },
+    "contentHash": {
+      "description": "Revision hash of the canonical serialization of the current distillate (thesis + relations + refs). Changes on merge/append; never used as a relation target.",
+      "type": "string",
+      "pattern": "^ch1:[0-9a-f]{64}$"
+    },
+    "evidenceEventId": {
+      "description": "Stable source-event identity, parser derivation v1 (frozen in aicx docs/PARSER_NORMATIVE_CONTRACT.md §5): ev1:<agent>:<session_id>:<locator>:<unit_kind>:<hex16(sha256(raw_unit_bytes))>. Tokens reject '/', '\\' and control characters, so an absolute filesystem path can never be an identity. Locator is a zero-padded physical ordinal or an adapter logical locator (step:<stepId>:<kind>, msg:<index>, artifact:<name>).",
+      "type": "string",
+      "pattern": "^ev1:[a-z][a-z0-9_-]{0,31}:[A-Za-z0-9._-]{1,128}:[A-Za-z0-9._:-]{1,512}:[A-Za-z0-9._-]{1,64}:[0-9a-f]{16}$"
+    },
+    "opaqueRef": {
+      "description": "Opaque store reference: chunk:<id> or session:<id>[#<span>]. Zero absolute paths by construction (path separators are outside the allowed alphabet).",
+      "type": "string",
+      "pattern": "^(chunk:[A-Za-z0-9._-]{1,128}|session:[A-Za-z0-9._-]{1,128}(#[A-Za-z0-9._:-]{1,128})?)$"
+    },
+    "evidenceRef": {
+      "description": "Proof pointer for a relation or attribution: an opaque store ref or a stable evidence event id.",
+      "anyOf": [
+        { "$ref": "#/$defs/opaqueRef" },
+        { "$ref": "#/$defs/evidenceEventId" }
+      ]
+    },
+    "timestamp": {
+      "description": "ISO-8601 timestamp with explicit offset (Z or +hh:mm).",
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$"
+    },
+    "confidence": {
+      "description": "Attribution/relation confidence in [0, 1]. The delivery threshold (A1-01 gate) is configuration, not schema; abstention below threshold goes to unresolved_attributions.",
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "anchorId": {
+      "description": "Stable anchor identity from the loctree.anchors.v1 catalog (emitted by L0-01).",
+      "type": "string",
+      "pattern": "^anc1:[0-9a-f]{16,64}$"
+    },
+    "signatureHash": {
+      "description": "Symbol signature hash from the anchor catalog.",
+      "type": "string",
+      "pattern": "^sig1:[0-9a-f]{16,64}$"
+    },
+    "storeRevision": {
+      "type": "string",
+      "pattern": "^sr1:[0-9a-f]{64}$"
+    },
+    "overlayRevision": {
+      "type": "string",
+      "pattern": "^ov1:[0-9a-f]{64}$"
+    },
+    "anchorCatalogRevision": {
+      "type": "string",
+      "pattern": "^acr1:[0-9a-f]{64}$"
+    },
+    "relativePath": {
+      "description": "Repo-relative normalized path. Never absolute, never escaping the repo root.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._@+-][A-Za-z0-9._@+/-]*$",
+      "allOf": [
+        { "not": { "pattern": "(^|/)\\.\\.(/|$)" } }
+      ],
+      "maxLength": 512
+    },
+    "language": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_+#-]{0,31}$"
+    },
+    "qualifiedSymbol": {
+      "description": "Fully qualified symbol in the target language's canonical notation.",
+      "type": "string",
+      "pattern": "^[^/\\\\]{1,512}$"
+    },
+    "target": {
+      "description": "What the intent is about. kind:repo carries no path (repo-wide decision); kind:path requires a normalized relative path; kind:symbol requires qualified_symbol + language.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": {
+            "kind": { "const": "repo" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "path"],
+          "properties": {
+            "kind": { "const": "path" },
+            "path": { "$ref": "#/$defs/relativePath" },
+            "language": { "$ref": "#/$defs/language" },
+            "anchor_id": { "$ref": "#/$defs/anchorId" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "qualified_symbol", "language"],
+          "properties": {
+            "kind": { "const": "symbol" },
+            "path": { "$ref": "#/$defs/relativePath" },
+            "language": { "$ref": "#/$defs/language" },
+            "qualified_symbol": { "$ref": "#/$defs/qualifiedSymbol" },
+            "signature_hash": { "$ref": "#/$defs/signatureHash" },
+            "anchor_id": { "$ref": "#/$defs/anchorId" }
+          }
+        }
+      ]
+    },
+    "relation": {
+      "description": "Evidence-backed relation between intent clusters. Targets intent_id (persistent), NEVER content_hash (revision). A relation without evidence_ref/confidence/observed_at is invalid: 'evidence-backed supersede' must have somewhere to record its proof.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "intent_id", "evidence_ref", "confidence", "observed_at"],
+      "properties": {
+        "kind": {
+          "enum": ["supersedes", "superseded_by", "disputes", "refines"]
+        },
+        "intent_id": { "$ref": "#/$defs/intentId" },
+        "evidence_ref": { "$ref": "#/$defs/evidenceRef" },
+        "confidence": { "$ref": "#/$defs/confidence" },
+        "observed_at": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "attribution": {
+      "description": "Typed join between a decision and a code anchor. EVIDENCE file:line proves a mention; the RELATION is carried here and its precision is gated (A1-01 golden set).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["target_anchor", "relation", "match_kind", "confidence", "evidence_ref"],
+      "properties": {
+        "target_anchor": { "$ref": "#/$defs/anchorId" },
+        "relation": {
+          "enum": ["implements", "constrains", "rejects", "explains", "contradicts"]
+        },
+        "match_kind": {
+          "description": "How the match was established (open vocabulary owned by the A1-01 resolver, e.g. qualified_symbol, path_prefix, lexical, semantic, operator).",
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{0,63}$"
+        },
+        "confidence": { "$ref": "#/$defs/confidence" },
+        "evidence_ref": { "$ref": "#/$defs/evidenceRef" }
+      }
+    },
+    "unresolvedAttribution": {
+      "description": "Attribution candidate below the confidence threshold. Payload-only: never force-fed (Doctrine 7).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["intent_id", "target_anchor", "relation", "match_kind", "confidence", "evidence_ref"],
+      "properties": {
+        "intent_id": { "$ref": "#/$defs/intentId" },
+        "target_anchor": { "$ref": "#/$defs/anchorId" },
+        "relation": {
+          "enum": ["implements", "constrains", "rejects", "explains", "contradicts"]
+        },
+        "match_kind": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{0,63}$"
+        },
+        "confidence": { "$ref": "#/$defs/confidence" },
+        "evidence_ref": { "$ref": "#/$defs/evidenceRef" },
+        "reason": {
+          "type": "string",
+          "maxLength": 400
+        }
+      }
+    },
+    "ref": {
+      "description": "Evidence reference pair: the stable source event (evidence_event_id, born in the aicx parser) plus the opaque store ref used for descent-to-proof. Zero absolute paths.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["evidence_event_id", "ref"],
+      "properties": {
+        "evidence_event_id": { "$ref": "#/$defs/evidenceEventId" },
+        "ref": { "$ref": "#/$defs/opaqueRef" }
+      }
+    },
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "intent_id",
+        "content_hash",
+        "target",
+        "thesis",
+        "status",
+        "authority",
+        "verification_status",
+        "valid_from",
+        "refs"
+      ],
+      "properties": {
+        "intent_id": { "$ref": "#/$defs/intentId" },
+        "content_hash": { "$ref": "#/$defs/contentHash" },
+        "target": { "$ref": "#/$defs/target" },
+        "thesis": {
+          "description": "Declarative distillate, one fact, max 200 characters.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "status": {
+          "description": "Lifecycle marker. Rendered as ✓ (current), ⊘ (superseded), ✗ (disputed/anti-recommendation) in atlas cards.",
+          "enum": ["current", "superseded", "disputed"]
+        },
+        "authority": {
+          "enum": ["operator_confirmed", "agent_derived", "inferred"]
+        },
+        "verification_status": {
+          "description": "Evidence marker, SEPARATE from lifecycle (spec v4): [V] verified, [U] unverified, [R] refuted. 'refuted' is incompatible with status 'current' (cross-validation below).",
+          "enum": ["verified", "unverified", "refuted"]
+        },
+        "valid_from": { "$ref": "#/$defs/timestamp" },
+        "valid_to": {
+          "anyOf": [
+            { "$ref": "#/$defs/timestamp" },
+            { "type": "null" }
+          ]
+        },
+        "relations": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/relation" }
+        },
+        "attributions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/attribution" }
+        },
+        "refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/ref" }
+        }
+      },
+      "if": {
+        "properties": { "verification_status": { "const": "refuted" } },
+        "required": ["verification_status"]
+      },
+      "then": {
+        "properties": { "status": { "enum": ["superseded", "disputed"] } }
+      }
+    }
+  }
+}

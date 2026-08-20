@@ -41,7 +41,7 @@ name = "precheck"
 classifier = "PublicEntrypoint"
 runtime_role = "PublicEntrypoint"
 language = "makefile"
-reasoning = "VetCoders convention: pre-push gate target."
+reasoning = "Vetcoders convention: quick explicit validation target."
 
 [[idiom]]
 name = "build"

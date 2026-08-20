@@ -1,0 +1,26 @@
+[
+  {
+    "id": "canary-types-central",
+    "thesis": "DECISION: loctree-rs/src/types.rs is the single centralized hub (82 importers) because it is the LoctreeDerived authority root. Edits here have the widest blast radius. Chosen deliberately for structural integrity. Superseded: none. Evidence: core-map + structural hubs + domain_owners manifest.",
+    "kind": "decision",
+    "date": "2026-05"
+  },
+  {
+    "id": "canary-no-core-touch",
+    "thesis": "ANTI-RECOMMENDATION (⊘): In substrate/eval work, do not edit or propose changes to loctree-rs/src/{atlas.rs,pack.rs,overlay.rs} or context generation. Those are core territory. Fixture/eval surfaces live only under tools/forcefeed-probe and tools/makieta-eval. Decision frozen by operator baton.",
+    "kind": "anti-rec",
+    "date": "2026-07"
+  },
+  {
+    "id": "canary-intent-overlay-purpose",
+    "thesis": "INTENT: The AICX intent overlay (I1-01) in the makieta supplies decision, intent, outcome, task entries from the canonical corpus on top of structural cards. It enables recall of forming decisions and supersedes. Without it (pre-makieta), agent has only static cards and is prone to false assumptions.",
+    "kind": "intent",
+    "date": "2026-07"
+  },
+  {
+    "id": "canary-dense-cards",
+    "thesis": "DECISION (M1-01): Atlas cards are dense 1-fact-per-line markdown (L1-01) with machine-provable FactSet coverage via receipt + mutation test. This replaced sparse v3 cards. 00-core always first. Memory trail (03) carries live AICX when present.",
+    "kind": "decision",
+    "date": "2026-06"
+  }
+]

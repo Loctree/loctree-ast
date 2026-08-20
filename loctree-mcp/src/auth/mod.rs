@@ -3,9 +3,14 @@
 //! Ported from `rust-memex` and adapted for the loctree MCP SaaS surface.
 //! Each token is hashed with argon2id at rest. Plaintext is shown once on
 //! creation and never persisted.
+//!
+//! Live callers: [`crate::http::auth`] (bearer middleware + startup posture)
+//! and [`cli`] (`loctree-mcp token …`). The module-wide `allow(dead_code)`
+//! that used to sit here is gone on purpose — it was what let this entire
+//! subsystem stay unreachable from the HTTP transport without a single
+//! warning.
 
-#![allow(dead_code)]
-
+pub(crate) mod cli;
 mod scope;
 
 use std::fmt;
@@ -424,11 +429,6 @@ impl AuthManager {
         }
     }
 
-    /// Create an AuthManager using loctree-mcp's default token store path.
-    pub(crate) fn with_default_store(legacy_token: Option<String>) -> Self {
-        Self::new(TokenStoreFile::default_store_path(), legacy_token)
-    }
-
     /// Initialize: load tokens from disk and warn about legacy token usage.
     pub(crate) async fn init(&self) -> Result<()> {
         self.token_store.load().await?;
@@ -626,8 +626,10 @@ mod tests {
             TokenStoreFile::default_store_path(),
             "~/.rmcp-servers/loctree-mcp/tokens.json"
         );
+        // An empty `--token-store` falls back to the same default, which is the
+        // path `http::auth::resolve` and `auth::cli::run` both take.
         assert_eq!(
-            AuthManager::with_default_store(None).token_store.store_path,
+            AuthManager::new(String::new(), None).token_store.store_path,
             "~/.rmcp-servers/loctree-mcp/tokens.json"
         );
     }

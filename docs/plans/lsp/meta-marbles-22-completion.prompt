@@ -1,0 +1,1131 @@
+<<<<<<< Updated upstream
+---
+name: meta-marbles-22-completion
+description: Self-contained iteration scoreboard for /vc-marbles + /vc-polarize. Closes the 22-task LSP roadmap to frontier SoTA grade and opens the SaaS-transformation wave. No prior plan knowledge required to operate this artifact.
+type: marbles_iteration_prompt
+project: Loctree/loctree-suite
+related_repos:
+  - Loctree/loctree-suite (this prompt's home)
+  - Loctree/loctree-com (SaaS surface, recipient of Plans 23-24 artifacts)
+branch: feat/lsp/codelens-live-analyzer
+commit_at_audit: c25615cf
+audit_artifacts:
+  - ~/.vibecrafted/artifacts/Loctree/loctree-suite/2026_0510/reports/audit-22/22_task_audit_report.md
+  - ~/.vibecrafted/artifacts/Loctree/loctree-suite/2026_0510/reports/audit-22/22_task_audit_reconciliation.md
+  - ~/.vibecrafted/artifacts/Loctree/loctree-suite/2026_0510/reports/audit-22/22_task_requirements_matrix.jsonl
+created: 2026-05-10
+last_updated: 2026-05-10T23:55:00Z
+status: active
+verdict_at_open: PARTIAL (master) · P0=0 P1=2 P2=6 P3=7 · 22 plans audited
+exit_condition: all P1 + P2 closed · prism gate passed · /vc-polarize handoff emitted
+---
+
+# meta-marbles-22-completion.prompt
+
+> **Self-contained.** This artifact carries every fact you need to operate
+> against it. You do NOT need to read the 22 original LSP plan files. Each
+> task below embeds: current broken state, target state, file:line refs,
+> test contract, negative check, and round-trip e2e shape. If you find
+> yourself wanting to "go read Plan NN" — STOP. Re-read this prompt; the
+> answer is here. If it's not, the prompt has a gap and you should fix the
+> prompt before the task.
+>
+> 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI
+
+---
+
+## 1. Operator brief — read once
+
+### What this is
+
+A frozen iteration scoreboard. The Loctree LSP roadmap (22 plans, ~6 weeks of
+work) closed with a master audit on 2026-05-10. The audit verdict is
+**PARTIAL** — most surfaces landed, but 2 P1 wire breaks and a cluster of
+P2/P3 polish gaps remain. This prompt is the *single source of truth* for
+closing those gaps to frontier SoTA grade.
+
+This prompt also doubles as the **entry artifact for the SaaS-transformation
+wave**: Plans 23 (wire HTML layer into real analyzer flow) and 24 (polish HTML
+artifacts to loctree-com styling discipline) are first-class tasks here, not
+deferred references. The LSP close-out and SaaS-wave-opening are the same
+turn for the team that picks this up.
+
+### Why a meta-marbles prompt instead of new plan files
+
+Two reasons:
+
+1. The remaining gaps are heterogeneous — some are 10-line fixes, some are
+   200-line cross-component refactors. Plan files assume single-feature scope;
+   marbles iteration handles a cluster naturally with explicit "1-2 per run"
+   discipline.
+2. `/vc-marbles` + `/vc-polarize` are the right ecosystem for *truth
+   convergence* after a roadmap has landed. They impose:
+   - **isolation** (each marble run starts fresh, no carryover assumptions)
+   - **adversarial verification** (find the most dangerous present falsehood,
+     fix it, prove it's gone)
+   - **prism gate** at closure (polarize chooses one axis when multiple
+     framings smear)
+
+### What success looks like
+
+When this prompt is fully checked-off:
+
+- All P1 + P2 tasks marked `[x]` with commit SHA + test name + 1-2 sentence
+  comment.
+- A fresh reconciliation audit (analog of the 2026-05-10 one) returns
+  `PASS_WITH_GAPS` or `PASS` (not `PARTIAL`).
+- `/vc-polarize` is dispatched with the prism framings in §7. Polarize emits
+  a DoU/release handoff identifying which of Loctree's competing truths
+  (agent-engine vs SaaS product vs Cloud Sync platform) the team commits to
+  as primary.
+- The next prompt (`meta-marbles-saas-handoff.prompt`) opens with the
+  polarize verdict baked in, and Plans 23-24's deliverables become the wave
+  1 input.
+
+### What this is NOT
+
+- It is not a backlog. Tasks are scoped to the audit + the SaaS-wave entry;
+  unbounded "things we could do" go to a separate brainstorm.
+- It is not optional. If you skip a P1 task, you commit a known wire break
+  to a public release. P1 = "the product visibly does not work for the most
+  common consumer of this surface."
+- It is not opinion. Every task cites file:line evidence. If you disagree
+  with the verdict, **reproduce the negative check first**, then update this
+  prompt.
+
+---
+
+## 2. Repo state (frozen reference) — read once
+
+### Loctree-suite (this repo)
+
+| Field | Value |
+|---|---|
+| Local path | `/Users/maciejgad/vc-workspace/Loctree/loctree-suite` |
+| Branch | `feat/lsp/codelens-live-analyzer` |
+| Commit at audit close | `c25615cf` ("Add combined release-bundles workflow, include LSP") |
+| Workspace shape | Cargo workspace with 7 crates |
+| Tracked file count | 351 |
+| Snapshot edge count | 586 |
+| Test suite count | ~1700 tests across crates |
+| Master Makefile | `make precheck` / `make test` / `make check` / `make fmt` |
+| Workspace clippy | `cargo clippy --workspace --all-targets -- -D warnings` |
+
+### Crates (touch these, not phantom ones)
+
+| Crate | Path | Role |
+|---|---|---|
+| `loctree` | `loctree-rs/` | Static analyzer + CLI binary (`loct`). The engine. |
+| `loctree-lsp` | `loctree-lsp/` | LSP server daemon. Where 18 of 22 plans landed. |
+| `loctree-mcp` | `loctree-mcp/` | MCP server (stdio + streamable-http). |
+| `loctree-ast` | `loctree-ast/` | Tree-sitter substrate (Plan 16 stage 1 — TS/JS/TSX only). |
+| `report-leptos` | `reports/` | Leptos SSR renderer for HTML reports. Plan 23/24 target. |
+| `loctree-mcp-stdio` | (sub of mcp) | stdio wrapper for MCP. |
+
+### Editor clients (audit Plan 04b touched this)
+
+| Client | Path | Status |
+|---|---|---|
+| VS Code extension | `editors/vscode/package.json` + `editors/vscode/src/extension.ts` | Registers 13 commands. **MISSING `loctree.openAtlasCard`** — see task 04b. |
+| Neovim setup | `editors/nvim/loctree.lua` | LSP-only config; no command registration. |
+
+### Key surface files (referenced by tasks below)
+
+- `loctree-lsp/src/backend.rs` — Backend struct, capability JSON, handler dispatch (executeCommand at 1276-1298, scan watcher at 749-887, routed_snapshot at 286-300).
+- `loctree-lsp/src/actions/atlas_card.rs` — codeAction emitter (`card_for_diagnostic_code` at line 43, `OPEN_ATLAS_CARD_COMMAND` at line 21).
+- `loctree-lsp/src/diagnostics/{twins,dead,cycles}.rs` — diagnostic emitters (twins emits `"twin-export"` at lines 91, 176).
+- `loctree-lsp/src/diff.rs` — diff handler (DiffSession, since markers at lines 101-134, 186-203, 228-230).
+- `loctree-lsp/src/aicx.rs` — AICX request handler (AicxParams at lines 47-68).
+- `loctree-lsp/src/semantic.rs` — semantic handler (paginate use at lines 290-322; unit tests at 342-393).
+- `loctree-lsp/src/find.rs` — find handler (`symbol_id` field at lines 57-67; mode/lang at 123-341).
+- `loctree-lsp/src/slice.rs` — slice handler (file/deps/consumers at lines 16-59).
+- `loctree-lsp/src/follow.rs` — follow handler (stubs at lines 169; partition at 40-71).
+- `loctree-lsp/src/watcher.rs` — fs watcher (ScanProgress at lines 28-31; phases at line 26).
+- `loctree-lsp/src/workspaces.rs` — multi-workspace discovery (snapshot.json gate at 168-183).
+- `loctree-lsp/src/live_ast.rs` — live AST store (apply_change at 373-456; symbols at 560-1005).
+- `loctree-lsp/src/ast_query.rs` — astQuery request (capability at 301-312; compute_with_live at 109-160).
+- `loctree-lsp/src/cursor.rs` + `protocol.rs` — pagination wrapper (Paginated<T> at protocol.rs:35-47).
+- `loctree-rs/src/types.rs` — shared types (ExportSymbol at 434-441; SymbolIdV1/V2 at 468-583).
+- `loctree-rs/src/analyzer/html.rs` — HTML report renderer (`load_atlas_info` at 24-44).
+- `loctree-rs/src/analyzer/scan.rs` — scan dispatch (ts_dispatch_js at 223-433).
+- `loctree-rs/src/cli/dispatch/handlers/context/atlas.rs` — atlas dir resolver (atlas_dir_for_project at 89-91).
+- `loctree-rs/src/cli/parser/context_commands.rs` — CLI parser (`--scope` at 114-120).
+- `loctree-rs/src/context_scope.rs` — scope DSL (selectors at 12, 137-310).
+- `editors/vscode/package.json` — VS Code extension manifest (commands array at lines 29-46, 50-119).
+
+### Test files (touch these for round-trips)
+
+- `loctree-lsp/tests/atlas_card_action.rs` — Plan 04 tests (8 tests).
+- `loctree-lsp/tests/diff_request.rs` + `loctree-lsp/src/diff.rs:344-478` — Plan 11 tests.
+- `loctree-lsp/tests/aicx_request.rs` — Plan 08 tests (pure-function, 8 tests).
+- `loctree-lsp/tests/semantic_request.rs` — Plan 14 tests.
+- `loctree-lsp/tests/find_request.rs` — Plan 07 tests.
+- `loctree-lsp/tests/slice_request.rs` — Plan 05 tests.
+- `loctree-lsp/tests/follow_request.rs` — Plan 15 tests.
+- `loctree-lsp/tests/cursor_smoke.rs` — Plan 12 tests.
+- `loctree-lsp/tests/multi_workspace.rs` — Plan 13 tests.
+- `loctree-lsp/tests/live_ast.rs` + `symbol_granularity.rs` — Plans 17/18 tests.
+- `loctree-lsp/tests/ast_query.rs` + fixtures under `tests/fixtures/ast_query/` — Plan 20 tests.
+
+### loctree-com (sibling SaaS repo — relevant for Plans 23 + 24)
+
+| Field | Value |
+|---|---|
+| Local path | `/Users/maciejgad/vc-workspace/Loctree/loctree-com` |
+| Stack | Leptos 0.8 SSR + WASM hydrate, Axum backend, Polar.sh billing |
+| Brand | `loctree.com` primary; `loct.io` install/share alias |
+| Tiers | Coder $9 · Orchestrator $29 · Teams $19.90/seat · Cloud Sync $4.90/seat add-on |
+| Polar.sh integration | Plans 01-11 shipped under `docs/licensing/polar-sh/` (org bootstrap → checkout → webhook dispatcher → tier gating → cloud pricing surface) |
+| Design system source of truth | `loctree-com/docs/design-system.md` + 5 CSS files (`styles/tokens.css` + `fonts.css` + `main.css` + `blog.css` + `docs.css`) |
+| Brand voice source | `loctree-com/docs/BRAND.md` |
+| Anti-aesthetic gates | No pure black `#000`. No gradient soup. No glow/blur. No glass-morphism. No CRT scanlines. No animated entrance / scroll-jack. Editorial-tech print feel only. |
+| Surface colors | `--ink` `#0e0e0e` (bg) · `--ink2` `#161616` (alt) · `--ink3` `#1e1e1e` (cards) · `--bone` `#f5f1e7` (text) · `--bone-dim` `rgba(245,241,231,0.86)` · `--teal`/`--amber` (accents) |
+| Typography | serif display + sans body + monospace UI labels (variable WOFF2 self-hosted) |
+
+---
+
+## 3. Reconciled audit verdict (frozen) — read once
+
+A two-auditor parallel-truth run completed 2026-05-10. The reconciled verdict
+overrides any single-auditor verdict.
+
+### Master verdict
+
+**PARTIAL** — most landed; 2 P1 wire breaks block the "22 plans complete"
+claim. Acceptable for internal dogfooding; not acceptable for public release.
+
+### Tally (post-reconciliation)
+
+| Bucket | Count | Plan IDs |
+|---|---:|---|
+| PASS | 8 | 01, 02, 06, 09, 13, 15, 21 (post-backfill), 22 |
+| PASS_WITH_GAPS | 10 | 03, 05, 07, 08, 10, 11, 12 (internal/downstream PARTIAL), 14, 18, 20 |
+| PARTIAL | 1 | **04** (P1 — server twin-export emit/consume mismatch + client command not registered) |
+| STAGE_PASS | 2 | 16 (Stage 1 substrate), 19 (Stage 1 extractors) — Stage 2 explicitly deferred by design |
+| STAGE_PASS_WITH_GAPS | 1 | 17 (Stage 2 v2 incremental; R05 extractor-driven slice deferred to Plan 19) |
+| FAIL | 0 | — |
+| UNVERIFIED | 0 | — |
+
+### Severity counts
+
+| Tier | Count | Definition |
+|---|---:|---|
+| P0 | 0 | Catastrophic — breaks consumer at first use |
+| P1 | **2** | Wire break — common consumer cannot complete the round-trip |
+| P2 | 6 | Functional gap — degraded behavior or unbounded surface |
+| P3 | 7 | Documentation / test density / minor cosmetic |
+
+### The 10 cross-task patterns (context, not tasks)
+
+1. **Emit-side vs consume-side string-literal mismatch.** Plan 04 server (twin-export emit ≠ mapping) + Plan 11 (`since_marker` emit ≠ since input).
+2. **Frontmatter test-count claims vs reality.** Plan 14 claims 7 unit tests in `semantic.rs`, actual 3.
+3. **Infrastructure deferred downstream adoption.** Plan 12 cursor wrap consumed only by Plan 14; 5/7/11/15 still emit unwrapped.
+4. **Capability advertises surface that params struct doesn't carry.** Plan 18 advertises `symbol_id_version` on `loctree/aicx` but `AicxParams` has only string `target`.
+5. **Forward-drift capability upgrades (positive).** Plan 20's `liveDocumentCache: true` (Plan 17 wired live cache) vs plan body's `false` — implementer saw further than spec.
+6. **Stub-honesty pattern enforcement varies.** Plan 15 uses typed `unsupported(...)` envelopes (good); Plan 04 has aspirational mapping codes never emitted (anti-pattern).
+7. **Test fixtures assert mapped-but-unproduced inputs.** Plan 04 tests use `"exact-twin"` (mapping accepts; diagnostics never emit).
+8. **Plan 21 had no plan file** — backfilled in audit close-out session (CLOSED).
+9. **Stub counters / dead enum variants in notifications.** Plan 10 `files_processed:0` hardcoded, `Composing` variant dead.
+10. **LSP audits cannot stop at server scope.** Codex's parallel-truth catch on Plan 04 client-side proved this — future audits must `grep` server-advertised commands against editor client manifests.
+
+---
+
+## 4. /vc-marbles discipline — read every run
+
+> *"Lepiej zrobić jedno do końca niż pięć niedopieszczonych."*
+
+### The contract — every marbles run
+
+1. **Pick 1-2 unchecked tasks** from §6 (Tier 1 first; only descend to Tier 2+ when Tier 1 is empty). NOT five. Quality > breadth.
+2. **Re-read this file fresh.** Earlier runs may have flipped tasks to `[x]`. Do not trust memory.
+3. **Re-grep the touched code.** Other agents may have shifted line numbers (Living Tree — see §5).
+4. **Implement to frontier SoTA grade:**
+   - Code change addresses the root cause, not a symptom.
+   - **e2e round-trip test** — test asserts the exact contract being closed.
+   - **Negative check** — grep / capability inspection / unit assertion proves the old behavior is gone. Cite the falsifier.
+   - `cargo clippy --workspace --all-targets -- -D warnings` clean.
+   - `cargo test -p <crate> <test_name>` clean.
+5. **Mark `[x]` with 1-2 sentence comment** under the task naming: commit SHA + test name + falsifier evidence. Do not rewrite the task description.
+6. **One commit per task.** Format: `[<agent>/marbles-22] feat(<crate>): <task summary>`. Body bullets the deltas. Co-Authored-By trailer is the kanonical signature (no `noreply@anthropic.com`).
+7. **Report after run:** `.vibecrafted/reports/marbles/2026_MMDD/meta-marbles-22-NN.md` (NN = iteration counter starting 01). Two paragraphs max: what landed, what next agent should look at.
+
+### Rule of taste
+
+If a task feels rushed, **skip it**. If the operator wanted breadth over depth, surface that scope question *before* implementation. Post-hoc "I respected the scope" is alibi, not discipline (kronika 2026-04-17 doctrine).
+
+---
+
+## 5. Living Tree etiquette
+
+Parallel agents (Claude, Codex, Gemini) may be editing this repo concurrently
+in the same checkout. Do not assume your in-memory view of files is current.
+
+- **Read before edit, every time.** Even if you "just read it" 30 seconds ago.
+- **Append-only fields on shared structs.** Don't delete other agents' commits.
+- **Commit per task, not per run.** Atomic, named, recoverable.
+- **Do NOT push during a marbles run** unless explicitly instructed. Commit yes; push by operator decision.
+- **Race tolerance:** if `git commit --only` races with a parallel commit and your message lands under someone else's envelope (kronika 2026-04-17 incident), do not amend. Document in the marble report; the code lands either way.
+
+---
+
+## 6. Per-task gates — read every task
+
+Before marking `[x]`, every gate must pass:
+
+| Gate | How |
+|---|---|
+| Build green | `cargo check --workspace` |
+| Clippy green | `cargo clippy --workspace --all-targets -- -D warnings` |
+| Test green | `cargo test -p <crate> <test_name>` (cite the exact test name) |
+| Negative check | grep / capability blob / inspection proves bug is provably absent |
+| Round-trip e2e | the test drives the wire shape end-to-end where the gap was wire-shape |
+| Non-goal respected | the fix does not silently add other surface |
+
+If any gate flickers, **revert and re-think**. Frontier SoTA = a future auditor reading the test cannot construct a falsifier inside the touched module. If the test can be silently broken while the implementation regresses, the test is too weak.
+
+---
+
+## 7. /vc-polarize prism framings — closure step
+
+When all P1 + P2 tasks are `[x]`, dispatch `/vc-polarize` with this prism task array (smear-detection input):
+
+```jsonc
+{
+  "tool": "prism",
+  "task": [
+    "loctree is an LSP daemon serving AI agents (Cursor, Claude Code, Codex CLI) as the primary consumer",
+    "loctree is a SaaS analysis product serving human teams reviewing repos via loctree.com cloud surface",
+    "loctree is a Cloud Sync platform for multi-machine Vetcoders teams sharing AICX corpora + reports",
+    "loctree is a CLI tool for solo operators running local static analysis with optional HTML export",
+    "loctree is a tree-sitter substrate that future-licenses its parser stack to downstream tools"
+  ]
+}
+```
+
+### Expected output
+
+`loctree.prism.v1` JSON scoring conceptual smear across the 5 framings. If smear is high (multiple framings score competing-true), `/vc-polarize` chooses one primary axis and emits:
+
+- DoU (Definition of Undone) handoff identifying surfaces that need polarizing or pruning.
+- Release-handoff manifest: what's primary, what's parallel surface, what's deprecated-but-still-running.
+- Next-prompt seed: `meta-marbles-saas-handoff.prompt` opens with the polarize verdict baked in.
+
+### When to skip prism / polarize
+
+- If only Tier 1 + Tier 5 (SaaS) are closed and Tier 2-4 remain: the LSP roadmap is not closed; polarize prematurely smears the closure signal. Close Tier 2 first.
+- If smear is naturally low (operator already pre-decided primary axis): note the decision in the next-prompt seed and skip prism.
+
+---
+
+## 8. Tasks — pick 1-2 per run
+
+### Tier 1 — LSP wire breaks (P1) — top priority
+
+#### Task 04a · P1 · Server-side twin-export mapping alignment
+
+- [x] **Status:** completed · commit `85a5ad00` · test `cargo test -p loctree-lsp production_twin_export_diagnostic_routes_to_open_atlas_card_command`
+
+  Verified 2026-05-10 by codex: current `card_for_diagnostic_code` maps the production `"twin-export"` code to `01-structural-map.md`, and `loctree-lsp/tests/atlas_card_action.rs::production_twin_export_diagnostic_routes_to_open_atlas_card_command` proves production-string -> mapping -> `loctree.openAtlasCard`. Falsifier: `rg -n "twin-export" loctree-lsp/src/actions/atlas_card.rs loctree-lsp/tests/atlas_card_action.rs` returns both the mapping arm and the production-string test; `cargo check --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test -p loctree-lsp --test atlas_card_action`, and Semgrep on the touched LSP/editor files passed.
+
+**What's broken:** The diagnostics module emits the string `"twin-export"` as
+the diagnostic code for twin-family findings. The codeAction emitter accepts
+mapping codes `"twin"`, `"exact-twin"`, `"exact_twin"`, `"same-language-twin"`
+— but not `"twin-export"`. Tests pass because they construct fixtures with
+the codes the mapping accepts; in production no twin diagnostic produces
+those codes. Result: the most common live twin diagnostic silently never
+yields an atlas-card codeAction.
+
+**Where (file:line evidence):**
+- Emit site: `loctree-lsp/src/diagnostics/twins.rs:91,176` — produces `"twin-export"`.
+- Consume site: `loctree-lsp/src/actions/atlas_card.rs:43` — `card_for_diagnostic_code` accepts the four codes above, never `"twin-export"`.
+- Test asserting the wrong path: `loctree-lsp/tests/atlas_card_action.rs::twin_diagnostic_routes_to_structural_map` uses `"exact-twin"` (mapping accepts; diagnostics never emit).
+
+**Target state:** `card_for_diagnostic_code` accepts `"twin-export"` (and the existing four). The diagnostics module either keeps emitting `"twin-export"` (preferred — already shipped) or aligns to a canonical code.
+
+**Test contract (must assert):**
+- Build a fixture twin diagnostic with `code = "twin-export"` (the production string).
+- Drive `atlas_card_action` against it.
+- Assert exactly one `CodeAction` is returned with `command.command == "loctree.openAtlasCard"`.
+- Add the test to `loctree-lsp/tests/atlas_card_action.rs`.
+
+**Negative check (must prove):**
+- Before fix: `grep -n "twin-export" loctree-lsp/src/actions/atlas_card.rs` is empty.
+- After fix: the same grep returns the mapping arm.
+- The new test fails on the pre-fix code, passes on the post-fix code.
+
+**Round-trip e2e:** Plan 04a is server-internal — there is no client surface
+to drive. Round-trip is the test above (production-string → mapping → codeAction).
+
+**Complexity:** S (small — single mapping arm + 1 test).
+
+**Dependencies:** None. Independent of 04b but conceptually paired.
+
+---
+
+#### Task 04b · P1 · VS Code client `loctree.openAtlasCard` registration
+
+- [x] **Status:** completed · commit `c7955a6d` · test `npm run compile` (extension has no Jest / VS Code test scaffold)
+
+  Verified 2026-05-10 by codex: `editors/vscode/package.json` registers `onCommand:loctree.openAtlasCard` and contributes the command, while `editors/vscode/src/extension.ts` sends the LSP executeCommand request, reads `{ok:true, card_path}`, and opens the returned card via `workspace.openTextDocument` + `window.showTextDocument`. Falsifier: `rg -n "loctree.openAtlasCard" editors/vscode/package.json editors/vscode/src/extension.ts` returns both manifest and handler sites; `npm run compile`, `cargo check --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, and Semgrep on the touched LSP/editor files passed.
+
+**What's broken:** The LSP server advertises `loctree.openAtlasCard` as a
+supported command (`execute_command_provider.commands`) and dispatches the
+command via `Backend::execute_command`. The VS Code extension at
+`editors/vscode/package.json` registers 13 commands —
+`loctree.refresh`, `loctree.openReport`, `loctree.showHealth`,
+`loctree.analyzeImpact`, `loctree.findConsumers`, `loctree.showSlice`,
+`loctree.showCycleDetails`, `loctree.navigateToFile`, `loctree.ignoreCycle`,
+`loctree.showCycles`, `loctree.analyzeCycle`, `loctree.checkDeadExports`,
+`loctree.findImporters` — and **does NOT** include `loctree.openAtlasCard`.
+
+Result: the server-emitted codeAction (from task 04a once that lands, or
+from any existing twin/dead/cycle diagnostic) has no client handler. VS Code
+silently ignores the action. No atlas card ever opens from a codeAction in
+production today.
+
+**Where (file:line evidence):**
+- Server advertises: `loctree-lsp/src/backend.rs:122-125` (`execute_command_provider.commands = [OPEN_ATLAS_CARD_COMMAND]`).
+- Server dispatches: `loctree-lsp/src/backend.rs:1276-1298` (`Backend::execute_command` validates args via `validate_open_atlas_card_args`, returns `{ok:true, card_path}` or `invalid_params`).
+- Command constant: `loctree-lsp/src/actions/atlas_card.rs:21` (`OPEN_ATLAS_CARD_COMMAND = "loctree.openAtlasCard"`).
+- Client absent: `editors/vscode/package.json` lines 33-46 (activationEvents) and 50-119 (commands array) — neither contains `loctree.openAtlasCard`.
+
+**Target state:** VS Code extension registers `loctree.openAtlasCard` in both `activationEvents` (`onCommand:loctree.openAtlasCard`) and `contributes.commands`, and the extension handler in `editors/vscode/src/extension.ts` invokes `workspace.openTextDocument(card_path)` + `window.showTextDocument()` when the command fires.
+
+**Test contract (must assert):**
+- A unit test for the extension handler (TypeScript / Jest if the existing extension tests are Jest-style; or VS Code Extension Test Runner) that:
+  - Mocks the LSP `executeCommand` response with `{ok: true, card_path: "/tmp/test-card.md"}`.
+  - Invokes the registered command.
+  - Asserts `vscode.workspace.openTextDocument` was called with the right URI.
+- If the VS Code extension has no existing test scaffold, an automated test is out of scope for this task — fall back to a manual smoke documented in the marble report (open fixture repo, click twin codeAction, confirm card opens). Manual smoke acceptable for v1.
+
+**Negative check (must prove):**
+- Before fix: `grep -n "loctree.openAtlasCard" editors/vscode/package.json editors/vscode/src/extension.ts` is empty.
+- After fix: both files contain the registration / handler.
+
+**Round-trip e2e:** Open the loctree-suite repo in VS Code with the extension installed. Trigger a twin / dead / cycle diagnostic (e.g., by introducing a duplicate export). Confirm the codeAction lightbulb shows "Open atlas card." Click it. Confirm the corresponding `.loctree/context-atlas/<card>.md` opens in a new editor tab.
+
+**Complexity:** M (medium — TypeScript handler + manifest update + smoke).
+
+**Dependencies:** None (works independently of 04a; the server already dispatches the command for dead/cycle codes even before 04a lands).
+
+---
+
+### Tier 2 — LSP functional polish (P2)
+
+#### Task 11 · P2 · `since_marker` round-trip closure on `loctree/diff`
+
+- [x] **Status:** completed · commit `38917704` · test `cargo test -p loctree-lsp since_marker_round_trips_as_cached_snapshot_baseline`
+
+  Verified 2026-05-11 by codex: `Backend::diff` now accepts returned `snapshot:` markers via `DiffSession::snapshot_for_marker`, and `loctree-lsp/tests/diff_request.rs::since_marker_round_trips_as_cached_snapshot_baseline` proves emit-marker -> consume-marker -> cached-baseline diff. Falsifier: `rg -n "marker\\.starts_with\\(\"snapshot:\"\\)|snapshot_for_marker|since_marker_round_trips_as_cached_snapshot_baseline" loctree-lsp/src/backend.rs loctree-lsp/src/diff.rs loctree-lsp/tests/diff_request.rs` returns the consume arm, resolver, and round-trip test; `cargo check --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, and the targeted test passed.
+
+**What's broken:** The `loctree/diff` handler returns a `since_marker` field
+in successful responses (e.g., `since_marker: "snapshot:abc123"`). The plan's
+acceptance text claims "caller can pin via explicit param." But the handler
+only accepts `since` values from the set
+`{"epoch", "lastScan", "lastQuery", <git-rev>}` — replaying the returned
+`since_marker` as `since` hits the `other =>` branch and returns
+`unsupported_since`. Pinning via the marker is impossible in v1.
+
+**Where:**
+- Handler accept logic: `loctree-lsp/src/backend.rs:466-471` (returns `unsupported_since` for unrecognized `since`).
+- Marker generation: `loctree-lsp/src/diff.rs::snapshot_marker` (sketch — verify exact line).
+- DiffSession state: `loctree-lsp/src/diff.rs:101-134`.
+
+**Target state:** The returned `since_marker` is a valid `since` input. Either:
+- Accept marker strings prefixed `snapshot:` and resolve to the cached Snapshot pointer.
+- OR rewrite plan acceptance text and emit a typed `marker_pin_unsupported` for explicit caller awareness (deferral, not silent).
+
+Preferred: accept the marker (closes the contract).
+
+**Test contract (must assert):**
+- Extend `loctree-lsp/tests/diff_request.rs` with a round-trip test:
+  - Call `loctree/diff` with `since: "epoch"`, capture `response.since_marker`.
+  - Add a file to the workspace, trigger a watcher rescan.
+  - Call `loctree/diff` with `since: <captured_marker>`.
+  - Assert the second response contains the added file in `files_added` and no error.
+
+**Negative check (must prove):**
+- Before fix: the round-trip test fails because the second call returns `unsupported_since`.
+- After fix: the test passes.
+
+**Round-trip e2e:** the test above IS the e2e — emit marker → consume marker.
+
+**Complexity:** M.
+
+**Dependencies:** Plan 10 watcher's `rotate_last_scan` already populates `DiffSession.last_scan` (verified by audit). No new dependency.
+
+---
+
+#### Task 18 · P2 · Typed `symbol_id` field on `AicxParams`
+
+- [x] **Status:** completed · commits `b81d6544` + `cafd3adc` · test `cargo test -p loctree-lsp symbol_id_round_trips_through_compute_response`
+
+  Verified 2026-05-11 by codex: `AicxParams` now exposes `symbol_id: Option<SymbolIdV1>`, `AicxResponse` echoes it with `symbol_id_version`, and `loctree-lsp/tests/aicx_request.rs::symbol_id_round_trips_through_compute_response` proves the typed symbol anchor survives the request -> compute -> response path. Falsifier: `rg -n "pub symbol_id: Option<SymbolIdV1>|symbol_id_round_trips_through_compute_response|params_schema_exposes_typed_symbol_id|symbol_id_version" loctree-lsp/src/aicx.rs loctree-lsp/tests/aicx_request.rs loctree-lsp/src/backend.rs` returns the param field, response field, schema test, round-trip test, and capability metadata; `cargo check --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, and the targeted test passed.
+
+**What's broken:** `loctree/aicx` capability JSON advertises
+`symbol_id_version` at `backend.rs:167-170` (via `request_capability_with`).
+But the `AicxParams` struct uses `target: Option<String>` for the symbol
+scope's target identifier — no typed `symbol_id: Option<SymbolIdV1>` field.
+`loctree/find` is wired end-to-end with the typed field; aicx is capability-
+metadata-only. Capability surface and params shape diverge.
+
+**Where:**
+- AicxParams: `loctree-lsp/src/aicx.rs:47-68` — only has `scope/target/kinds/hours/limit/project`.
+- Find equivalent: `loctree-lsp/src/find.rs:57-67` — has typed `symbol_id: Option<SymbolIdV1>` with serde default.
+- Capability site: `loctree-lsp/src/backend.rs:167-170` — `request_capability_with(schema, symbol_id_version)`.
+- SymbolIdV1 type: `loctree-rs/src/types.rs:468-512`.
+
+**Target state:** Either:
+- Add `symbol_id: Option<SymbolIdV1>` to `AicxParams` with `#[serde(default, skip_serializing_if = "Option::is_none")]`, plumb through `compute()`, return echoed `symbol_id` in `AicxResponse`. (Preferred — closes the surface inconsistency.)
+- OR remove `symbol_id_version` from the aicx capability metadata. (Less preferred — loses the version-pin discoverability that find already provides.)
+
+**Test contract (must assert):**
+- Extend `loctree-lsp/tests/aicx_request.rs` with a test that:
+  - Constructs `AicxParams { scope: "symbol", target: Some("some_fn"), symbol_id: Some(SymbolIdV1::from_parts(...)), ..default }`.
+  - Drives `Backend::aicx` (or its pure-function `compute`).
+  - Asserts the response references the symbol_id back to the caller (e.g., echoed in metadata).
+
+**Negative check (must prove):**
+- Before fix: `grep "symbol_id" loctree-lsp/src/aicx.rs` shows no struct field.
+- After fix: the field exists, the test passes.
+- Capability JSON `symbol_id_version` agrees with params struct shape (no surface drift).
+
+**Round-trip e2e:** test as above.
+
+**Complexity:** S-M.
+
+**Dependencies:** SymbolIdV1 type already exists (Plan 18 v2 landed). Plan 19 cold-scan extractor wiring is a separate cross-stage gap (see Tier 4).
+
+---
+
+#### Task 12-into-05 · P2 · Retroactive cursor wrap on `loctree/slice`
+
+- [ ] **Status:** open
+
+**What's broken:** Plan 12 shipped `Paginated<T>` + `CursorState` (URL-safe
+base64 no-pad encoding, snapshot_drifted retry, default chunk 50 / max 500).
+Only Plan 14 (semantic.project) consumes the wrapper. Plan 05 (`loctree/slice`)
+returns full `consumers` and `deps` lists unwrapped — for a hub file with
+100+ consumers, the JSON-RPC payload can be tens of KB. Pointer-only contract
+is honored (each entry is 4 small fields), but volume is unbounded.
+
+**Where:**
+- Plan 12 wrapper: `loctree-lsp/src/protocol.rs:35-95` (`Paginated<T>`, `paginate()`).
+- Plan 12 cursor: `loctree-lsp/src/cursor.rs:19-58`.
+- Slice handler: `loctree-lsp/src/backend.rs:1044-1075`.
+- Slice response shape: `loctree-lsp/src/slice.rs:47-59` (`SliceResponse { core, deps, consumers, total_files, total_loc }`).
+- Slice tests: `loctree-lsp/tests/slice_request.rs`.
+
+**Target state:** Wrap `consumers` and `deps` in `Paginated<Vec<SliceFileEntry>>` when total > chunk_size. Single-page response for small fixtures still emits a flat envelope with `next_cursor: null`.
+
+**Test contract (must assert):**
+- Extend `loctree-lsp/tests/slice_request.rs` with:
+  - Fixture: 80 consumer files on a single core file.
+  - Call slice with `chunk_size: 30`.
+  - Walk all chunks via cursor.
+  - Assert cursor invariants (URL-safe, base64, snapshot_id matches).
+  - Assert `next_cursor` is null on the final chunk.
+  - Assert small-fixture (< chunk_size) returns single page with `next_cursor: null`.
+
+**Negative check:**
+- Before fix: existing slice tests pass with unwrapped response.
+- After fix: existing tests assert `Paginated` envelope on multi-consumer fixtures; small-fixture path preserved.
+
+**Round-trip e2e:** walk all chunks of a 100-consumer file; concatenate `data` arrays; assert total equals the unwrapped count.
+
+**Complexity:** M.
+
+**Dependencies:** Plan 12 wrapper already implemented and clean (internal PASS).
+
+---
+
+#### Task 12-into-07 · P2 · Retroactive cursor wrap on `loctree/find`
+
+- [ ] **Status:** open
+
+**Same shape as 12-into-05, applied to find.**
+
+**Where:**
+- Find handler: `loctree-lsp/src/backend.rs:981-1001`.
+- Find response: `loctree-lsp/src/find.rs:90-100`.
+- Find tests: `loctree-lsp/tests/find_request.rs`.
+
+**Target state:** `FindResponse.symbol_matches`, `param_matches`, `semantic_matches`, `cross_matches` wrapped in `Paginated<T>` when total > chunk_size.
+
+**Test contract:** Fixture with 200+ symbol matches; chunk_size=50; walk all chunks; assert URL-safe cursor.
+
+**Complexity:** M.
+
+**Dependencies:** Plan 12 wrapper.
+
+---
+
+#### Task 12-into-11 · P2 · Retroactive cursor wrap on `loctree/diff`
+
+- [ ] **Status:** open
+
+**Same shape, applied to diff's edges/symbols arrays.**
+
+**Where:**
+- Diff handler: `loctree-lsp/src/backend.rs:433-483`.
+- Diff response: `loctree-lsp/src/diff.rs` (DiffResponse with `edges_added`, `edges_removed`, `symbols_added`, `symbols_removed`).
+
+**Target state:** Each of the 4 delta arrays wrapped when total > chunk_size.
+
+**Test contract:** Fixture with 200 edge deltas across single scan rotation; walk all chunks.
+
+**Complexity:** M.
+
+**Dependencies:** Plan 12 wrapper + Plan 10 watcher (already wired).
+
+---
+
+#### Task 12-into-15 · P2 · Retroactive cursor wrap on `loctree/follow`
+
+- [ ] **Status:** open
+
+**Same shape, applied to follow's items.**
+
+**Where:**
+- Follow handler: `loctree-lsp/src/backend.rs:950-971`.
+- Follow response: `loctree-lsp/src/follow.rs:90-107`.
+
+**Target state:** `FollowResponse.items` wrapped when total > chunk_size, especially for `scope=all` (which packs 7 sub-scopes).
+
+**Test contract:** Synthetic snapshot with 100+ cycles/dead/twins/hotspots; walk all chunks.
+
+**Complexity:** M.
+
+**Dependencies:** Plan 12 wrapper.
+
+---
+
+#### Task 10 · P2 · Watcher progress counter wiring or pruning
+
+- [x] **Status:** completed · commit `86b6cbc3` · test `cargo test -p loctree-lsp --test watcher_smoke`
+
+  Verified 2026-05-11 by codex: watcher rescans now return `ScanStats`, emit a counted `composing` notification after the scan builds, and emit counted `done` instead of the old zero-only done payload. Falsifier: `rg -n "ScanProgress::with_counts|ScanPhase::Composing" loctree-lsp/src/backend.rs loctree-lsp/src/watcher.rs loctree-lsp/tests/watcher_smoke.rs` returns the production emit sites and counted payload tests; `cargo check --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test -p loctree-lsp --test watcher_smoke`, and Semgrep on the touched LSP files passed.
+
+**What's broken:** `ScanProgress` notification body always emits
+`files_processed: 0` and `total_files: 0`; `eta_seconds` always `None`.
+`ScanPhase::Composing` variant exists in the enum but is never matched in
+`start_watcher` (only `Scanning`, `Done`, `Failed`). Notification structurally
+honored, semantically degraded — operators see "Scanning..." with no progress
+on huge repos.
+
+**Where:**
+- ScanProgress struct: `loctree-lsp/src/watcher.rs:28-31` (sketch — verify exact line).
+- Phase enum: `loctree-lsp/src/watcher.rs:26` area.
+- start_watcher emit sites: `loctree-lsp/src/backend.rs:817, 832, 870, 877`.
+
+**Target state:** Either:
+- Wire real `files_processed` / `total_files` through `run_scan` (preferred — emits real progress operators can see).
+- OR remove the dead fields + `Composing` variant.
+
+Preferred: wire real counters. Operator-visible progress is a P2-worth surface.
+
+**Test contract:** Trigger watcher on a 50-file fixture; assert at least one notification arrives with `files_processed > 0` and `total_files > 0`.
+
+**Negative check:** before fix, all `files_processed` in test assertions are 0; after fix, at least one is > 0.
+
+**Round-trip e2e:** spawn LSP server, drive `notify::watch` event, capture `loctree/scanProgress` notifications, assert progressive counts.
+
+**Complexity:** M-L.
+
+**Dependencies:** Plan 10 watcher + LSP-stdio test harness (does not currently exist in this crate per audit). May need a minimal harness OR scope to unit-level assertion only.
+
+---
+
+#### Task 07-combo · P2 · `dead_only && mode=and` combination + extensionless `lang`
+
+- [ ] **Status:** open
+
+**What's broken:** `loctree/find` filter logic:
+1. `dead_only=true && mode=and` combination is unwired in tests. The pipeline runs `dead_only` prune first (line 217-220) then `and` zeroing (line 222-232); net effect: `cross_matches` survives `dead_only` but is preserved through `and`. No test asserts this.
+2. `lang` filter is a path suffix match (`path.ends_with(".rs")`). Files without extensions (e.g., shebang-only TS scripts, executable Python without `.py`) are silently filtered out.
+
+**Where:**
+- Find filter pipeline: `loctree-lsp/src/find.rs:222-260, 271-310`.
+- Lang filter: `loctree-lsp/src/find.rs:328-341`.
+- Tests: `loctree-lsp/tests/find_request.rs`.
+
+**Target state:** (a) add combo test; (b) route `lang` filter through analyzer's `language_from_path` helper which handles shebangs / heuristics.
+
+**Test contract:**
+- New test: `dead_only_and_mode_and_combination` — fixture with mixed dead/live exports; assert cross-matches preserved through both filters.
+- New test: `lang_filter_handles_extensionless_files` — fixture with shebang-only TS file; assert it survives `lang: "ts"` filter.
+
+**Complexity:** S-M.
+
+**Dependencies:** None.
+
+---
+
+### Tier 3 — Test density / documentation (P3)
+
+#### Task 14 · P3 · Frontmatter test count + authority-label round-trip
+
+- [ ] **Status:** open
+
+**What's broken:** Plan 14 frontmatter claims "7 unit tests in `semantic.rs`";
+actual is 3. Plus no test asserts that `AuthorityLabel::RepoVerified` survives
+the LSP wire round-trip (type system guarantees the field exists; nothing
+asserts the value).
+
+**Where:**
+- `semantic.rs` unit tests: `loctree-lsp/src/semantic.rs:342-393` (3 tests).
+- Frontmatter claim: `docs/plans/lsp/14-loctree-semantic-request.md` frontmatter.
+
+**Target state:** Either correct the frontmatter (drop the overclaim to "3 unit tests") OR add 4 missing tests + the authority round-trip test.
+
+Preferred: add the 4 tests including the authority round-trip. This closes both the count gap and the field-value coverage gap.
+
+**Test contract:**
+- 4 new tests in `loctree-lsp/src/semantic.rs::tests`:
+  - `idiom_tag_authority_repo_verified_round_trips`
+  - `dispatch_edge_authority_aicx_agent_round_trips`
+  - `env_contract_authority_semantic_guess_round_trips`
+  - `tauri_command_kinds_filter_drops_when_unrequested`
+
+**Complexity:** S.
+
+**Dependencies:** None.
+
+---
+
+#### Task 08 · P3 · Wire-name reconcile + live aicx smoke
+
+- [ ] **Status:** open
+
+**What's broken:** Plan 08 body says response carries `scope_keywords_used: [String]`. Code emits `skip_reason: Option<String>` instead — a diagnostic projection from `compose_memory_slice`. Functional intent similar; wire contract different. Plus all aicx tests are pure-function (no live `aicx` binary smoke).
+
+**Where:**
+- Response shape: `loctree-lsp/src/aicx.rs:180-242`.
+- Tests: `loctree-lsp/tests/aicx_request.rs` (8 pure-function tests).
+
+**Target state:** (a) Reconcile in plan body and/or extend response with both fields under feature gate; (b) add a smoke test that drives a real `aicx` binary (`LOCT_AICX_BINARY` env) end-to-end through `Backend::aicx`.
+
+**Test contract:**
+- Smoke test: if `LOCT_AICX_BINARY` env is set, spawn aicx, call `Backend::aicx`, assert non-empty memory entries returned.
+- If env not set, skip with explicit message (not silent ignore).
+
+**Complexity:** M.
+
+**Dependencies:** A working `aicx` binary on PATH.
+
+---
+
+#### Task 13 · P3 · `has_snapshot: false` fixture follow-through
+
+- [ ] **Status:** open
+
+**What's broken:** Test fixture `fake_monorepo()` writes `b"{}"` into `.loctree/snapshot.json`. Discovery treats this as a valid sub-project marker (file exists); `Snapshot::load` fails on parse (it's not a valid Snapshot). Handler logs failure and leaves `has_snapshot: false`. **No test asserts the resulting `WorkspaceInfo.has_snapshot = false` for that mock data.**
+
+**Where:**
+- Fixture: `loctree-lsp/tests/multi_workspace.rs::fake_monorepo`.
+- Discovery: `loctree-lsp/src/workspaces.rs:126-194`.
+
+**Target state:** Add assertion that for the mock `b"{}"` snapshot, the discovered `WorkspaceInfo.has_snapshot` is `false` (or skip / surface the parse error).
+
+**Complexity:** S.
+
+**Dependencies:** None.
+
+---
+
+### Tier 4 — Cross-task evidence upgrades
+
+#### Task 19-R19.5 · MEDIUM → STRONG · `CallEntry` re-export verification
+
+- [ ] **Status:** open
+
+**What's broken:** Audit-22 marked Plan 19 R19.5 (CallEntry re-export in `loctree::types`) at MEDIUM evidence — A6 trusted plan body claim + Plan 20 successfully compiling, but did not grep `loctree-rs/src/types.rs` for the `pub use` line.
+
+**Where:** `loctree-rs/src/types.rs` or `loctree-rs/src/lib.rs`.
+
+**Target state:** Confirm `pub use ... CallEntry ...` exists. If absent, add it (Plan 19 incomplete on this sub-criterion). Update audit JSONL to STRONG.
+
+**Test contract:** `grep -n "CallEntry" loctree-rs/src/types.rs loctree-rs/src/lib.rs` returns at least one `pub use` line.
+
+**Complexity:** XS (10 minute task; pure verification).
+
+---
+
+#### Task 16-R05 · MEDIUM → STRONG · OXC analyzer path unchanged
+
+- [ ] **Status:** open
+
+**What's broken:** Audit-22 flagged Plan 16 R05 ("existing OXC analyzer path unchanged") at MEDIUM. A5 inferred from plan note + scan.rs structure; did not diff `loctree-rs/src/analyzer/scan.rs` against pre-Plan-16 baseline.
+
+**Where:** `loctree-rs/src/analyzer/scan.rs` (TS dispatch at lines 223-322, dispatch at 414-433).
+
+**Target state:** Diff `git log --diff-filter=M -p loctree-rs/src/analyzer/scan.rs` from commits between Plan 15 close and Plan 16 substrate land. Confirm the non-TS dispatch path is byte-stable. Document in marble report.
+
+**Complexity:** XS-S.
+
+---
+
+#### Task 18-cross-stage · MEDIUM · Cold-scan vs live-path `ExportSymbol.symbol_id`
+
+- [ ] **Status:** open
+
+**What's broken:** Live-path (Plan 18) populates `ExportSymbol.symbol_id` via `extract_live_symbols`; cold-scan extractors (Plan 19 cold-scan dispatch) leave it empty (`ExportSymbol::with_symbol_id` not called). Plan 18 acceptance line 78-82 acknowledges this; Plan 19 inherits the work but hasn't wired it.
+
+**Where:**
+- Live path: `loctree-lsp/src/live_ast.rs:741-814` (`extract_live_symbols`).
+- Cold path: `loctree-rs/src/analyzer/extractors/` (Plan 19 stage 1).
+- ExportSymbol with_symbol_id: `loctree-rs/src/types.rs:920-928`.
+
+**Target state:** Either:
+- Wire `with_symbol_id` into cold-scan dispatch (closes the asymmetry).
+- OR document the live-vs-cold split explicitly as a Plan 19 follow-up subitem.
+
+Decision-required. May be split into two sub-tasks: "doc plan 19 follow-up" + "implement cold-scan wiring."
+
+**Complexity:** M (implementation) or XS (documentation).
+
+---
+
+#### Task 04-deep · P2-deep · Emitted-diagnostic-codes registry
+
+- [x] **Status:** completed · commit `95b1562e` · test `cargo test -p loctree-lsp diagnostic_codes`
+
+  Verified 2026-05-11 by codex: `loctree-lsp/src/diagnostic_codes.rs` now owns `DiagnosticCode`, `ALL_EMITTED_CODES`, and the atlas-card consumer mapping; dead/cycle/twin emitters and backend quickfix dispatch use the shared registry instead of raw production code literals. Falsifier: `rg -n "code: Some\\(NumberOrString::String\\(\\\"(dead-export|circular-import|twin-export)" loctree-lsp/src/diagnostics loctree-lsp/src/actions/atlas_card.rs loctree-lsp/src/backend.rs` returns no production assignments, and `diagnostic_codes::tests::every_emitted_code_is_consumed_by_atlas_mapping` enforces `assert_eq!(ALL_EMITTED_CODES, all_consumed_codes())`; `cargo check --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test -p loctree-lsp diagnostic_codes`, `cargo test -p loctree-lsp --test atlas_card_action`, and `cargo test -p loctree-lsp` passed.
+
+**What's broken:** Cross-task pattern F1 (audit cross-task finding): emit-side
+vs consume-side string-literal drift. The Plan 04 fix (04a) closes the
+twin-family case. The systemic root: no shared registry between
+`diagnostics/*.rs` (emit strings) and consumers (`actions/atlas_card.rs` mapping).
+
+**Where:**
+- Emitters: `loctree-lsp/src/diagnostics/{twins,dead,cycles}.rs` (codes at twins.rs:91,176; dead.rs:36; cycles.rs:66).
+- Consumer: `loctree-lsp/src/actions/atlas_card.rs:32-46`.
+
+**Target state:** A typed enum `DiagnosticCode` (or a `const` array) shared between emit + consume sites. Build-time error if a producer emits a code the consumer doesn't recognize.
+
+**Test contract:** Compile-time assertion: `assert_eq!(ALL_EMITTED_CODES, all_consumed_codes())` panics on divergence. Falsifies F1 for the whole codebase, not just twin.
+
+**Complexity:** M-L.
+
+**Dependencies:** 04a should land first (single-code fix is cleaner than registry + fix simultaneously).
+
+---
+
+### Tier 5 — SaaS-transformation wave entry (Plans 23 + 24)
+
+> **Context:** Loctree the LSP daemon serves AI agents (JSON over stdio).
+> Loctree the SaaS serves human teams via `loctree.com/cloud/teams/{slug}/`.
+> The HTML report layer is the visible-to-humans surface. Currently
+> `loctree-rs/src/analyzer/html.rs` produces a minimal `report.html` but
+> the rendering is not wired into a deployable artifact flow and uses
+> ad-hoc styling unrelated to the loctree.com design system. Tier 5 closes
+> both gaps.
+>
+> These tasks are intentionally larger than Tier 1-4 (estimated 8-16h each).
+> Pick one and complete; do not interleave 23 and 24.
+
+#### Task 23 · M-L · Wire HTML layer into real analyzer flow
+
+- [ ] **Status:** open
+
+**What's broken:** No `loct report` subcommand. HTML drops out of `loct context` / `loct auto` opportunistically; agents don't request it, humans don't know it exists. The report doesn't surface Plan 14 semantic facts (idiom tags, dispatch edges, env contracts, Tauri commands/events, framework hints) or Plan 19 cross-language coverage. No manifest sidecar for SaaS ingestion.
+
+**Target state:** `loct report [--scope <S>] [--project <P>] [--out-dir <D>] [--with-aicx] [--saas-base <URL>]` materializes:
+
+```
+<root>/.loctree/reports/<snapshot-fingerprint>/
+  ├── index.html              # SSR Leptos report (entry)
+  ├── report.manifest.json    # protocol: "loctree.report.manifest.v1"
+  ├── assets/                 # bundled Cytoscape JS, dagre, cose-base, layout-base
+  └── data/snapshot.json      # raw snapshot for SaaS ingestion
+```
+
+**Report sections (in order):**
+1. Header (project name + fingerprint + generated_at + scope/task marker).
+2. Atlas Panel (atlas pointer cards from Plan 01; link out to `<saas_base_url>/cloud/reports/<fingerprint>/cards/<card_id>` when `--saas-base` set).
+3. Risk Register (cycles, dead exports, twins, hotspots — Plan 09 health surface).
+4. Semantic Facts (idiom tags, dispatch edges, env contracts, tauri commands/events, framework hints; each with `AuthorityLabel` badge).
+5. Structural Graph (Cytoscape — files as nodes, imports as edges).
+6. Cross-Language Coverage (TS/JS/TSX extractor coverage banner; other languages show "OXC fallback" annotation).
+7. Footer (loctree version + scope description + AICX presence flag).
+
+**Manifest shape (`loctree.report.manifest.v1`):**
+- `fingerprint`, `project_root`, `scan_id`, `generated_at` (ISO-8601), `artifact_version`
+- `facts_count: { idiom_tags, dispatch_edges, reachability, env_contracts, tauri_commands, tauri_events, framework_hints }`
+- `scope: Option<ScopeReport>`, `task: Option<TaskReport>` (Plan 22 metadata)
+- `aicx_included: bool`
+
+**Files to create / touch:**
+- `loctree-rs/src/cli/parser/report_commands.rs` (NEW) — parser.
+- `loctree-rs/src/cli/dispatch/handlers/report.rs` (NEW) — orchestration.
+- `loctree-rs/src/cli/dispatch/handlers/report/manifest.rs` (NEW) — manifest write.
+- `loctree-rs/src/cli/dispatch/handlers/report/assets.rs` (NEW) — JS bundling.
+- `loctree-rs/src/types.rs` — `ReportArtifact`, `ReportManifest`, `ReportFactsCount` types (with `schemars::JsonSchema` derives).
+- `loctree-rs/src/analyzer/html.rs` — extend `render_html` to consume `ReportArtifact`; add Section 4 (Semantic Facts) + Section 6 (Cross-Lang Coverage).
+- `reports/src/components/semantic_facts.rs` (NEW) — Leptos component with authority badges.
+- `reports/src/components/cross_language_coverage.rs` (NEW).
+- `reports/src/components/manifest_footer.rs` (NEW).
+- `loctree-rs/tests/report_artifact.rs` (NEW) — integration test.
+- `loctree-rs/src/cli/command/help_texts.rs` — `loct report` help.
+
+**Test contract:**
+- Build a fixture repo with 5 files, 1 cycle, 2 dead exports, 1 idiom-tag.
+- Run `loct report --out-dir <tmp>` against the fixture.
+- Assert all 8 wire-contract paths exist.
+- Deserialize `report.manifest.json` to `ReportManifest`; assert `facts_count.idiom_tags == 1`, `protocol == "loctree.report.manifest.v1"`.
+- Load `index.html` as bytes; assert it contains the project name, the idiom tag string, and the cycle file paths.
+
+**Cross-repo coordination:** This plan enables but does NOT implement `loctree-com/src/server/reports.rs` (POST `/api/v1/reports/upload` multipart route) — that's a separate cut on the `loctree-com` repo (likely `loctree-com/docs/licensing/polar-sh/12-reports-ingestion.md`).
+
+**Non-goals:**
+- No styling discipline (Task 24).
+- No SaaS-side upload endpoint.
+- No interactive diff between two snapshots (queued as Plan 25+).
+- No JS-driven re-querying inside the artifact.
+- No new analyzer behavior.
+
+**Complexity:** M-L (estimated 8-12h).
+
+**Dependencies:** Plan 14 (semantic facts) + Plan 19 (cross-lang) already landed.
+
+---
+
+#### Task 24 · M · Polish HTML artifacts to loctree-com design system
+
+- [ ] **Status:** open
+
+**What's broken:** Plan 23 will ship a functional HTML artifact. Functional ≠ shippable to humans. Current `loctree-rs/src/analyzer/html.rs` uses ad-hoc inline CSS — no design system, no token discipline, no brand voice. When embedded in `loctree.com/cloud/teams/{slug}/reports/{fingerprint}/` (Plan 25+ on SaaS side), the report will feel like alien iframe content.
+
+**Target state:** Adopt loctree-com's design system in the analyzer's HTML output.
+
+**Visual contract (from `loctree-com/docs/design-system.md` + `BRAND.md`):**
+
+Surface tokens (vendor `loctree-com/styles/tokens.css`):
+- `--ink` `#0e0e0e` (page bg), `--ink2` `#161616` (alt sections), `--ink3` `#1e1e1e` (cards)
+- `--bone` `#f5f1e7` (text), `--bone-dim` `rgba(245,241,231,0.86)` (body)
+- `--teal` / `--amber` (accents — exact hex from loctree-com tokens.css)
+
+Typography: serif display (h1/h2) + sans body + monospace UI labels (variable WOFF2, self-hosted from `reports/assets/fonts/`).
+
+Authority-label badge color routing:
+- `RepoVerified` → `--teal`
+- `LoctreeDerived` → `--bone-dim`
+- `AicxOperator` → `--amber`
+- `AicxAgent` → `--bone-dim` muted with subtle border
+- `AicxFailure` → red-amber from tokens
+- `SemanticGuess` → `--bone-dim` with hatched border (heuristic warning)
+- `StaleOrUnknown` → grayscale, struck-through
+
+Anti-aesthetic gates (each MUST NOT appear in output):
+- No pure black `#000` (use `--ink`).
+- No gradients on surfaces.
+- No glow / blur / drop-shadow ornament.
+- No glass-morphism `backdrop-filter`.
+- No CRT scanline overlay.
+- No animated entrance / scroll-jack (CSS micro-transitions OK).
+
+Mobile responsive at 375px viewport (Cytoscape collapses to "tap to view full graph"). Print stylesheet for "save as PDF." Contrast: AAA on body, AA on UI accents.
+
+**Files to create / touch:**
+- `reports/styles/tokens.css` (NEW, vendored from `loctree-com/styles/tokens.css`).
+- `reports/styles/fonts.css` (NEW, vendored).
+- `reports/styles/report.css` (NEW, report-specific extensions).
+- `reports/assets/fonts/*.woff2` (NEW, vendored binary).
+- `reports/src/components/authority_badge.rs` (NEW) — Leptos badge component.
+- `reports/src/components/atlas_card.rs` — restyle.
+- `reports/src/components/{semantic_facts,cross_language_coverage,manifest_footer}.rs` (from Task 23) — restyle.
+- `loctree-rs/src/analyzer/html.rs` — purge hardcoded hex; inline CSS in `<style>` block.
+- `reports/tests/visual_contract.rs` (NEW) — token + anti-aesthetic gate.
+
+**Test contract:**
+- `cargo test -p report-leptos --test visual_contract` asserts:
+  - HTML output contains design-token CSS-var names (`--ink`, `--bone`, `--teal`).
+  - HTML output does NOT contain hardcoded `#000000` / `#fff` / non-token hex.
+  - HTML output does NOT contain `gradient-` / `backdrop-filter:` / `scanline` / `animation:.*entrance`.
+- Manual smoke: open `/tmp/loctree-report-styled/index.html` in Safari + Firefox + Chrome; resize to 375px; Cmd+P to test print; visual diff against loctree.com landing.
+
+**Cross-repo coordination:** This plan **consumes** but does **not modify** `loctree-com/styles/tokens.css`, `loctree-com/styles/fonts.css`, `loctree-com/public/fonts/*.woff2`. Vendoring is a snapshot copy, not a live dependency. Re-vendor per major brand decision.
+
+**Non-goals:**
+- No new analyzer behavior (Task 23 set the content; this task styles it).
+- No SaaS-side surface changes.
+- No JS-driven theming (single dark theme matching landing).
+- No animations beyond CSS micro-transitions.
+- No external CDN dependencies.
+- No light-theme variant in v1.
+
+**Complexity:** M (estimated 6-10h).
+
+**Dependencies:** Task 23 (this styles what 23 emits).
+
+---
+
+### Procedural — completed in audit-22 close-out
+
+- [x] **Plan 21 plan file backfill.** Closure of audit-22 cross-task finding F8.
+  Done 2026-05-10 by claude: `docs/plans/lsp/21-lsp-polish-pass.md` written
+  from TRACKER row + commits `5345645e` / `c26e9662` / `5b90f369` + audit evidence.
+
+- [x] **Audit-22 parallel-truth reconciliation.** Codex's dragon-side audit
+  (verdict PARTIAL) ran independently and surfaced two findings: (1) Plan 04
+  client-command gap promoted to P1 (now Tier 1 tasks 04a + 04b above);
+  (2) strict refusal to PASS Plan 21 without source — closed by backfill
+  above. Methodology note: Codex's task numbering for plans 05-20 appears
+  hallucinated (`05-find-request`, `06-follow-request`, …) — dragon-side
+  `ls docs/plans/lsp/` returns identical filenames to local checkout. Full
+  reconciliation:
+  `~/.vibecrafted/artifacts/Loctree/loctree-suite/2026_0510/reports/audit-22/22_task_audit_reconciliation.md`.
+
+---
+
+## 9. Exit contract — when all P1 + P2 are `[x]`
+
+1. **Re-run reconciliation audit.** Dispatch 6 parallel Opus subagents (or `prview` if scope-bounded) against the post-fixes state. Confirm:
+   - Plan 04 verdict moves PARTIAL → PASS (after 04a + 04b land).
+   - Plan 11, 18, 12 consumers, 10 watcher verdicts move PASS_WITH_GAPS → PASS.
+   - No new findings beyond P3 cosmetic.
+2. **Dispatch `/vc-polarize` with the §7 prism framings.** Read the smear score:
+   - If smear ≤ 0.3 (low), skip polarize — operator already has primary axis defined.
+   - If smear > 0.3, polarize emits primary axis decision + DoU handoff.
+3. **Bump TRACKER `last_updated`** + flip rows 23/24 from `queued` to `in-progress` (or `done` if Tier 5 completed in the same wave).
+4. **Move this prompt to archive.** `mv docs/plans/lsp/meta-marbles-22-completion.prompt docs/plans/lsp/archive/2026_MMDD/meta-marbles-22-completion.prompt`.
+5. **Open the next prompt.** `docs/plans/lsp/meta-marbles-saas-handoff.prompt` seeded with:
+   - The polarize verdict (primary axis).
+   - Tier 5 deliverables (if not done in this wave).
+   - SaaS-side coordination tasks (`loctree-com/docs/licensing/polar-sh/12-reports-ingestion.md` queued there).
+
+## 10. Handoff scenarios — when P1+P2 NOT all done
+
+| Scenario | Decision |
+|---|---|
+| All P1 done, mixed P2, no P3 | Operator decides: ship to dogfooders with PASS_WITH_GAPS framing, or close P2 first. |
+| P1 partially done | Do NOT ship public release. Reconcile-audit will still flag 04 as PARTIAL. |
+| Tier 5 done but Tier 1-4 not | SaaS artifact ready but LSP roadmap not closed. Operator decides whether SaaS demo can use a "preview / known issues" framing. |
+| Polarize emits competing-truth verdict | Operator + agents discuss; this prompt does not encode product strategy. |
+
+## 11. Iteration log (append-only)
+
+```
+2026-05-10T16:18Z · meta-marbles-22-completion.prompt created · author=claude(opus 4.7 1M) · status=active · open_tasks=15 P2/cross + 3 P3 + 1 complete
+2026-05-10T23:35Z · parallel-truth reconciliation · author=claude · Plan 04 split into 04a (server P1) + 04b (client P1, Codex catch) · Plan 21 marked [x] (backfilled in same session) · open_tasks=2 P1 + 13 P2/cross + 3 P3 + 2 complete
+2026-05-10T23:55Z · v2 consolidated portable artifact · author=claude · merged all tasks self-contained (no plan-file references) · added /vc-polarize prism framings + exit contract · added Tier 5 (Plans 23+24 SaaS inline) · open_tasks=2 P1 + 7 P2 + 3 P3 + 3 cross-evidence + 1 P2-deep + 2 SaaS = 18 open + 2 complete
+```
+
+## 12. Cross-references (for archive integrity, not for operation)
+
+These references are provided for forensic / archive completeness. **You do NOT need to read them to operate this prompt.** All operational context is inline above.
+
+- Original plan files: `docs/plans/lsp/{01..22}-*.md` + `docs/plans/lsp/MISSING_03_08_11_13_14_SINGLE_RUN.md` + `docs/plans/lsp/00-roadmap-readme.md`
+- TRACKER (live status board): `docs/plans/lsp/TRACKER.md`
+- Plans 23/24 reference files: `docs/plans/lsp/23-wire-html-layer-into-real-analyzer-flow.md` + `docs/plans/lsp/24-polish-and-adjust-html-generated-artifacts-ui-ux-to-loctree-com-styling-discipline.md` (contain extended sketches; this prompt has the operational distillation)
+- Master audit: `~/.vibecrafted/artifacts/Loctree/loctree-suite/2026_0510/reports/audit-22/22_task_audit_report.md`
+- Reconciliation: `~/.vibecrafted/artifacts/Loctree/loctree-suite/2026_0510/reports/audit-22/22_task_audit_reconciliation.md`
+- Atomic requirements matrix: `~/.vibecrafted/artifacts/Loctree/loctree-suite/2026_0510/reports/audit-22/22_task_requirements_matrix.jsonl`
+- Audit trace: `~/.vibecrafted/artifacts/Loctree/loctree-suite/2026_0510/reports/audit-22/22_task_audit_trace.log`
+- Per-agent forensics: `~/.vibecrafted/artifacts/Loctree/loctree-suite/2026_0510/reports/audit-22/agent-A{1..6}/`
+- loctree-com BRAND.md: `/Users/maciejgad/vc-workspace/Loctree/loctree-com/docs/BRAND.md`
+- loctree-com design system: `/Users/maciejgad/vc-workspace/Loctree/loctree-com/docs/design-system.md`
+
+---
+
+*𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI*
+=======
+# Meta-Marbles: 22-task Loctree LSP completion
+
+You are running one `vc-marbles` convergence round against the current
+`loctree-suite` workspace. This project needs one careful fortification round,
+not a broad sweep.
+
+## Non-negotiable operating mode
+
+- Start with `vc-init` / live perception of the current tree: loctree context,
+  AICX steer when available, quality/security instruments, and `git status`.
+- Work only from the current checkout and current evidence. Do not trust old
+  completion claims, prior marble reports, or tracker status without code/test
+  evidence.
+- Pick **1–2 unchecked tasks** from the list below. Do not force 5 tasks in one
+  run. It is better to finish one task to frontier/SoTA quality than to touch
+  many surfaces shallowly.
+- For every selected task, add or strengthen **round-trip e2e evidence** where
+  feasible: request/capability/CLI/editor-facing input → real handler/path →
+  asserted response/output/error. Unit tests alone are acceptable only when an
+  e2e path is impossible; document why.
+- After completing a task, change its checkbox from `[ ]` to `[x]` and add a
+  1–2 sentence comment with exact evidence: files touched, tests added/updated,
+  and commands run.
+- If a task is blocked or the best move is to downgrade/retire it, leave it
+  unchecked and add a short blocker note. Do not paper over missing evidence.
+- End the round with the narrow credible gates first, then broader gates if the
+  touched surface warrants it. If any gate fails, report it plainly.
+
+## Current audit baseline
+
+The latest audit verdict was `PARTIAL`, mostly because task 21 lacked a
+standalone task source, task 04 had a server/client command gap, and some
+packaging/full-workspace gates were not run. Task 21 has now been reconstructed
+as `docs/plans/lsp/21-lsp-polish-pass.md`; do not treat that reconstruction as
+proof of runtime correctness without current tests.
+
+## Candidate task list
+
+- [ ] **Task 04 client command closure — atlas card deep-link round trip.**
+  Verify or implement the editor/client command path for `loctree.openAtlasCard`
+  so server-side atlas-card actions have a real client consumer. Evidence target:
+  action request/executeCommand payload → client command registration/handler →
+  opened file or safe no-op with asserted diagnostics. Cover server and client
+  behavior with tests or a documented smoke harness.
+
+- [ ] **Task 21 authority + regression closure — polish pass source restored.**
+  Re-audit the reconstructed `docs/plans/lsp/21-lsp-polish-pass.md` against
+  current code and tests. Evidence target: `initialize` serverInfo branding,
+  empty `.loctree/` fixture suppression, and JSON-schema-bearing experimental
+  capabilities all proven by current tests. If gaps exist, fix the smallest
+  surface and add round-trip assertions.
+
+- [ ] **Task 20 packaging/install smoke — distribution path e2e.**
+  Run or build a reproducible smoke for the npm/editor packaging path instead
+  of relying on file presence. Evidence target: packaged entrypoint starts or
+  resolves the expected LSP binary, version/help output is correct, and docs do
+  not point to stale manual paths.
+
+- [ ] **Whole-batch gate closure — current `make precheck`/`make test`.**
+  Run the full gates required by repository guidelines after resolving targeted
+  gaps. Evidence target: exact commands, pass/fail output, and follow-up fixes
+  for failures caused by this branch. Do not mark this done if gates are merely
+  assumed from historical tracker text.
+
+- [ ] **Stage-label truth pass — prevent staged tasks from being reported as
+  full-plan done.** Align task docs/tracker language for staged tasks (`08`,
+  `14`, `15`, `16`, `19`) so landed scope and deferred scope are explicit.
+  Evidence target: docs distinguish `STAGE_PASS`/deferred scope from full-plan
+  completion and tests/gates relevant to changed docs or code are recorded.
+
+- [ ] **MCP/context-scope e2e parity — task 22 downstream transport check.**
+  If the current weakest evidence is transport divergence, verify the MCP
+  `context` endpoint with `--scope` semantics rather than only CLI/library
+  tests. Evidence target: scoped ContextPack metadata/cache semantics over MCP
+  match CLI expectations.
+
+- [ ] **Diagnostics/live-editor stream smoke — watcher/LSP runtime evidence.**
+  If instrumentation points there, add a small LSP stdio or integration smoke
+  proving document changes, diagnostics, or scan progress are observable through
+  the editor-facing protocol, not only module tests. Evidence target: protocol
+  input → notification/request output with deterministic assertions.
+
+## Done comment format
+
+When you complete a checkbox, keep the checked item in this file and append the
+comment immediately below it:
+
+```markdown
+- [x] **Task name.** Existing task text.
+  Done: <1 sentence with implementation evidence>. Gate: `<command>` passed;
+  <optional second sentence for risk/deferred scope>.
+```
+
+## Round report expectation
+
+Follow `vc-marbles` report discipline: one attacked surface must end in exactly
+one of `Resolved` or `Still Open`; newly discovered issues go under
+`Discovered`; regressions are explicit. Keep the report short and factual.
+>>>>>>> Stashed changes

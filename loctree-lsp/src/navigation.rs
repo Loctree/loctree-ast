@@ -3,7 +3,7 @@
 //! Provides word extraction at the cursor position, used by the
 //! `code_action` handler to detect the symbol under the cursor.
 //!
-//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by VetCoders ⓒ 2025-2026 VetCoders
+//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders ⓒ 2025-2026 Vetcoders
 
 use tower_lsp::lsp_types::Position;
 

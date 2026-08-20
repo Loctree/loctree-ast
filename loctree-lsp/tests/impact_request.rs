@@ -3,9 +3,9 @@
 //! Covers: params deserialization, severity classification, dynamic-import
 //! warnings, and the response-shape contract (paths-only, plus blast metadata).
 //!
-//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by VetCoders ⓒ 2025-2026 VetCoders
+//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders ⓒ 2025-2026 Vetcoders
 
-use loctree::impact::{ImpactEntry, ImpactResult};
+use loctree::impact::{COVERAGE_INCOMPLETE_DIAGNOSTIC, GraphCoverage, ImpactEntry, ImpactResult};
 use loctree_lsp::{ImpactParams, ImpactResponse, impact};
 
 fn entry(file: &str, depth: usize, import_type: &str) -> ImpactEntry {
@@ -32,7 +32,25 @@ fn fixture_result(direct: Vec<ImpactEntry>, transitive: Vec<ImpactEntry>) -> Imp
         total_affected: total,
         max_depth,
         target_ignored: false,
+        coverage: GraphCoverage::default(),
     }
+}
+
+#[test]
+fn response_zero_consumers_warns_coverage_incomplete() {
+    // Fail-closed contract: a zero-consumer result with default (unproven)
+    // coverage must carry the incomplete-coverage diagnostic, never silence.
+    let result = fixture_result(vec![], vec![]);
+    let response = ImpactResponse::from_impact(&result, true);
+    assert_eq!(response.total, 0);
+    assert!(
+        response
+            .warnings
+            .iter()
+            .any(|w| w.contains(COVERAGE_INCOMPLETE_DIAGNOSTIC)),
+        "warnings: {:?}",
+        response.warnings
+    );
 }
 
 #[test]

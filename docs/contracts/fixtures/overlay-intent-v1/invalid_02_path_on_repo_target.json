@@ -1,0 +1,30 @@
+{
+  "schema": "loctree.overlay.intent.v1",
+  "repo_id": "Loctree/loctree-suite",
+  "snapshot_commit": "48a9526d",
+  "anchor_catalog_revision": "acr1:ab12cd34ab12cd34ab12cd34ab12cd34ab12cd34ab12cd34ab12cd34ab12cd34",
+  "store_revision": "sr1:5f0a5f0a5f0a5f0a5f0a5f0a5f0a5f0a5f0a5f0a5f0a5f0a5f0a5f0a5f0a5f0a",
+  "overlay_revision": "ov1:9e3b9e3b9e3b9e3b9e3b9e3b9e3b9e3b9e3b9e3b9e3b9e3b9e3b9e3b9e3b9e3b",
+  "producer_version": "0.12.0",
+  "entries": [
+    {
+      "intent_id": "int1:aaaa111122223333",
+      "content_hash": "ch1:11ee11ee11ee11ee11ee11ee11ee11ee11ee11ee11ee11ee11ee11ee11ee11ee",
+      "target": {
+        "kind": "repo",
+        "path": "loctree-rs/src/types.rs"
+      },
+      "thesis": "KONTRAKT ZŁAMANY CELOWO: target kind:repo niesie path — decyzja repo-wide nie może udawać decyzji plikowej.",
+      "status": "current",
+      "authority": "operator_confirmed",
+      "verification_status": "verified",
+      "valid_from": "2026-07-12T18:30:00Z",
+      "refs": [
+        {
+          "evidence_event_id": "ev1:claude:c4d187f9-aaaa-bbbb-cccc-001122334455:000042:text:0123456789abcdef",
+          "ref": "session:c4d187f9#turn-42"
+        }
+      ]
+    }
+  ]
+}

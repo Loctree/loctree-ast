@@ -1,0 +1,21 @@
+# Loctree ignore patterns for loctree-suite monorepo
+# 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI
+# Supports:
+# - literal path prefixes (fast)
+# - glob patterns (* ? []), matched against full paths under scan roots
+# - directives:
+#   - @loctignore:dead-ok <glob>   Suppress dead-export findings for matching files
+
+# Test fixtures stay in the snapshot so slice/find can inspect regression
+# fixtures; report-level analyzers filter them via analysis.is_test.
+
+# Build outputs - not source code
+reports/wasm/assets/
+
+# External API declarations (used by npm consumers, not internally)
+distribution/npm/index.d.ts
+
+# Tools fixtures and test files
+tools/fixtures/
+tools/test_ts/
+Makefile
