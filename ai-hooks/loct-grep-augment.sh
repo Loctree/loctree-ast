@@ -168,11 +168,14 @@ log_claude_search
 # ---------------------------------------------------------------------------
 # Helpers (tables + escaping)
 # ---------------------------------------------------------------------------
+# Builds a run of N copies of one character; used to draw the table borders.
 repeat_char() {
   local char="$1" n="$2"
   printf '%*s' "$n" '' | tr ' ' "$char"
 }
 
+# Caps a cell to W characters, marking any cut with a trailing ellipsis so the
+# systemMessage table never wraps.
 ellipsize() {
   local s="$1" w="$2"
   if [[ "${#s}" -le "$w" ]]; then
@@ -199,14 +202,18 @@ kv_table() {
 }
 
 extract_count() {
-  # Extracts integer from lines like: === Symbol Matches (18) ===
+  # Extracts the leading integer from loct section headers:
+  #   === Symbol Matches (18) ===
+  #   === Literal Matches (65 in 12 file(s)) [source: literal] ===
   local label="$1" text="$2"
-  printf '%s\n' "$text" | sed -nE "s/^=== ${label} \(([0-9]+)\) ===$/\1/p" | head -1
+  printf '%s\n' "$text" | sed -nE "s/^=== ${label} \(([0-9]+)( in [0-9]+ file\(s\))?\)( \[[^]]+\])? ===$/\1/p" | head -1
 }
 
 # Max payload size (32KB) to avoid bloating additionalContext
 MAX_PAYLOAD_BYTES=32768
 
+# Caps loct output at MAX bytes before it reaches additionalContext, appending a
+# visible truncation footer so the agent knows the context is partial.
 truncate_payload() {
   local text="$1"
   local max="$2"
@@ -232,10 +239,12 @@ emit_hook_output() {
   [[ -z "$repo" ]] && repo="."
 
   # Counts (best effort; works for loct find text output)
-  local c_sym c_sem c_param
+  local c_lit c_sym c_sem c_param
+  c_lit="$(extract_count "Literal Matches" "$payload")"
   c_sym="$(extract_count "Symbol Matches" "$payload")"
   c_sem="$(extract_count "Semantic Matches" "$payload")"
   c_param="$(extract_count "Parameter Matches" "$payload")"
+  [[ -z "$c_lit" ]] && c_lit="-"
   [[ -z "$c_sym" ]] && c_sym="-"
   [[ -z "$c_sem" ]] && c_sem="-"
   [[ -z "$c_param" ]] && c_param="-"
@@ -247,7 +256,7 @@ emit_hook_output() {
     query  "$PATTERN" \
     path   "$PATH_ARG" \
     ms     "${LOCT_LAST_DURATION_MS}ms" \
-    match  "sym:$c_sym sem:$c_sem param:$c_param" \
+    match  "lit:$c_lit sym:$c_sym sem:$c_sem param:$c_param" \
   )"
 
   ctx="LOCTREE CONTEXT (${action})
@@ -460,6 +469,8 @@ PATTERN="${PATTERN%\'}"; PATTERN="${PATTERN#\'}"
 # ---------------------------------------------------------------------------
 FILE_CONTEXT=""
 
+# Runs `loct find` for a symbol and, only when it actually matched something,
+# emits the hook JSON and EXITS the script. Returns 1 to let routing fall through.
 augment_symbol() {
   local symbol="$1"
   local result
@@ -467,13 +478,14 @@ augment_symbol() {
   result="$(run_loct find "$symbol")"
   [[ -z "$result" ]] && return 1
 
-  # If nothing found: param=0, sym=0, sem=0
-  local c_sym c_sem c_param
+  # If nothing found: lit=0, param=0, sym=0, sem=0
+  local c_lit c_sym c_sem c_param
+  c_lit="$(extract_count "Literal Matches" "$result")"; [[ -z "$c_lit" ]] && c_lit=0
   c_sym="$(extract_count "Symbol Matches" "$result")"; [[ -z "$c_sym" ]] && c_sym=0
   c_sem="$(extract_count "Semantic Matches" "$result")"; [[ -z "$c_sem" ]] && c_sem=0
   c_param="$(extract_count "Parameter Matches" "$result")"; [[ -z "$c_param" ]] && c_param=0
 
-  if [[ "$c_sym" == 0 && "$c_sem" == 0 && "$c_param" == 0 ]]; then
+  if [[ "$c_lit" == 0 && "$c_sym" == 0 && "$c_sem" == 0 && "$c_param" == 0 ]]; then
     return 1
   fi
 
@@ -489,6 +501,8 @@ $FILE_CONTEXT"
   exit 0
 }
 
+# Emits `loct slice` for an existing file and exits; returns 1 when the path is
+# not a real file so the caller keeps routing.
 augment_file() {
   local file="$1"
   [[ ! -f "$file" ]] && return 1
@@ -501,12 +515,16 @@ augment_file() {
   exit 0
 }
 
+# Returns `loct impact` output for a file WITHOUT emitting or exiting — the one
+# augmenter used as an extra context block appended to a symbol result.
 augment_impact_context() {
   local file="$1"
   [[ ! -f "$file" ]] && return 1
   run_loct impact "$file"
 }
 
+# Emits reverse-dependency output for a file and exits; returns 1 when the path
+# is missing or the query came back empty.
 augment_who_imports() {
   local file="$1"
   [[ ! -f "$file" ]] && return 1
@@ -519,6 +537,7 @@ augment_who_imports() {
   exit 0
 }
 
+# Emits `loct focus` for an existing directory and exits; returns 1 otherwise.
 augment_directory() {
   local dir="$1"
   [[ ! -d "$dir" ]] && return 1
@@ -531,6 +550,8 @@ augment_directory() {
   exit 0
 }
 
+# Filters the Tauri command bridge listing for a name and exits on a hit.
+# Currently unreachable: the snake_case route that called it was disabled in v14.
 augment_tauri_command() {
   local cmd="$1"
 
@@ -546,6 +567,8 @@ augment_tauri_command() {
   exit 0
 }
 
+# Emits the repo health report and exits; the terminal route for dead/cycle/twin
+# style queries where no single symbol or path is the real subject.
 augment_health() {
   local result
   result="$(run_loct health)"

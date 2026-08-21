@@ -108,6 +108,8 @@ impl AuthSettings {
     }
 }
 
+/// Read an env var, trimming it and treating blank as unset — so
+/// `LOCTREE_MCP_TOKEN_STORE=""` cannot masquerade as a configured store.
 fn non_empty_env(key: &str) -> Option<String> {
     std::env::var(key)
         .ok()
@@ -255,6 +257,9 @@ fn bearer_token(header_value: &str) -> Option<&str> {
     (!credential.is_empty()).then_some(credential)
 }
 
+/// Map a denial onto 401 vs 403 and render it as JSON. Only the 401 arm carries
+/// `WWW-Authenticate`, so a scoped-out token is not told to retry with the same
+/// credential.
 fn denial_response(denial: &AuthDenial) -> Response {
     let status = match denial {
         AuthDenial::MissingToken | AuthDenial::InvalidToken | AuthDenial::Expired { .. } => {

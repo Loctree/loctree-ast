@@ -112,6 +112,8 @@ def grep_targets(head: str, cwd: str):
 
 
 def main() -> int:
+    """Refuse the tool call (exit 2) when a segment of the command greps the
+    working repo; every other shape, and any parsing doubt, exits 0."""
     if os.environ.get("LOCTREE_FIRST_GUARD", "1").lower() in ("0", "off", "false"):
         return 0
 

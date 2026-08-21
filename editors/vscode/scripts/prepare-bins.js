@@ -15,10 +15,12 @@ const isWindows = process.platform === 'win32';
 const binaryName = isWindows ? 'loctree-lsp.exe' : 'loctree-lsp';
 const targetBinary = path.join(binDir, binaryName);
 
+/** Prefixed progress line on stdout, so packaging logs are attributable. */
 function log(msg) {
   process.stdout.write(`[loctree-vscode] ${msg}\n`);
 }
 
+/** Install one binary into `bin/`, making it executable on unix. */
 function copyBinary(sourcePath) {
   fs.mkdirSync(binDir, { recursive: true });
   fs.copyFileSync(sourcePath, targetBinary);
@@ -28,6 +30,7 @@ function copyBinary(sourcePath) {
   log(`Bundled ${binaryName} from ${sourcePath}`);
 }
 
+/** First PATH hit for a command via which/where, or null when it is not installed. */
 function findOnPath(cmd) {
   const whichCmd = isWindows ? 'where' : 'which';
   const result = spawnSync(whichCmd, [cmd], { encoding: 'utf-8' });
@@ -38,6 +41,8 @@ function findOnPath(cmd) {
   return firstLine ? firstLine.trim() : null;
 }
 
+/** Last-resort `cargo build -p loctree-lsp --release` in the repo root; returns
+ *  whether the build succeeded. */
 function buildLspFromSource() {
   log('Building loctree-lsp from source for editor bundling...');
   const result = spawnSync(

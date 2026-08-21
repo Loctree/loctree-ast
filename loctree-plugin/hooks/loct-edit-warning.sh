@@ -31,6 +31,8 @@ CRITICAL_THRESHOLD=10  # Show warning if 10+ direct consumers
 LOG_FILE="${LOCT_HOOK_LOG_FILE:-$HOME/.claude/logs/loct-edit.log}"
 mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
 
+# Append one line to the hook log; never writes to stdout, which must stay
+# valid JSON for Claude Code to parse.
 log_line() {
   printf '%s\n' "$*" >>"$LOG_FILE" 2>/dev/null || true
 }

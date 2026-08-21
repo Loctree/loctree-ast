@@ -1,19 +1,30 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Build the per-target Loctree release bundles: stage the suite binaries (plus
+# AICX for full flavors), write bundle metadata and checksums, tar and optionally
+# GPG-sign each artifact, then hand it to the loct.io release-index sync.
+
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 SUITE_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 
+# Targets built when the caller passes no --target: macOS arm64 plus Linux x64
+# in both gnu and musl flavors.
 DEFAULT_TARGETS=(
   "aarch64-apple-darwin"
   "x86_64-unknown-linux-gnu"
   "x86_64-unknown-linux-musl"
 )
+# Binaries a bundle must contain: the Loctree set ships in every flavor, the
+# AICX set only in full bundles.
 LOCTREE_RELEASE_BINARIES=(loct loctree loctree-mcp loctree-lsp)
 AICX_RELEASE_BINARIES=(aicx aicx-mcp)
+# Canonical AICX release coordinates used in release mode; --aicx-repo /
+# --aicx-version override them, --aicx-root bypasses the download entirely.
 AICX_REPO_DEFAULT="Loctree/aicx"
 AICX_VERSION_DEFAULT="0.7.3"
 
+# Print the full CLI contract on --help or when no version argument is given.
 usage() {
   cat <<'EOF'
 Usage:
@@ -73,11 +84,14 @@ declare AICX unbundled. Overriding the name does not weaken that.
 EOF
 }
 
+# Abort the build with a message on stderr and a non-zero exit status.
 die() {
   echo "error: $*" >&2
   exit 1
 }
 
+# Expand ~ and resolve one path to an absolute path, so directory-cleaning and
+# containment checks later in the run compare canonical paths.
 abs_path() {
   python3 - "$1" <<'PY'
 import os, sys
@@ -85,6 +99,8 @@ print(os.path.abspath(os.path.expanduser(sys.argv[1])))
 PY
 }
 
+# Print the SHA-256 of one file using whichever of shasum/sha256sum exists, so
+# checksums are produced identically on macOS and Linux runners.
 sha256_file() {
   if command -v shasum >/dev/null 2>&1; then
     shasum -a 256 "$1" | awk '{print $1}'
@@ -189,6 +205,9 @@ if [[ ${#TARGETS[@]} -eq 0 ]]; then
   TARGETS=("${DEFAULT_TARGETS[@]}")
 fi
 
+# Decide whether a target ships a full (Loctree + AICX) or core (Loctree-only)
+# bundle. In auto mode musl is always core, because AICX publishes no static
+# musl asset.
 bundle_flavor_for_target() {
   local target="$1"
   if [[ "$BUNDLE_FLAVOR" != "auto" ]]; then
@@ -201,6 +220,8 @@ bundle_flavor_for_target() {
   esac
 }
 
+# Resolve the artifact-name suffix for a flavor: empty for full, -core for core,
+# unless --bundle-suffix overrode it to satisfy a published asset-name contract.
 bundle_suffix_for_flavor() {
   local flavor="$1"
   # An explicit --bundle-suffix wins over the flavor convention. Callers use it
@@ -217,6 +238,8 @@ bundle_suffix_for_flavor() {
   esac
 }
 
+# Report whether any requested target builds a full bundle, i.e. whether this run
+# needs curl and the AICX release assets at all.
 needs_aicx_release_download() {
   local target
   for target in "${TARGETS[@]}"; do
@@ -227,6 +250,8 @@ needs_aicx_release_download() {
   return 1
 }
 
+# Fail fast unless the given repo exists and exposes a Makefile, since staging
+# drives `make release-binaries` inside it.
 require_repo_make() {
   local repo="$1"
   [[ -d "$repo" ]] || die "missing repo: $repo"
@@ -262,6 +287,9 @@ if [[ "$DRY_RUN" != "1" ]]; then
   mkdir -p "$DIST_DIR" "$WORK_DIR"
 fi
 
+# Flatten every components/*.json produced during staging into the bundle-level
+# components.json, pushing source/commit/release_tag down onto entries that lack
+# them so the shipped manifest states provenance per component.
 merge_components() {
   local components_dir="$1"
   local output="$2"
@@ -295,6 +323,8 @@ output.write_text(json.dumps(components, indent=2) + "\n")
 PY
 }
 
+# Write CHECKSUMS.sha256 covering every staged binary plus components.json and
+# README.md, and abort if a binary the flavor promised was never staged.
 write_bundle_checksums() {
   local staging="$1"
   local output="$2"
@@ -313,6 +343,9 @@ write_bundle_checksums() {
   done
 }
 
+# Map a target triple to the AICX release asset that carries its binaries. musl
+# and unmapped triples die here rather than silently producing a bundle that
+# claims AICX but has none.
 aicx_asset_name_for_target() {
   local target="$1"
   case "$target" in
@@ -329,12 +362,16 @@ aicx_asset_name_for_target() {
   esac
 }
 
+# Fetch one AICX release URL to a local path, failing the build if curl cannot
+# retrieve it.
 download_aicx_asset() {
   local url="$1"
   local output="$2"
   curl -fsSL "$url" -o "$output" || die "failed to download AICX release asset: $url"
 }
 
+# Record the AICX repo, tag and asset this bundle actually consumed into the
+# staged components/ tree, so the merged manifest can prove where AICX came from.
 write_aicx_release_metadata() {
   local output="$1"
   local asset="$2"
@@ -363,6 +400,9 @@ print(f"  metadata -> {output}")
 PY
 }
 
+# Download the AICX release asset, verify it against its published sha256 sidecar,
+# install aicx/aicx-mcp into the staging bin/, codesign them for macOS targets,
+# and write the provenance metadata. A checksum mismatch aborts the release.
 stage_aicx_from_release() {
   local target="$1"
   local staging="$2"
@@ -418,6 +458,8 @@ stage_aicx_from_release() {
   write_aicx_release_metadata "$staging/components/loctree-aicx.json" "$asset"
 }
 
+# For core bundles, declare AICX as an unbundled optional runtime dependency with
+# the reason and install hints, instead of silently omitting it from the manifest.
 write_aicx_optional_metadata() {
   local output="$1"
   local target="$2"
@@ -469,6 +511,8 @@ print(f"  metadata -> {output}")
 PY
 }
 
+# Write the bundle README.md: which binaries are inside, and whether AICX ships
+# with this artifact or has to be installed separately on PATH.
 write_bundle_readme() {
   local output="$1"
   local target="$2"

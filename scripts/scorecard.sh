@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
+# scorecard.sh — rg-vs-loct correctness and latency matrix, written to scorecard.json.
+# Runs from .github/workflows/ci.yml; fixture correctness is the hard gate, while
+# latency, output cost, and agent lift are recorded as trend signals only.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUTPUT="$ROOT/scorecard.json"
 RUNS="${SCORECARD_RUNS:-3}"
 
+# Prints the invocation banner and the LOCT_BIN / SCORECARD_RUNS environment contract.
 usage() {
   cat <<'EOF'
 Usage: scripts/scorecard.sh [--output PATH] [--runs N]

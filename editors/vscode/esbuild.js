@@ -15,6 +15,10 @@ const esbuild = require('esbuild');
 const production = process.argv.includes('--production');
 const watch = process.argv.includes('--watch');
 
+/**
+ * Build (or watch) the extension bundle. `--production` minifies and drops the
+ * source map; `--watch` keeps the context alive for incremental rebuilds.
+ */
 async function main() {
     const ctx = await esbuild.context({
         entryPoints: ['src/extension.ts'],

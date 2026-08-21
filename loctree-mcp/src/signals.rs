@@ -67,6 +67,7 @@ pub(crate) fn ignore_sigpipe() {
     }
 }
 
+/// No-op on platforms without SIGPIPE, so callers stay unconditional.
 #[cfg(not(unix))]
 pub(crate) fn ignore_sigpipe() {
     // No-op on non-Unix platforms.

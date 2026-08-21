@@ -34,6 +34,9 @@ fn git(args: &[&str]) -> Option<String> {
     }
 }
 
+/// Emit the four `cargo:rustc-env` identity variables the server reads at
+/// runtime, plus the `rerun-if-changed` keys that re-stamp the binary when HEAD
+/// moves. Degrades to the plain crate version outside a git checkout.
 fn main() {
     // Always re-run when the build script itself changes.
     println!("cargo:rerun-if-changed=build.rs");

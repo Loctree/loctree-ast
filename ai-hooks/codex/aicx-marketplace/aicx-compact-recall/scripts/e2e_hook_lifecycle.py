@@ -22,11 +22,16 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class RpcError(RuntimeError):
+    """Raised when the app-server or TUI breaks the expected lifecycle contract."""
+
     pass
 
 
 class TuiSession:
+    """A real Codex TUI driven through a private tmux server, one per test run."""
+
     def __init__(self, env: dict[str, str], work: Path) -> None:
+        """Start a detached tmux session running codex with the seed prompt."""
         self.socket = f"aicx-e2e-{os.getpid()}-{time.time_ns()}"
         self.env = env
         command = shlex.join(
@@ -65,6 +70,7 @@ class TuiSession:
 
     @property
     def buffer(self) -> bytes:
+        """Capture the last 1000 lines of the pane as raw bytes."""
         result = subprocess.run(
             ["tmux", "-L", self.socket, "capture-pane", "-p", "-S", "-1000"],
             env=self.env,
@@ -74,6 +80,7 @@ class TuiSession:
         return result.stdout
 
     def send(self, text: str) -> None:
+        """Type one prompt into the TUI and submit it with a literal Enter."""
         subprocess.run(
             ["tmux", "-L", self.socket, "send-keys", "-l", text],
             env=self.env,
@@ -91,9 +98,11 @@ class TuiSession:
         )
 
     def pump(self, timeout: float = 0.25) -> None:
+        """Yield the wall clock so the TUI can redraw before the next capture."""
         time.sleep(timeout)
 
     def wait_count(self, token: bytes, count: int, timeout: float = 120) -> None:
+        """Block until the pane shows token at least count times, else raise."""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if self.buffer.count(token) >= count:
@@ -110,11 +119,13 @@ class TuiSession:
         raise RpcError(f"timeout waiting for {token!r} x{count}; terminal tail={tail!r}")
 
     def settle(self, seconds: float = 2) -> None:
+        """Idle for a fixed window so in-flight output lands before assertions."""
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
             self.pump(min(0.25, deadline - time.monotonic()))
 
     def close(self) -> None:
+        """Kill the private tmux server, taking the codex process with it."""
         subprocess.run(
             ["tmux", "-L", self.socket, "kill-server"],
             env=self.env,
@@ -123,7 +134,10 @@ class TuiSession:
 
 
 class AppServer:
+    """A codex app-server JSON-RPC process with background stdout/stderr readers."""
+
     def __init__(self, env: dict[str, str]) -> None:
+        """Spawn the app-server and start the two reader threads feeding inbox."""
         self.proc = subprocess.Popen(
             ["codex", "--dangerously-bypass-hook-trust", "app-server", "--stdio"],
             stdin=subprocess.PIPE,
@@ -140,6 +154,7 @@ class AppServer:
         threading.Thread(target=self._read_stderr, daemon=True).start()
 
     def _read_stdout(self) -> None:
+        """Decode each stdout line into events and inbox; drop non-JSON noise."""
         assert self.proc.stdout is not None
         for line in self.proc.stdout:
             try:
@@ -150,11 +165,13 @@ class AppServer:
             self.inbox.put(message)
 
     def _read_stderr(self) -> None:
+        """Retain stderr lines so a crash can be reported with real diagnostics."""
         assert self.proc.stderr is not None
         for line in self.proc.stderr:
             self.stderr.append(line.rstrip())
 
     def send(self, method: str, request_id: int | None = None, params: dict[str, Any] | None = None) -> None:
+        """Write one JSON-RPC request or notification to the app-server stdin."""
         payload: dict[str, Any] = {"method": method}
         if request_id is not None:
             payload["id"] = request_id
@@ -165,6 +182,10 @@ class AppServer:
         self.proc.stdin.flush()
 
     def wait_for(self, predicate: Callable[[dict[str, Any]], bool], timeout: float = 60) -> dict[str, Any]:
+        """Return the first already-seen or incoming message matching predicate.
+
+        Raises RpcError on timeout or when the app-server exits first.
+        """
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             for event in self.events:
@@ -183,12 +204,14 @@ class AppServer:
         raise RpcError(f"timeout waiting for app-server event; stderr={' | '.join(self.stderr[-8:])}")
 
     def response(self, request_id: int, timeout: float = 60) -> dict[str, Any]:
+        """Await the reply for one request id, turning an RPC error into RpcError."""
         message = self.wait_for(lambda item: item.get("id") == request_id, timeout)
         if "error" in message:
             raise RpcError(f"request {request_id} failed: {message['error']}")
         return message.get("result", {})
 
     def initialize(self) -> None:
+        """Complete the initialize/initialized handshake before any other call."""
         self.send(
             "initialize",
             1,
@@ -205,6 +228,7 @@ class AppServer:
         self.send("initialized")
 
     def hooks(self, cwd: Path, request_id: int) -> list[dict[str, Any]]:
+        """Return only this plugin's registered hooks as that generation sees them."""
         self.send("hooks/list", request_id, {"cwds": [str(cwd)]})
         result = self.response(request_id, 15)
         return [
@@ -215,6 +239,7 @@ class AppServer:
         ]
 
     def close(self) -> None:
+        """Terminate the app-server, escalating to kill if it ignores SIGTERM."""
         if self.proc.poll() is None:
             self.proc.terminate()
             try:
@@ -225,6 +250,12 @@ class AppServer:
 
 
 def main() -> int:
+    """Prove install -> trust -> compact -> recall in a throwaway CODEX_HOME.
+
+    Refuses hot-reload as activation proof: only a process started after the
+    install may confirm the trusted hook pair, and the TUI leg asserts the real
+    PreCompact -> SessionStart(compact) -> model-response ordering by mtime.
+    """
     parser = argparse.ArgumentParser()
     parser.add_argument("--aicx", required=True, type=Path)
     parser.add_argument("--require-model-visible-recall", action="store_true")

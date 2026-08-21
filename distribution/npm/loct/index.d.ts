@@ -9,11 +9,12 @@ export const RUNTIME_BINARY: 'loctree';
 
 /**
  * Binaries shipped inside the platform package. `loctree` is the runtime;
- * `loctree-mcp` / `loctree-lsp` are co-processes the runtime spawns as siblings.
- * The npm package additionally exposes `loctree-mcp` for MCP package runners;
- * LSP remains an internal editor co-process.
+ * `loct` is the short alias for that same runtime; `loctree-mcp` / `loctree-lsp`
+ * are co-processes the runtime spawns as siblings. The npm package additionally
+ * exposes `loctree-mcp` for MCP package runners; LSP remains an internal
+ * editor co-process.
  */
-export type BundledBinary = 'loctree' | 'loctree-mcp' | 'loctree-lsp';
+export type BundledBinary = 'loct' | 'loctree' | 'loctree-mcp' | 'loctree-lsp';
 export const BUNDLED_BINARIES: BundledBinary[];
 
 /**

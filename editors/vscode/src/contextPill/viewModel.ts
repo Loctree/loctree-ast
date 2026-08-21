@@ -10,10 +10,15 @@ import {
   type RankedBody,
 } from '../gateway';
 
+/** One symbol the pill lists under DEFINES / EXPORTS. */
 export interface ExportSym { name: string; kind: string }
+/** Bounded source excerpt shown for a symbol scope; `found:false` renders a dash. */
 export interface BodyPreview { found: boolean; file: string; preview: string; truncated: boolean }
+/** Risk-of-change band input: how many files a change can touch, and which ones directly. */
 export interface BlastRadius { count: number; direct: string[] }
+/** Repo health score plus its green/yellow/red band. */
 export interface PillHealth { score: number; status: string }
+/** Repo-wide finding counts, rendered as muted background under per-file findings. */
 export interface PillFindings { dead: number; cycles: number; twins: number; hotspots: number }
 /** One finding scoped to the active file (filtered out of repo `top_risks`). */
 export interface FileRisk { kind: string; severity: string; message: string }
@@ -35,6 +40,8 @@ export type PillState =
   | 'lsp-stopped'
   | 'lsp-error';
 
+/** The LSP lifecycle fields the webview is allowed to see — a deliberate subset
+ *  of `LspRuntimeState` (no resolution source, no exit code). */
 export interface PillLspState {
   phase: LspRuntimePhase;
   label: string;
@@ -234,6 +241,8 @@ export function applyLiteralHarvest(
   };
 }
 
+/** Await a gateway call, swallowing any rejection into `fallback` — used where a
+ *  missing section must degrade to empty rather than fail the whole pill. */
 async function safe<T>(p: Promise<T>, fallback: T): Promise<T> {
   try { return await p; } catch { return fallback; }
 }
@@ -283,6 +292,7 @@ const NO_LITERAL = {
   literalNextOffset: null as number | null,
 };
 
+/** Project the gateway's runtime state down to the webview-facing subset. */
 function pillLspState(state: LspRuntimeState = DEFAULT_LSP_RUNTIME_STATE): PillLspState {
   return {
     phase: state.phase,
@@ -293,6 +303,8 @@ function pillLspState(state: LspRuntimeState = DEFAULT_LSP_RUNTIME_STATE): PillL
   };
 }
 
+/** All-zero metric block shared by every empty state, so an unavailable surface
+ *  reports zeros explicitly instead of leaving fields undefined. */
 function emptyMetrics() {
   return {
     health: { score: 0, status: 'unknown' },
@@ -307,12 +319,15 @@ function emptyMetrics() {
   };
 }
 
+/** Map a non-running LSP phase onto the pill state that renders its card. */
 function lspUnavailableState(phase: LspRuntimePhase): PillState {
   if (phase === 'error') return 'lsp-error';
   if (phase === 'starting') return 'lsp-starting';
   return 'lsp-stopped';
 }
 
+/** VM for a non-running LSP: the server's own message becomes the summary, and
+ *  every metric stays empty so no stale number is shown as current. */
 function lspUnavailableViewModel(scope: Scope, lsp: PillLspState): ContextPillViewModel {
   return {
     scope,
@@ -347,6 +362,12 @@ export function noEditorViewModel(lspState: LspRuntimeState = DEFAULT_LSP_RUNTIM
   };
 }
 
+/**
+ * Build the pill's view model for one scope. Branches per scope kind — LSP
+ * unavailable and out-of-workspace short-circuit with zero gateway calls,
+ * literal assembles an occurrence page, file and symbol share the impact +
+ * health sections. Never throws: failed calls degrade to empty sections.
+ */
 export async function assembleViewModel(gw: PillGateway, scope: Scope): Promise<ContextPillViewModel> {
   const target = scope.value;
   const lsp = pillLspState(gw.lspState());

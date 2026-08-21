@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Stage one public component mirror (engine, mcp or lsp) out of this private
+# suite: copy the manifest-declared payload, generate the workspace/licence/readme
+# metadata, scrub private markers, and optionally graft the snapshot onto the
+# mirror's main branch without deleting paths the mirror owns.
+
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 METADATA_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 SUITE_ROOT="$METADATA_ROOT"
@@ -35,6 +40,8 @@ GENERATED_PATHS=(
   SYNC-MANIFEST.md
 )
 
+# Print the CLI contract, including the three preconditions a push requires and
+# the remove= rule that governs mirror deletions.
 usage() {
   cat <<'EOF'
 Usage:
@@ -60,11 +67,14 @@ manifest; an undeclared delete aborts the push.
 EOF
 }
 
+# Abort the sync with a message on stderr and a non-zero exit status.
 die() {
   echo "error: $*" >&2
   exit 1
 }
 
+# Expand ~ and resolve one path to an absolute path, so the staging-safety checks
+# compare canonical paths before anything is deleted.
 abs_path() {
   python3 - "$1" <<'PY'
 import os
@@ -117,6 +127,9 @@ if [[ "$PUSH" == "1" ]]; then
     || die "--push requires LOCTREE_SYNC_CONFIRM=1"
 fi
 
+# Parse component-manifests/<component>.manifest into the include/vendor/extra/
+# exclude/remove arrays and the target-repo, licence, readme and dependency
+# settings. An unrecognised line, or a missing required key, aborts the sync.
 load_manifest() {
   local manifest="$1"
   local line key value
@@ -156,6 +169,8 @@ load_manifest() {
   [[ -n "$DEPENDENCY_MODE" ]] || die "manifest missing dependency_mode"
 }
 
+# Recreate the staging directory from scratch, refusing to rm -rf the filesystem
+# root, the suite root, the metadata root or the distribution directory itself.
 safe_reset_staging() {
   STAGING=$(abs_path "$STAGING")
   [[ "$STAGING" != "/" ]] || die "refusing to use / as staging"
@@ -167,6 +182,8 @@ safe_reset_staging() {
   mkdir -p "$STAGING"
 }
 
+# Emit the --exclude flags every payload copy uses: the always-private paths plus
+# each exclude= pattern the manifest declared.
 rsync_excludes() {
   local pattern
   printf '%s\n' \
@@ -180,6 +197,8 @@ rsync_excludes() {
   done
 }
 
+# rsync one manifest src:dst directory mapping from the suite into staging with
+# the shared exclude set applied. A missing source path aborts the sync.
 copy_mapping() {
   local mapping="$1"
   local src="${mapping%%:*}"
@@ -199,6 +218,8 @@ copy_mapping() {
   rsync -a "${args[@]}" "$SUITE_ROOT/$src/" "$STAGING/$dst/"
 }
 
+# Install every extra= single-file mapping into staging; include= is directory
+# oriented, so registry/listing files travel in this lane.
 copy_extra_files() {
   # Single-file mappings (registry/listing metadata like glama.json) — the
   # include= path is directory-oriented, so files get their own lane.
@@ -212,6 +233,8 @@ copy_extra_files() {
   done
 }
 
+# Copy the manifest's include= mappings and then its vendor= mappings into the
+# staging tree.
 copy_component_payload() {
   local mapping
   for mapping in "${INCLUDES[@]}"; do
@@ -223,6 +246,9 @@ copy_component_payload() {
   done
 }
 
+# Generate the mirror's root Cargo.toml: the workspace members this component
+# publishes, the stamped release version and MSRV, and the engine dependencies
+# resolved either as workspace-local paths (engine mirror) or crates.io versions.
 write_workspace_cargo() {
   local output="$STAGING/Cargo.toml"
   local loctree_path loctree_ast_path report_path
@@ -320,6 +346,8 @@ write_workspace_cargo() {
   } > "$output"
 }
 
+# Render the component README template into staging, substituting the component,
+# version, target repo and dependency-mode placeholders.
 render_readme() {
   local template="$METADATA_ROOT/$README_SRC"
   [[ -f "$template" ]] || die "missing README template: $README_SRC"
@@ -343,6 +371,8 @@ Path(output).write_text(text, encoding="utf-8")
 PY
 }
 
+# Write the mirror's NOTICE.md: BUSL-1.1 for current releases and, for the engine
+# mirror, the note that the 0.8.x line stays under its original MIT/Apache terms.
 write_notice() {
   local output="$STAGING/NOTICE.md"
   {
@@ -356,6 +386,8 @@ write_notice() {
   } > "$output"
 }
 
+# Report the suite commit this snapshot was cut from, falling back to an archive
+# marker when the suite root is not a git worktree.
 source_commit() {
   if git -C "$SUITE_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     git -C "$SUITE_ROOT" rev-parse --short=12 HEAD
@@ -364,6 +396,9 @@ source_commit() {
   fi
 }
 
+# Write SYNC-MANIFEST.md recording what this sync publishes: component, version,
+# target repo, source commit, push mode, every payload mapping and every declared
+# removal. It is the mirror's own record of where its contents came from.
 write_sync_manifest() {
   local output="$STAGING/SYNC-MANIFEST.md"
   local commit generated mapping
@@ -399,10 +434,13 @@ write_sync_manifest() {
   } > "$output"
 }
 
+# Install the distribution LICENSE into staging as the mirror's LICENSE.
 copy_license() {
   install -m 0644 "$METADATA_ROOT/LICENSE" "$STAGING/LICENSE"
 }
 
+# Rewrite private absolute paths and internal artifact names out of every text
+# file in staging, before anything can reach a public remote.
 sanitize_private_markers() {
   python3 - "$STAGING" "$SUITE_ROOT" "$METADATA_ROOT" <<'PY'
 from pathlib import Path
@@ -441,6 +479,8 @@ for path in root.rglob("*"):
 PY
 }
 
+# Fail the sync if any private marker or internal directory survived sanitisation.
+# This is the last gate standing between staging and a public push.
 scan_hard_excludes() {
   local hits
   hits=$(find "$STAGING" \( -path '*/.git/*' -o -path '*/target/*' \) -prune -o \
@@ -454,6 +494,7 @@ $hits"
   fi
 }
 
+# Resolve the generated workspace so the mirror ships a buildable Cargo.lock.
 generate_lockfile() {
   cargo generate-lockfile --manifest-path "$STAGING/Cargo.toml"
 }
@@ -495,6 +536,9 @@ assert_removals_absent_from_staging() {
   done
 }
 
+# Publish the staged snapshot to the mirror's main when push is enabled: graft it
+# onto the fetched remote commit so mirror-owned paths survive, verify the deletes
+# are declared, then push. Without --push this only reports the local snapshot.
 maybe_push() {
   if [[ "$PUSH" != "1" ]]; then
     echo "push: disabled (default local snapshot mode)"

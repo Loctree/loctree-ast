@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Codesign the suite binaries staged in <bin-dir>, in place. Called by the
+# Makefile release-binaries / install targets; absent binaries are skipped and a
+# failed verification aborts the build.
+
 if [[ $# -ne 1 ]]; then
   echo "Usage: $0 <bin-dir>"
   exit 1

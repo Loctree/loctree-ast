@@ -183,12 +183,12 @@ loct watch --http --port 5174 &
   cd /Volumes/vc-workspace/Loctree/loctree-suite
   make install-all
   ```
-  *(Kompiluje `loct`, `loctree`, `loctree-mcp`, `loctree-lsp`, podpisuje binarki i rejestruje serwis launchd `io.vetcoders.loctree.mcp`).*
+  *(Kompiluje `loct`, `loctree`, `loctree-mcp`, `loctree-lsp`, podpisuje binarki i rejestruje serwis launchd `com.loctree.loctree.mcp`).*
 
 * **Zarządzanie serwisem LaunchAgent:**
   ```bash
-  make install-service    # Instaluje i startuje LaunchAgent io.vetcoders.loctree.mcp
-  make uninstall-service  # Zatrzymuje i wyrejestrowuje LaunchAgent io.vetcoders.loctree.mcp
+  make install-service    # Instaluje i startuje LaunchAgent com.loctree.loctree.mcp
+  make uninstall-service  # Zatrzymuje i wyrejestrowuje LaunchAgent com.loctree.loctree.mcp
   ```
 
 * **Wystawienie na tailnet (jawne, uwierzytelnione):**
@@ -314,7 +314,7 @@ Serwisy są zarejestrowane jako per-user LaunchAgents w `~/Library/LaunchAgents/
 | Identyfikator Serwisu | Polecenie | Domyślny Port | Cel Logowania |
 | :--- | :--- | :--- | :--- |
 | **`io.vetcoders.aicx.mcp`** | `aicx serve --transport http` | `8044` | `~/.aicx/logs/aicx-serve-http.log` |
-| **`io.vetcoders.loctree.mcp`** | `loctree-mcp --transport http` | `5174` | `~/.loctree/logs/loctree-serve-http.log` |
+| **`com.loctree.loctree.mcp`** | `loctree-mcp --transport http` | `5174` | `~/.loctree/logs/loctree-serve-http.log` |
 
 Oba serwisy domyślnie bindują loopback i żaden nie terminuje TLS w procesie.
 
@@ -334,12 +334,12 @@ alias mcp-status='lsof -nP -iTCP:8044,5174 -sTCP:LISTEN'
 alias mcp-logs='tail -f ~/.aicx/logs/aicx-serve-http.log ~/.loctree/logs/loctree-serve-http.log'
 
 # Sprawdzenie stanu serwisów w launchd
-alias mcp-launchd='launchctl list | grep vetcoders'
+alias mcp-launchd='launchctl list | grep -E "vetcoders|loctree"'
 
 # Restart obu serwisów launchd
 alias mcp-restart='launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/io.vetcoders.aicx.mcp.plist 2>/dev/null; \
   launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/io.vetcoders.aicx.mcp.plist; \
-  launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/io.vetcoders.loctree.mcp.plist 2>/dev/null; \
-  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/io.vetcoders.loctree.mcp.plist; \
+  launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.loctree.loctree.mcp.plist 2>/dev/null; \
+  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.loctree.loctree.mcp.plist; \
   echo "🚀 Serwisy zrestartowane w launchd"'
 ```

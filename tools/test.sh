@@ -1,4 +1,7 @@
 #!/bin/sh
+# test.sh — workspace test entrypoint behind `make test`.
+# Clears repository-local Git variables first so fixture repositories created by
+# the tests cannot be redirected back into the caller's real repository.
 set -eu
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"

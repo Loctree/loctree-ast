@@ -9,6 +9,8 @@
 import * as vscode from 'vscode';
 import { lspStateLabel, type HealthResponse, type LspRuntimeState } from './gateway';
 
+/** Coarse status-bar states used before health data exists (or while a scan runs);
+ *  the LSP-phase and health-driven updaters below take over once it does. */
 export enum StatusBarState {
     Initializing = 'initializing',
     Ready = 'ready',
@@ -84,6 +86,11 @@ export function updateStatusBar(
     item.show();
 }
 
+/**
+ * Paint the status bar from the LSP lifecycle, putting the resolved binary,
+ * its identity, the resolution source and any shadowing warning in the tooltip
+ * so a wrong-runtime problem is visible without opening the output channel.
+ */
 export function updateStatusBarFromLspState(
     item: vscode.StatusBarItem,
     state: LspRuntimeState

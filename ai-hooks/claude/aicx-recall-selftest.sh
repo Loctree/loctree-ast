@@ -35,7 +35,9 @@ TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 fail=0
 
+# pass NAME : marks one assertion satisfied; purely cosmetic, never touches $fail.
 pass() { printf '  \033[32m✅\033[0m %s\n' "$1"; }
+# nope NAME : marks one assertion broken AND raises $fail, which becomes the exit code.
 nope() { printf '  \033[31m❌\033[0m %s\n' "$1"; fail=1; }
 # check NAME : runs a predicate command; reads ONLY from files, never echo "$var".
 check() { if eval "$2" >/dev/null 2>&1; then pass "$1"; else nope "$1"; fi; }

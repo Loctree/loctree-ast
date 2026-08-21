@@ -377,6 +377,32 @@ jobs:
             debian:12 \
             /bin/bash -lc '/bundle/bin/loct --version && /bundle/bin/loct scan /fixture'
 
+      - name: Smoke macOS dylib portability
+        if: runner.os == 'macOS'
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+          TARGET: ${{ matrix.target }}
+          ARTIFACT_SUFFIX: ${{ matrix.artifact_suffix }}
+        run: |
+          set -euo pipefail
+          bundle="dist/release-bundles/${VERSION}/loctree-${VERSION}-${TARGET}${ARTIFACT_SUFFIX}.tar.gz"
+          root="loctree-${VERSION}-${TARGET}${ARTIFACT_SUFFIX}"
+          extract_dir="$RUNNER_TEMP/macos-dylib-smoke"
+          rm -rf "$extract_dir"
+          mkdir -p "$extract_dir"
+          tar -xzf "$bundle" -C "$extract_dir"
+          bins=()
+          for b in loct loctree loctree-mcp loctree-lsp aicx aicx-mcp; do
+            if [[ -x "$extract_dir/$root/bin/$b" ]]; then
+              bins+=("$extract_dir/$root/bin/$b")
+            fi
+          done
+          if [[ ${#bins[@]} -eq 0 ]]; then
+            echo "no staged binaries to smoke in $extract_dir/$root/bin" >&2
+            exit 1
+          fi
+          bash distribution/macos/smoke-releaseability.sh "${bins[@]}"
+
       - name: Upload release bundle artifacts
         # actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

@@ -1,6 +1,7 @@
 import type { ContextPillViewModel } from './viewModel';
 import { scopeKey } from './scope';
 
+/** The IDE signals a task may be inferred from: the WIP diff and the selection. */
 export interface TaskSignal { changedFiles: string[]; selection: string }
 
 /** Infer the task from IDE signals (WIP diff primary, selection refinement).
@@ -28,6 +29,12 @@ function humanizeKind(kind: string): string {
   return kind ? kind.charAt(0).toUpperCase() + kind.slice(1) : '';
 }
 
+/**
+ * Render the clipboard payload an agent receives. Literal scope emits the grouped
+ * occurrence list and returns early; structural scopes emit blast radius, exports,
+ * deps, body and findings — with per-file and repo-wide counts kept separate so
+ * the agent never reads repo numbers as file numbers.
+ */
 export function buildAgentContextMarkdown(vm: ContextPillViewModel, task: string): string {
   const lines: string[] = [];
   lines.push(`# Loctree context — ${scopeKey(vm.scope)}`);

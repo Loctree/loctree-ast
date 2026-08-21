@@ -29,6 +29,7 @@ MCP_FAILURE_NEEDLES = (
 
 
 def load_payload() -> dict[str, Any]:
+    """Read the hook payload from stdin, degrading to {} on any decode failure."""
     try:
         payload = json.load(sys.stdin)
     except Exception:
@@ -37,6 +38,7 @@ def load_payload() -> dict[str, Any]:
 
 
 def stringify(value: object) -> str:
+    """Flatten any payload to one searchable string, falling back to repr()."""
     try:
         return json.dumps(value, ensure_ascii=False, default=str)
     except Exception:
@@ -44,6 +46,10 @@ def stringify(value: object) -> str:
 
 
 def main() -> int:
+    """Print a recovery systemMessage when the tool result carries an MCP
+    transport-failure signature; otherwise print a bare {"continue": true}.
+    Always exits 0 — the hook advises, it never blocks the tool call.
+    """
     payload_text = stringify(load_payload()).lower()
     if any(needle in payload_text for needle in MCP_FAILURE_NEEDLES):
         print(

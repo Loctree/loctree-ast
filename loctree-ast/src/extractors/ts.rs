@@ -87,6 +87,8 @@ impl LangExtractor for TsxExtractor {
 // Query bodies (shared between TS and TSX; bound to per-grammar `Language`).
 // ---------------------------------------------------------------------------
 
+/// Tree-sitter patterns covering every TS export form — value, interface, type
+/// alias and enum declarations plus `export default` and `export { ... }`.
 const EXPORTS_QUERY: &str = r#"
 (export_statement
   declaration: (function_declaration name: (identifier) @name)) @export.function
@@ -119,16 +121,19 @@ const EXPORTS_QUERY: &str = r#"
     (export_specifier name: (identifier) @name))) @export.named
 "#;
 
+/// Tree-sitter pattern capturing each import statement with its module specifier.
 const IMPORTS_QUERY: &str = r#"
 (import_statement
   source: (string) @source) @import
 "#;
 
+/// Tree-sitter pattern capturing every call expression and its callee node.
 const CALLS_QUERY: &str = r#"
 (call_expression
   function: (_) @callee) @call
 "#;
 
+/// Compiles the exports query against the TypeScript grammar, once per process.
 fn ts_query_exports() -> &'static Query {
     static Q: OnceLock<Query> = OnceLock::new();
     Q.get_or_init(|| {
@@ -139,6 +144,7 @@ fn ts_query_exports() -> &'static Query {
     })
 }
 
+/// Compiles the imports query against the TypeScript grammar, once per process.
 fn ts_query_imports() -> &'static Query {
     static Q: OnceLock<Query> = OnceLock::new();
     Q.get_or_init(|| {
@@ -149,6 +155,7 @@ fn ts_query_imports() -> &'static Query {
     })
 }
 
+/// Compiles the calls query against the TypeScript grammar, once per process.
 fn ts_query_calls() -> &'static Query {
     static Q: OnceLock<Query> = OnceLock::new();
     Q.get_or_init(|| {
@@ -159,21 +166,26 @@ fn ts_query_calls() -> &'static Query {
     })
 }
 
+/// Compiles the exports query against the TSX grammar, once per process.
 fn tsx_query_exports() -> &'static Query {
     static Q: OnceLock<Query> = OnceLock::new();
     Q.get_or_init(|| compile(tree_sitter_typescript::LANGUAGE_TSX.into(), EXPORTS_QUERY))
 }
 
+/// Compiles the imports query against the TSX grammar, once per process.
 fn tsx_query_imports() -> &'static Query {
     static Q: OnceLock<Query> = OnceLock::new();
     Q.get_or_init(|| compile(tree_sitter_typescript::LANGUAGE_TSX.into(), IMPORTS_QUERY))
 }
 
+/// Compiles the calls query against the TSX grammar, once per process.
 fn tsx_query_calls() -> &'static Query {
     static Q: OnceLock<Query> = OnceLock::new();
     Q.get_or_init(|| compile(tree_sitter_typescript::LANGUAGE_TSX.into(), CALLS_QUERY))
 }
 
+/// Binds a query body to a grammar, panicking on a malformed query: the bodies
+/// are crate constants, so a failure here is a build bug rather than bad input.
 fn compile(lang: Language, body: &str) -> Query {
     Query::new(&lang, body).expect("Plan 19 extractor query is well-formed")
 }
@@ -182,6 +194,9 @@ fn compile(lang: Language, body: &str) -> Query {
 // Generic match walkers — reused by JS extractor (same node naming).
 // ---------------------------------------------------------------------------
 
+/// Walks the query matches and pairs each `@name` capture with its `@export.*`
+/// marker, translating the marker into Loctree's kind / export-type vocabulary.
+/// Shared with the JS extractor, which uses identical capture names.
 pub(super) fn extract_exports_with(tree: &LoctreeTree, query: &Query) -> Vec<ExportSymbol> {
     let capture_names = query.capture_names();
     let mut cursor = QueryCursor::new();
@@ -240,6 +255,8 @@ pub(super) fn extract_exports_with(tree: &LoctreeTree, query: &Query) -> Vec<Exp
     out
 }
 
+/// Turns each captured import statement into an `ImportEntry`: unquotes the
+/// module specifier and walks the clause for the names it brings into scope.
 pub(super) fn extract_imports_generic(tree: &LoctreeTree, query: &Query) -> Vec<ImportEntry> {
     let capture_names = query.capture_names();
     let mut cursor = QueryCursor::new();
@@ -275,6 +292,8 @@ pub(super) fn extract_imports_generic(tree: &LoctreeTree, query: &Query) -> Vec<
     out
 }
 
+/// Turns each captured call expression into a `CallEntry`, recording both the
+/// full callee text and the identifier actually being invoked.
 pub(super) fn extract_calls_generic(tree: &LoctreeTree, query: &Query) -> Vec<CallEntry> {
     let capture_names = query.capture_names();
     let mut cursor = QueryCursor::new();
@@ -315,6 +334,8 @@ pub(super) fn extract_calls_generic(tree: &LoctreeTree, query: &Query) -> Vec<Ca
 // noisier than a structured walk for default + namespace + named in one pass.
 // ---------------------------------------------------------------------------
 
+/// Walks an import clause by hand and emits one `ImportBinding` per bound name,
+/// covering default, namespace and named (optionally aliased) forms in one pass.
 fn walk_import_clause(import_stmt: &Node, source: &[u8]) -> Vec<ImportBinding> {
     let mut bindings = Vec::new();
     let mut cursor = import_stmt.walk();
@@ -373,6 +394,8 @@ fn walk_import_clause(import_stmt: &Node, source: &[u8]) -> Vec<ImportBinding> {
     bindings
 }
 
+/// Reduces a callee node to the identifier actually called — the property for a
+/// member expression, the node itself for a bare identifier.
 fn trailing_identifier(callee: &Node, source: &[u8]) -> Option<String> {
     match callee.kind() {
         "identifier" | "property_identifier" | "type_identifier" => {
@@ -386,22 +409,28 @@ fn trailing_identifier(callee: &Node, source: &[u8]) -> Option<String> {
     }
 }
 
+/// Borrows a node's source text, yielding an empty string rather than panicking
+/// when the byte range is not valid UTF-8.
 fn node_text<'a>(node: &Node, source: &'a [u8]) -> &'a str {
     let range = node.byte_range();
     std::str::from_utf8(&source[range.start..range.end]).unwrap_or("")
 }
 
+/// Reads the source text of a named child field, or `None` when it is absent.
 fn field_text(node: &Node, field: &str, source: &[u8]) -> Option<String> {
     let f = node.child_by_field_name(field)?;
     Some(node_text(&f, source).to_string())
 }
 
+/// Returns the first direct child with the given node kind.
 fn first_child_of_kind<'tree>(node: &Node<'tree>, kind: &str) -> Option<Node<'tree>> {
     let mut cursor = node.walk();
     node.children(&mut cursor)
         .find(|child| child.kind() == kind)
 }
 
+/// Strips one matching pair of surrounding quotes (`"`, `'` or a backtick) from a
+/// raw string literal, leaving text that is not quoted untouched.
 fn strip_string_quotes(raw: &str) -> &str {
     let trimmed = raw.trim();
     let bytes = trimmed.as_bytes();

@@ -11,17 +11,20 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { LoctreeGateway, LoctreeNotRunningError, Occurrence, lspStateLabel } from './gateway';
 
+/** A normalized "open this place" payload extracted from an untrusted command arg. */
 interface LocationTarget {
     filePath: string;
     line?: number;
     column?: number;
 }
 
+/** Untyped object payload as VS Code hands it to a command handler. */
 type CommandPayload = Record<string, unknown>;
 // Intentional: detect control characters in payloads before they reach the shell/LSP.
 // eslint-disable-next-line no-control-regex
 const CONTROL_CHAR_REGEX = /[\x00-\x1F\x7F]/;
 
+/** Narrow an unknown command argument to a plain object (arrays and null rejected). */
 function asRecord(value: unknown): CommandPayload | undefined {
     if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
         return value as CommandPayload;
@@ -29,6 +32,7 @@ function asRecord(value: unknown): CommandPayload | undefined {
     return undefined;
 }
 
+/** Read a non-empty trimmed string field, or undefined — blank counts as absent. */
 function getString(payload: CommandPayload, key: string): string | undefined {
     const value = payload[key];
     if (typeof value === 'string') {
@@ -40,6 +44,7 @@ function getString(payload: CommandPayload, key: string): string | undefined {
     return undefined;
 }
 
+/** Read a finite number field, accepting numeric strings from diagnostic payloads. */
 function getNumber(payload: CommandPayload, key: string): number | undefined {
     const value = payload[key];
     if (typeof value === 'number' && Number.isFinite(value)) {
@@ -54,6 +59,8 @@ function getNumber(payload: CommandPayload, key: string): number | undefined {
     return undefined;
 }
 
+/** Unwrap the single-array form VS Code uses when a menu/code-action passes its
+ *  arguments as one array, so handlers see a flat argument list either way. */
 function normalizeCommandArgs(args: unknown[]): unknown[] {
     if (args.length === 1 && Array.isArray(args[0])) {
         return args[0] as unknown[];
@@ -61,10 +68,14 @@ function normalizeCommandArgs(args: unknown[]): unknown[] {
     return args;
 }
 
+/** True when a path payload carries control characters — rejected before it can
+ *  reach the filesystem or the LSP. */
 function hasUnsafeControlChars(value: string): boolean {
     return CONTROL_CHAR_REGEX.test(value);
 }
 
+/** Split a relative path into segments, rejecting absolute paths, NUL bytes and
+ *  any `..` traversal. Null means the input must not be joined onto a root. */
 function safeRelativeParts(raw: string): string[] | null {
     if (!raw || path.isAbsolute(raw) || raw.includes('\0')) {
         return null;
@@ -76,6 +87,7 @@ function safeRelativeParts(raw: string): string[] | null {
     return parts;
 }
 
+/** True when the path resolves inside the workspace root (equal counts as inside). */
 function isWithinWorkspace(absolutePath: string, workspaceRoot: string): boolean {
     const root = path.normalize(workspaceRoot);
     const target = path.normalize(absolutePath);
@@ -87,6 +99,8 @@ function isWithinWorkspace(absolutePath: string, workspaceRoot: string): boolean
     );
 }
 
+/** Join `segments` under `root`; undefined when a segment is unsafe or the result
+ *  would escape the root. */
 function safeChildPath(root: string, ...segments: string[]): string | undefined {
     const parts: string[] = [];
     for (const segment of segments) {
@@ -102,6 +116,8 @@ function safeChildPath(root: string, ...segments: string[]): string | undefined 
     return isWithinWorkspace(child, normalizedRoot) ? child : undefined;
 }
 
+/** {@link safeChildPath} that throws instead of returning undefined — used for the
+ *  extension's own `.loctree/` writes, where an escape must abort the command. */
 function trustedChildPath(root: string, ...segments: string[]): string {
     const child = safeChildPath(root, ...segments);
     if (!child) {
@@ -110,6 +126,8 @@ function trustedChildPath(root: string, ...segments: string[]): string {
     return child;
 }
 
+/** Turn a `file://` URI, absolute path, or workspace-relative path into an absolute
+ *  path. Does NOT yet prove the result is inside the workspace. */
 function resolveFilePath(filePath: string, workspaceRoot: string): string | undefined {
     if (hasUnsafeControlChars(filePath)) {
         return undefined;
@@ -130,6 +148,8 @@ function resolveFilePath(filePath: string, workspaceRoot: string): string | unde
     return safeChildPath(workspaceRoot, filePath);
 }
 
+/** The single containment gate every navigation command passes through: resolve,
+ *  then refuse anything landing outside the workspace root. */
 function toWorkspaceAbsolutePath(filePath: string, workspaceRoot: string): string | undefined {
     const absolutePath = resolveFilePath(filePath, workspaceRoot);
     if (!absolutePath) {
@@ -143,6 +163,8 @@ function toWorkspaceAbsolutePath(filePath: string, workspaceRoot: string): strin
     return absolutePath;
 }
 
+/** Accept the several shapes callers send (bare string, or an object keyed
+ *  `filePath`/`file`/`path`/`uri`) and reduce them to one location target. */
 function extractLocationTarget(raw: unknown): LocationTarget | undefined {
     if (typeof raw === 'string') {
         const trimmed = raw.trim();
@@ -174,6 +196,8 @@ function extractLocationTarget(raw: unknown): LocationTarget | undefined {
     };
 }
 
+/** Recover the file chain of a circular-import finding from a diagnostic payload,
+ *  accepting an arrow-joined string, an array, or a nested cycle/chain/files field. */
 function extractCycleChain(raw: unknown): string[] {
     if (typeof raw === 'string') {
         return raw
@@ -223,6 +247,8 @@ function extractCycleChain(raw: unknown): string[] {
     return file ? [file] : [];
 }
 
+/** Decide which file a command acts on: the first argument that resolves to an
+ *  in-workspace path, else the active editor's file. */
 function pickFileForCommand(args: unknown[], workspaceRoot: string): string | undefined {
     for (const arg of args) {
         const location = extractLocationTarget(arg);
@@ -274,6 +300,7 @@ async function runGatewayCall<T>(
     }
 }
 
+/** The warning text shown when a command is invoked while the LSP is not running. */
 function describeLspUnavailable(gateway: LoctreeGateway): string {
     const state = gateway.lspState();
     if (state.phase === 'error') {
@@ -291,6 +318,8 @@ async function showMarkdown(title: string, markdown: string): Promise<void> {
     await vscode.window.showTextDocument(doc, { preview: true });
 }
 
+/** Workspace-relative display form of a path; returns the input unchanged when it
+ *  is already relative or lies outside the root. */
 function relPath(filePath: string, workspaceRoot: string): string {
     if (path.isAbsolute(filePath)) {
         const rel = path.relative(workspaceRoot, filePath);
@@ -326,6 +355,7 @@ async function navigateToOccurrence(
     editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenter);
 }
 
+/** Marks the "Load more…" row so it can never collide with a real occurrence item. */
 const LOAD_MORE_SENTINEL = Symbol('loctree.loadMore');
 
 /**
@@ -410,6 +440,8 @@ async function presentOccurrences(
     }
 }
 
+/** Quote a value for TOML: escapes backslash/quote/whitespace escapes and strips
+ *  residual control characters, so a finding message cannot corrupt the file. */
 function tomlString(value: string): string {
     const sanitized = value
         .replace(/\\/g, '\\\\')
@@ -423,6 +455,11 @@ function tomlString(value: string): string {
     return `"${sanitized}"`;
 }
 
+/**
+ * Append a `[[suppress]]` entry for a cycle to `.loctree/suppressions.toml`,
+ * creating the file on first use and skipping the write when the same chain is
+ * already suppressed. Returns the suppressions path.
+ */
 async function appendCycleSuppression(
     workspaceRoot: string,
     cycleChain: string[]
@@ -464,6 +501,10 @@ async function appendCycleSuppression(
     return suppressionsPath;
 }
 
+/**
+ * Open a finding's file in the editor, refusing paths outside the workspace or
+ * missing on disk, and placing the caret when the payload carried a line.
+ */
 async function navigateToFile(
     workspaceRoot: string,
     outputChannel: vscode.OutputChannel,
@@ -512,6 +553,7 @@ export function registerCommands(
     gateway: LoctreeGateway,
     onManualRefresh: () => void
 ): void {
+    /** Register a command and tie its disposal to the extension's subscriptions. */
     const reg = (name: string, handler: (...args: unknown[]) => unknown): void => {
         context.subscriptions.push(vscode.commands.registerCommand(name, handler));
     };

@@ -52,20 +52,28 @@ semgrep_secrets() {
   semgrep --config p/secrets --error --quiet --exclude target "$staging"
 }
 
-check_engine_registry_shape() {
+check_engine_workspace_snapshot_shape() {
   local staging="$1"
-  [[ ! -e "$staging/reports" ]] || fail "engine staging unexpectedly contains reports/"
-  grep -qx "report-leptos = \"$VERSION\"" "$staging/Cargo.toml" \
-    || fail "engine Cargo.toml does not use registry report-leptos $VERSION"
-  if grep -q 'report-leptos = { path' "$staging/Cargo.toml"; then
-    fail "engine Cargo.toml still contains a path dependency for report-leptos"
-  fi
-  if grep -q '"reports"' "$staging/Cargo.toml"; then
-    fail "engine Cargo.toml still contains reports as a workspace member"
+  # engine.manifest (16199c23) declares dependency_mode=local workspace
+  # snapshot with include=reports:reports, so the staged engine tree must
+  # carry the renderer as a workspace member and a path dep.
+  [[ -d "$staging/reports" ]] || fail "engine staging missing reports/ (manifest include=reports:reports)"
+  grep -q 'report-leptos = { path = "reports"' "$staging/Cargo.toml" \
+    || fail "engine Cargo.toml does not use local path report-leptos"
+  grep -q '"reports"' "$staging/Cargo.toml" \
+    || fail "engine Cargo.toml missing reports workspace member"
+  if grep -qx "report-leptos = \"$VERSION\"" "$staging/Cargo.toml"; then
+    fail "engine Cargo.toml still uses registry report-leptos"
   fi
   if grep -q 'Vendored Build Payload' "$staging/SYNC-MANIFEST.md"; then
     fail "engine sync manifest still advertises vendored payload"
   fi
+}
+
+check_mirror_has_no_reports() {
+  local staging="$1"
+  local component="$2"
+  [[ ! -e "$staging/reports" ]] || fail "$component staging unexpectedly contains reports/"
 }
 
 check_mcp_distribution_shape() {
@@ -105,9 +113,12 @@ check_component() {
   scan_excludes "$staging"
   semgrep_secrets "$staging"
   if [[ "$component" == "engine" ]]; then
-    check_engine_registry_shape "$staging"
-  elif [[ "$component" == "mcp" ]]; then
-    check_mcp_distribution_shape "$staging"
+    check_engine_workspace_snapshot_shape "$staging"
+  else
+    check_mirror_has_no_reports "$staging" "$component"
+    if [[ "$component" == "mcp" ]]; then
+      check_mcp_distribution_shape "$staging"
+    fi
   fi
   CARGO_TARGET_DIR="$target_dir" cargo check --locked --manifest-path "$staging/Cargo.toml"
 }

@@ -30,8 +30,12 @@ use uuid::Uuid;
 
 pub(crate) use scope::Scope;
 
+/// Tilde-relative store location used whenever neither `--token-store` nor
+/// `LOCTREE_MCP_TOKEN_STORE` names a path.
 const DEFAULT_TOKEN_STORE_PATH: &str = "~/.rmcp-servers/loctree-mcp/tokens.json";
 
+/// Hasher used for every token write and every verification, so a stored hash
+/// and a presented plaintext are always compared under the same parameters.
 fn argon2id() -> Argon2<'static> {
     Argon2::new(Algorithm::Argon2id, Version::V0x13, Params::default())
 }

@@ -20,10 +20,16 @@ import sys
 
 
 def sha256(path: pathlib.Path) -> str:
+    """Hex digest of the file's raw bytes — the equality the mirror must satisfy."""
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def main() -> int:
+    """Copy the canonical fixtures over the aicx mirror, then prove byte-equality.
+
+    Exits 2 when the two roots are not exported, 1 when a fixture is missing,
+    hash-mismatched or stray in the mirror, 0 only when both trees agree.
+    """
     check_only = "--check" in sys.argv[1:]
     suite_root = os.environ.get("LOCTREE_SUITE_ROOT")
     aicx_root = os.environ.get("AICX_ROOT")

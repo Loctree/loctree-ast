@@ -45,8 +45,13 @@ const MAX_REDIRECTS = 5;
  */
 const DOWNLOAD_TIMEOUT_MS = 30_000;
 
+/**
+ * Release repository the runtime auto-download falls back to when
+ * `loctree.downloadBaseUrl` is unset or is not a usable http(s) URL.
+ */
 const DEFAULT_DOWNLOAD_REPO = 'https://github.com/Loctree/loctree-release';
 
+/** Which of the five resolution steps produced the runtime that was launched. */
 export type RuntimeResolutionSource =
     | 'configured'
     | 'bundled'
@@ -55,6 +60,8 @@ export type RuntimeResolutionSource =
     | 'preferred-install'
     | 'path';
 
+/** A resolved loctree-lsp runtime: exact path, how it was found, its
+ *  `--version` identity, and any PATH-shadowing warning to surface. */
 export interface ResolvedServerRuntime {
     command: string;
     source: RuntimeResolutionSource;
@@ -62,18 +69,26 @@ export interface ResolvedServerRuntime {
     warning?: string;
 }
 
+/** PATH-fallback outcome before the version probe: the chosen command plus the
+ *  earlier-on-PATH binary it overrode, when one exists. */
 interface PathRuntimeCandidate {
     command: string;
     source: 'preferred-install' | 'path';
     shadowedPath?: string;
 }
 
+/** Prefix of the warning raised when a stale PATH entry shadows ~/.local/bin. */
 const PATH_SHADOW_WARNING = 'Loctree runtime PATH shadowing:';
 
+/** Platform-correct loctree-lsp filename (`.exe` on Windows). */
 function binaryNameForPlatform(): string {
     return process.platform === 'win32' ? 'loctree-lsp.exe' : 'loctree-lsp';
 }
 
+/**
+ * Canonical path of `candidate` when it is an existing, executable regular
+ * file; null otherwise. Symlinks are resolved so the identity is unambiguous.
+ */
 function executableFile(candidate: string): string | null {
     try {
         if (!fs.statSync(candidate).isFile()) return null;
@@ -113,6 +128,10 @@ export function resolvePathRuntime(
     return { command: pathMatch ?? safeBinaryName, source: 'path' };
 }
 
+/**
+ * Run `<command> --version` (fixed argv, never a shell, killed after 5s) and
+ * return its first line, or `'version unavailable'` when the probe cannot run.
+ */
 async function probeRuntimeVersion(command: string): Promise<string> {
     const executableCommand = executableFile(command)
         ?? (command === binaryNameForPlatform() ? command : null);
@@ -139,6 +158,10 @@ async function probeRuntimeVersion(command: string): Promise<string> {
     });
 }
 
+/**
+ * Attach identity to a resolved command: probes its version and, when a PATH
+ * entry shadows it, probes that too and composes the shadowing warning.
+ */
 async function runtimeIdentity(
     command: string,
     source: RuntimeResolutionSource,
@@ -158,11 +181,13 @@ async function runtimeIdentity(
     };
 }
 
+/** Bare LSP asset marker name for the host platform; null on unsupported hosts. */
 export function assetNameForPlatform(): string | null {
     const target = releaseTargetForPlatform();
     return target ? lspAssetNameForTarget(target) : null;
 }
 
+/** Rust target triple for the host platform, or null when no release is built for it. */
 export function releaseTargetForPlatform(): string | null {
     const platform = process.platform;
     const arch = process.arch;
@@ -182,26 +207,36 @@ export function releaseTargetForPlatform(): string | null {
     return null;
 }
 
+/** Asset marker name for a target triple; also names the cache version marker file. */
 export function lspAssetNameForTarget(target: string): string {
     return `loctree-lsp-${target}`;
 }
 
+/** Strip a leading `v` and surrounding whitespace from a version string. */
 function normalizeVersion(raw: string): string {
     return raw.trim().replace(/^v/, '');
 }
 
+/** Release tag used when no `loctree.downloadTag` is configured: the extension's
+ *  own version, so the downloaded runtime stays in lockstep with the plugin. */
 function defaultDownloadTag(extensionVersion: string): string {
     return `v${normalizeVersion(extensionVersion || '0.0.0')}`;
 }
 
+/** Tarball asset name inside a release: `loctree-<version>-<target>.tar.gz`. */
 function archiveAssetName(version: string, target: string): string {
     return `loctree-${normalizeVersion(version)}-${target}.tar.gz`;
 }
 
+/** Top-level directory the release tarball unpacks into. */
 function archiveRootDir(version: string, target: string): string {
     return `loctree-${normalizeVersion(version)}-${target}`;
 }
 
+/**
+ * Normalize a configured repo URL (drop `git+`, `.git`, trailing slash).
+ * Returns null for anything that is not http(s), so the default repo wins.
+ */
 function normalizeRepoUrl(raw?: string): string | null {
     if (!raw) return null;
     let url = raw.trim();
@@ -220,6 +255,10 @@ function normalizeRepoUrl(raw?: string): string | null {
     return url;
 }
 
+/**
+ * Build the GitHub release asset URL. `latest` routes through
+ * `/releases/latest/download/`; any other tag through `/releases/download/<tag>/`.
+ */
 export function releaseDownloadUrl(
     repoBase: string,
     tag: string,
@@ -234,10 +273,12 @@ export function releaseDownloadUrl(
     return `${releaseBase}/download/${tag}/${assetName}`;
 }
 
+/** Path of the `.sha256` sidecar that guards a downloaded or cached file. */
 function sidecarPath(binaryPath: string): string {
     return `${binaryPath}.sha256`;
 }
 
+/** Drop one layer of matching quotes a user may have pasted into a settings path. */
 function stripPathQuotes(raw: string): string {
     const trimmed = raw.trim();
     if (trimmed.length >= 2) {
@@ -250,6 +291,7 @@ function stripPathQuotes(raw: string): string {
     return trimmed;
 }
 
+/** True when `candidate` resolves inside `root` (equal counts as inside). */
 function isInsidePath(root: string, candidate: string): boolean {
     const normalizedRoot = path.normalize(root);
     const normalizedCandidate = path.normalize(candidate);
@@ -260,6 +302,8 @@ function isInsidePath(root: string, candidate: string): boolean {
     );
 }
 
+/** Split a relative path into segments, rejecting absolute paths, NUL bytes and
+ *  any `..` traversal. Null means the input is not safe to join onto a root. */
 function safeRelativeParts(raw: string): string[] | null {
     if (!raw || path.isAbsolute(raw) || raw.includes('\0')) {
         return null;
@@ -271,6 +315,8 @@ function safeRelativeParts(raw: string): string[] | null {
     return parts;
 }
 
+/** Join `segments` under `root`, returning null when a segment is unsafe or the
+ *  result would escape the root. */
 function safeChildPath(root: string, ...segments: string[]): string | null {
     const parts: string[] = [];
     for (const segment of segments) {
@@ -286,6 +332,7 @@ function safeChildPath(root: string, ...segments: string[]): string | null {
     return isInsidePath(normalizedRoot, child) ? child : null;
 }
 
+/** {@link safeChildPath} for a single plain filename (no separators, no traversal). */
 function safeNamedChild(root: string, name: string): string | null {
     if (!/^[A-Za-z0-9._-]+$/.test(name) || path.basename(name) !== name) {
         return null;
@@ -293,6 +340,8 @@ function safeNamedChild(root: string, name: string): string | null {
     return safeChildPath(root, name);
 }
 
+/** {@link safeChildPath} that throws instead of returning null — an escape attempt
+ *  aborts the download rather than degrading into an unchecked path. */
 function requireSafeChildPath(root: string, ...segments: string[]): string {
     const child = safeChildPath(root, ...segments);
     if (!child) {
@@ -301,6 +350,7 @@ function requireSafeChildPath(root: string, ...segments: string[]): string {
     return child;
 }
 
+/** {@link safeNamedChild} that throws on an unsafe filename. */
 function requireSafeNamedChild(root: string, name: string): string {
     const child = safeNamedChild(root, name);
     if (!child) {
@@ -309,6 +359,8 @@ function requireSafeNamedChild(root: string, name: string): string {
     return child;
 }
 
+/** Expand a leading `~` in a user-configured path; null when the remainder would
+ *  escape the home directory. */
 function expandHome(rawPath: string): string | null {
     if (rawPath === '~') {
         return os.homedir();
@@ -319,6 +371,10 @@ function expandHome(rawPath: string): string | null {
     return rawPath;
 }
 
+/**
+ * Turn a configured `loctree.serverPath` (a file OR a directory) into an existing
+ * binary path, chmod +x on unix. Null when nothing usable is at that location.
+ */
 function resolveExistingBinary(candidate: string, binaryName: string): string | null {
     const normalized = expandHome(stripPathQuotes(candidate));
     if (!normalized || !path.isAbsolute(normalized)) {
@@ -358,6 +414,8 @@ function resolveExistingBinary(candidate: string, binaryName: string): string | 
     return null;
 }
 
+/** First whitespace-delimited token of a `.sha256` sidecar, lowercased; null when
+ *  the sidecar is missing, empty or unreadable. */
 function expectedShaFromSidecar(shaPath: string): string | null {
     try {
         const contents = fs.readFileSync(shaPath, 'utf8').trim();
@@ -369,10 +427,12 @@ function expectedShaFromSidecar(shaPath: string): string | null {
     }
 }
 
+/** Write the `<binary>.sha256` sidecar that later cache reuse is verified against. */
 async function writeBinarySidecar(binaryPath: string): Promise<void> {
     fs.writeFileSync(sidecarPath(binaryPath), `${await computeSha256(binaryPath)}  ${path.basename(binaryPath)}\n`);
 }
 
+/** Unpack a release tarball with the system `tar`, rejecting on a non-zero exit. */
 async function extractTarball(archivePath: string, extractDir: string): Promise<void> {
     await new Promise<void>((resolve, reject) => {
         const child = spawn('tar', ['-xzf', archivePath, '-C', extractDir], {
@@ -389,6 +449,11 @@ async function extractTarball(archivePath: string, extractDir: string): Promise<
     });
 }
 
+/**
+ * Download, verify, unpack and install one release archive. On any failure the
+ * half-installed binary and its sidecar are removed; the temporary archive and
+ * extract dir are cleaned up either way.
+ */
 async function downloadReleaseArchive(
     url: string,
     archivePath: string,
@@ -445,6 +510,10 @@ async function isCachedBinaryVerified(binaryPath: string): Promise<boolean> {
     }
 }
 
+/**
+ * Fetch `url` plus its `.sha256` sidecar and refuse the result unless the hashes
+ * match, so a corrupted or swapped asset never survives on disk.
+ */
 async function downloadFile(url: string, destPath: string): Promise<void> {
     const assetName = path.basename(destPath);
     const shaUrl = `${url}.sha256`;
@@ -477,6 +546,11 @@ async function downloadFile(url: string, destPath: string): Promise<void> {
     }
 }
 
+/**
+ * One HTTPS GET to a file, following up to {@link MAX_REDIRECTS} redirects and
+ * aborting after {@link DOWNLOAD_TIMEOUT_MS}. Partial files are unlinked before
+ * the promise rejects.
+ */
 async function downloadRawFile(
     url: string,
     destPath: string,
@@ -539,6 +613,7 @@ async function downloadRawFile(
     });
 }
 
+/** Streaming SHA-256 of a file, as lowercase hex. */
 async function computeSha256(filePath: string): Promise<string> {
     return new Promise((resolve, reject) => {
         const hash = crypto.createHash('sha256');
@@ -549,6 +624,12 @@ async function computeSha256(filePath: string): Promise<string> {
     });
 }
 
+/**
+ * Cache-or-download path for the runtime. Reuses the cached binary only when the
+ * version marker matches AND it still hashes to its sidecar; returns null when
+ * auto-download is off, the platform is unsupported, or the download failed —
+ * the caller then falls through to PATH.
+ */
 async function ensureDownloadedBinary(
     context: vscode.ExtensionContext,
     outputChannel: vscode.OutputChannel

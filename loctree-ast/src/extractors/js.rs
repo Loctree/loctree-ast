@@ -12,6 +12,9 @@ use super::ts::{extract_calls_generic, extract_exports_with, extract_imports_gen
 use super::{CallEntry, ExportSymbol, ImportEntry, LangExtractor};
 use crate::{LangParser, Language, LoctreeTree};
 
+/// JavaScript extractor. Public so callers can construct it without going
+/// through a registry; pairs with the `JavaScriptParser` wired into
+/// `Parsers::new_default`.
 pub struct JsExtractor;
 
 impl LangParser for JsExtractor {
@@ -28,6 +31,9 @@ impl LangParser for JsExtractor {
     }
 }
 
+/// Tree-sitter patterns for every `export` form JS can spell. Each pattern
+/// tags the statement with an `@export.*` marker the shared walker maps onto
+/// Loctree's export kinds.
 const JS_EXPORTS_QUERY: &str = r#"
 (export_statement
   declaration: (function_declaration name: (identifier) @name)) @export.function
@@ -51,16 +57,21 @@ const JS_EXPORTS_QUERY: &str = r#"
     (export_specifier name: (identifier) @name))) @export.named
 "#;
 
+/// Tree-sitter pattern capturing each `import` statement together with its
+/// module specifier string.
 const JS_IMPORTS_QUERY: &str = r#"
 (import_statement
   source: (string) @source) @import
 "#;
 
+/// Tree-sitter pattern capturing every call expression and its callee node.
 const JS_CALLS_QUERY: &str = r#"
 (call_expression
   function: (_) @callee) @call
 "#;
 
+/// Compiles the JS exports query once per process and lends out the shared
+/// instance; a malformed body panics on first use, not at every call.
 fn js_query_exports() -> &'static Query {
     static Q: OnceLock<Query> = OnceLock::new();
     Q.get_or_init(|| {
@@ -72,6 +83,8 @@ fn js_query_exports() -> &'static Query {
     })
 }
 
+/// Compiles the JS imports query once per process and lends out the shared
+/// instance.
 fn js_query_imports() -> &'static Query {
     static Q: OnceLock<Query> = OnceLock::new();
     Q.get_or_init(|| {
@@ -83,6 +96,8 @@ fn js_query_imports() -> &'static Query {
     })
 }
 
+/// Compiles the JS calls query once per process and lends out the shared
+/// instance.
 fn js_query_calls() -> &'static Query {
     static Q: OnceLock<Query> = OnceLock::new();
     Q.get_or_init(|| {

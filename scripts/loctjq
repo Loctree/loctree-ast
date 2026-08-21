@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
+# loctjq — thin jq front-end for the newest Loctree snapshot.
+# Resolves .loctree/*/snapshot.json by mtime so ad-hoc structural queries do not
+# have to hardcode a snapshot path, then execs jq against it.
 set -euo pipefail
 
+# Prints the usage banner and a worked set of jq recipes against a snapshot.
 usage() {
   cat <<'EOF'
 loctjq — run jq queries against the newest Loctree snapshot

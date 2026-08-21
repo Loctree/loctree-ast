@@ -23,6 +23,8 @@ command -v jq >/dev/null 2>&1 || exit 0
 INPUT=$(cat)
 OUTPUT_MODE="${LOCT_SMART_SUGGEST_OUTPUT:-stderr}"
 
+# Prints one suggestion as JSON or as a boxed stderr banner, then increments the
+# on-disk per-day counter that caps this hook at 3 hints.
 emit_hint() {
     local hint="$1"
     local cmd="$2"
@@ -46,6 +48,8 @@ emit_hint() {
     echo $((SUGGEST_COUNT + 1)) > "$SUGGEST_COUNT_FILE"
 }
 
+# True when the Bash command runs rg/grep/find directly, through sh -c, or behind
+# an env VAR=... prefix. Decides whether the command is worth suggesting against.
 is_text_search_command() {
     local command="$1"
     [[ "$command" =~ (^|[[:space:]\;\|\&])(rg|grep|find)([[:space:]]|$) ]] && return 0
@@ -54,11 +58,14 @@ is_text_search_command() {
     return 1
 }
 
+# Single-quotes a value so the suggested command can be pasted verbatim.
 shell_quote() {
     local value="$1"
     printf "'%s'" "$(printf "%s" "$value" | sed "s/'/'\\\\''/g")"
 }
 
+# Renders the `loct find --literal` line to suggest, falling back to a
+# placeholder pattern when none could be parsed out of the command.
 loct_literal_command() {
     local pattern="$1"
     if [[ -n "$pattern" ]]; then
@@ -68,6 +75,8 @@ loct_literal_command() {
     fi
 }
 
+# Renders the `loct tree --files --match` line to suggest for find-style
+# file discovery, with a placeholder regex when no pattern was parsed.
 loct_tree_command() {
     local pattern="$1"
     if [[ -n "$pattern" ]]; then
@@ -77,6 +86,8 @@ loct_tree_command() {
     fi
 }
 
+# Delegates to an embedded python parser and prints "<tool>\t<pattern>" for the
+# first rg/grep/find in the command. Returns 1 when python3 is unavailable.
 extract_search_intent() {
     local command="$1"
 
@@ -97,6 +108,7 @@ VALUE_OPTIONS = {
 
 
 def split(command):
+    """Tokenize a command, degrading to whitespace split on unbalanced quotes."""
     try:
         return shlex.split(command)
     except ValueError:
@@ -104,6 +116,7 @@ def split(command):
 
 
 def strip_env(tokens):
+    """Drop a leading `env` and its VAR=VALUE assignments from the token list."""
     if tokens and tokens[0] == "env":
         tokens = tokens[1:]
         while tokens and "=" in tokens[0] and not tokens[0].startswith("-"):
@@ -112,6 +125,7 @@ def strip_env(tokens):
 
 
 def unwrap_shell(tokens):
+    """Re-tokenize the inner script of a `sh -c '...'` wrapper, else pass through."""
     if not tokens:
         return tokens
     head = os.path.basename(tokens[0])
@@ -124,10 +138,12 @@ def unwrap_shell(tokens):
 
 
 def option_takes_value(token):
+    """True when the flag consumes the next token, so it is not the pattern."""
     return token in VALUE_OPTIONS or token.startswith("--glob=") or token.startswith("--iglob=")
 
 
 def extract_rg_or_grep(tool, args):
+    """Return the search pattern, honouring -e/--regexp/-- and value-taking flags."""
     index = 0
     while index < len(args):
         token = args[index]
@@ -148,6 +164,7 @@ def extract_rg_or_grep(tool, args):
 
 
 def glob_to_regex(pattern):
+    """Convert a find(1) glob into the regex `loct tree --match` expects."""
     if not any(char in pattern for char in "*?[]"):
         return pattern
     converted = []
@@ -162,6 +179,7 @@ def glob_to_regex(pattern):
 
 
 def extract_find(args):
+    """Return the -name/-path/-regex argument of a find command as a regex."""
     for option in ("-name", "-iname", "-path", "-ipath", "-regex"):
         if option in args:
             index = args.index(option)
@@ -174,6 +192,7 @@ def extract_find(args):
 
 
 def parse(command):
+    """Return (tool, pattern) for the first rg/grep/find found, else ("", "")."""
     tokens = unwrap_shell(strip_env(split(command)))
     tokens = strip_env(tokens)
     for index, token in enumerate(tokens):
@@ -231,6 +250,7 @@ fi
 
 [[ -z "$PATTERN" ]] && exit 0
 
+# Thin alias over emit_hint used by the pattern-shape rules below.
 suggest() {
     local hint="$1"
     local cmd="$2"

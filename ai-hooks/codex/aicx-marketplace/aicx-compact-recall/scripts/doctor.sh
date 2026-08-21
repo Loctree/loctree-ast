@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# doctor.sh — health gate for the aicx-compact-recall Codex plugin: validates the
+# source and installed payload contracts, source/cache byte identity, the live hook
+# registry, and a real direct-file precompact/recall smoke inside a disposable HOME.
 set -euo pipefail
 
 export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
@@ -7,8 +10,11 @@ umask 077
 plugin=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 aicx_bin="${AICX_BIN:-aicx}"
 
+# fail MSG : reports a broken gate on stderr and aborts the whole doctor run.
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
+# pass MSG : reports a satisfied gate on stdout; informational, never exits.
 pass() { printf 'PASS: %s\n' "$*"; }
+# note MSG : reports a non-blocking observation on stdout; never fails the run.
 note() { printf 'NOTE: %s\n' "$*"; }
 
 if [[ "$aicx_bin" == */* ]]; then
@@ -18,6 +24,9 @@ else
   aicx_bin=$(command -v "$aicx_bin")
 fi
 
+# validate_payload ROOT LABEL : asserts one plugin payload (source tree or installed
+# cache) carries the manifests, executable hooks, the exact PreCompact +
+# SessionStart(compact) pair and no literal PostCompact, then bash -n/shellchecks it.
 validate_payload() {
   local root="$1" label="$2" pre post
   pre="$root/scripts/aicx-precompact.sh"

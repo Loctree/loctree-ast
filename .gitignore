@@ -1,3 +1,7 @@
+# Ignore policy for the suite: root-anchored rules (leading `/`) that must not
+# reach into subdirectories, plus broad rules (`*.json`, `*.txt`, `/*.md`) that
+# are re-opened file by file with `!` below — keep a new `!` beside its rule.
+
 /loctree-rs/target
 
 # Subcrate Cargo.lock files are orphans — workspace uses root Cargo.lock only

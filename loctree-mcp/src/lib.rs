@@ -8,4 +8,6 @@
 
 pub mod extract;
 
+/// Re-exported so integration tests can call the symbol extractor without
+/// linking the binary target.
 pub use extract::extract_symbol;

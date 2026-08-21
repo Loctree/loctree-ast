@@ -1,4 +1,7 @@
 #!/bin/sh
+# preflight.sh — the full pre-PR / pre-release gate behind `make preflight`.
+# Seven sequential stages under set -eu, so the first failure stops the run:
+# fmt, clippy, check, test, npm adapter smoke, release build, cycle analysis.
 set -eu
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"

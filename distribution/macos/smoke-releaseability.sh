@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Pre-packaging macOS gate: for each binary, reject any linked library outside the
+# system paths (e.g. /opt/homebrew) and, unless RUN_BINARIES=0, require --version
+# to succeed. Exits non-zero if any binary fails, so a release stops here.
+
 if [[ $# -lt 1 ]]; then
   echo "Usage: $0 <binary> [<binary>...]"
   exit 1

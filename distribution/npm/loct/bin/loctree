@@ -1,3 +1,4 @@
 #!/usr/bin/env node
 
+// Canonical name of the Loctree runtime binary on PATH.
 require('../index.js').runRuntime(process.argv.slice(2));

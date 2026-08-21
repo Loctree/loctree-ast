@@ -25,6 +25,8 @@ pub enum HostKind {
     Unknown,
 }
 
+/// Name projections for a host kind: the lowercase key used in configs and CLI
+/// arguments, and the human-readable form used in reports.
 impl HostKind {
     /// Returns a lowercase label for the host kind.
     ///

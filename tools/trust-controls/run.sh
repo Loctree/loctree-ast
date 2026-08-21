@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# trust-controls/run.sh — executable trust controls for a release candidate.
+# Asserts the CLI/MCP triad shares one bundle identity, then proves the behaviours
+# a user must be able to rely on (literal universe accounting, bounded discover,
+# honest body extent, fail-closed impact, stale-vs-fresh receipts, doctor scope,
+# protected Swift entrypoints). Writes evidence per run; first failure aborts.
 # The disabled warning treats Markdown backticks as shell interpolation.
 # shellcheck disable=SC2016
 set -euo pipefail
@@ -10,6 +15,8 @@ EVIDENCE_DIR=${LOCT_TRUST_EVIDENCE_DIR:-"$ROOT/target/trust-controls/$RUN_ID"}
 WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/loctree-trust-controls.XXXXXX")
 PASS_COUNT=0
 
+# EXIT trap: deletes the temporary work directory, but only when its path still
+# matches the mktemp prefix this run created.
 cleanup() {
   case "$WORK_DIR" in
     "${TMPDIR:-/tmp}"/loctree-trust-controls.*) rm -rf -- "$WORK_DIR" ;;
@@ -20,26 +27,32 @@ trap cleanup EXIT
 
 mkdir -p "$EVIDENCE_DIR"
 
+# Records one satisfied control and prints it.
 pass() {
   PASS_COUNT=$((PASS_COUNT + 1))
   printf '[x] %s\n' "$1"
 }
 
+# Prints the failed control plus the evidence directory and aborts the suite.
 fail() {
   printf '[FAIL] %s\n' "$1" >&2
   printf 'evidence: %s\n' "$EVIDENCE_DIR" >&2
   exit 1
 }
 
+# Aborts the suite when a prerequisite command is not on PATH.
 require() {
   command -v "$1" >/dev/null 2>&1 || fail "required command is unavailable: $1"
 }
 
+# Extracts one key=value field from a `--version` marker line.
 field() {
   local marker=$1 key=$2
   awk -v key="$key" '{ for (i = 1; i <= NF; i++) if ($i ~ ("^" key "=")) { sub("^" key "=", "", $i); print $i; exit } }' <<<"$marker"
 }
 
+# Turns a copied fixture tree into a committed git repo so loct sees a real HEAD.
+# Uses inline identity so the runner's git config cannot leak into the fixture.
 init_fixture() {
   local fixture=$1
   git -C "$fixture" init -q
@@ -47,6 +60,8 @@ init_fixture() {
   git -C "$fixture" -c user.name=trust-control -c user.email=trust-control@example.invalid commit -qm baseline
 }
 
+# Runs loct inside a fixture with an isolated cache directory and gitignore
+# filtering disabled, so control results do not depend on host cache state.
 run_loct() {
   local fixture=$1 cache=$2
   shift 2
@@ -56,6 +71,7 @@ run_loct() {
   )
 }
 
+# Runs loct against this repository itself with the suite's own isolated cache.
 run_suite() {
   (
     cd "$ROOT"

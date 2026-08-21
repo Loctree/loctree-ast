@@ -130,13 +130,21 @@ interactive=false
 show_deps_only=false
 assert_synced_only=false
 
+# Prints a blue informational line.
 log_info() { echo -e "${BLUE}ℹ${NC} $*"; }
+# Prints a green success line.
 log_success() { echo -e "${GREEN}✓${NC} $*"; }
+# Prints a yellow warning line.
 log_warn() { echo -e "${YELLOW}⚠${NC} $*"; }
+# Prints a red error line to stderr.
 log_error() { echo -e "${RED}✗${NC} $*" >&2; }
+# Prints a bold cyan step banner after a blank line.
 log_step() { echo -e "\n${BOLD}${CYAN}==> $*${NC}"; }
+# Prints a dimmed detail line.
 log_dim() { echo -e "${DIM}$*${NC}"; }
 
+# Reads the version from [workspace.package] in the root Cargo.toml — the single
+# value every other release surface is asserted against.
 workspace_version() {
   awk '
     /^\[workspace.package\]$/ { in_section=1; next }
@@ -145,6 +153,7 @@ workspace_version() {
   ' "$ROOT_DIR/Cargo.toml"
 }
 
+# Reads the version field of the VS Code extension package.json, or ? when absent.
 vscode_version() {
   python3 - "$ROOT_DIR/editors/vscode/package.json" <<'PY'
 import json
@@ -156,6 +165,8 @@ print(json.loads(path.read_text(encoding="utf-8")).get("version", "?") if path.e
 PY
 }
 
+# Reads the root-package version from the VS Code package-lock.json, falling back
+# to the top-level version field, or ? when the lockfile is absent.
 vscode_lock_version() {
   python3 - "$ROOT_DIR/editors/vscode/package-lock.json" <<'PY'
 import json
@@ -171,16 +182,21 @@ print(data.get("packages", {}).get("", {}).get("version") or data.get("version")
 PY
 }
 
+# Reads pluginVersion from the JetBrains gradle.properties.
 jetbrains_version() {
   awk -F'=' '/^[[:space:]]*pluginVersion[[:space:]]*=/ { gsub(/[[:space:]]/, "", $2); print $2; exit }' \
     "$ROOT_DIR/editors/jetbrains/gradle.properties"
 }
 
+# Reads the LOCTREE_VERSION default baked into the published web installer.
 installer_version() {
   sed -n 's/^VERSION="${LOCTREE_VERSION:-\([^}]*\)}"$/\1/p' \
     "$ROOT_DIR/public_dist/install.sh" | head -n 1
 }
 
+# Prints the five-surface version contract and exits 1 when VS Code, its lockfile,
+# JetBrains, or the web installer has drifted from the Cargo workspace version.
+# This is what `make version-assert` gates a release on.
 assert_versions_synced() {
   local expected actual_vs actual_lock actual_jb actual_installer ok
   expected=$(workspace_version)
@@ -235,7 +251,7 @@ while [[ $# -gt 0 ]]; do
       bump_type="explicit"
       shift 2
       ;;
-    --all|--loctree|--report|--report-wasm|--mcp|--lsp|--rmcp-common)
+    --all|--loctree|--report|--report-wasm|--mcp|--lsp|--rmcp-common|--ast)
       scope="${1#--}"
       shift
       ;;
@@ -401,6 +417,8 @@ if ! $force; then
 fi
 
 # Version manipulation functions
+# Strips any pre-release suffix, then returns the version advanced by kind
+# (patch/minor/major) — unchanged for "none", or the --set value for "explicit".
 bump_version() {
   local current="$1" kind="$2"
   # Strip existing suffixes
@@ -427,6 +445,8 @@ bump_version() {
   echo "${major}.${minor}.${patch}"
 }
 
+# Returns a crate's effective version, resolving version.workspace = true back to
+# the workspace root value.
 read_version() {
   local file="$1"
   # All crates use version.workspace = true — read from workspace root
@@ -437,6 +457,8 @@ read_version() {
   fi
 }
 
+# Applies one sed expression in place with GNU/BSD -i handling, or only announces
+# the intent when --dry-run is active.
 update_sed() {
   local file="$1" pattern="$2"
   if [[ -f "$file" ]]; then
@@ -724,6 +746,8 @@ done
 # Update internal dependency references
 log_step "Updating internal dependency references"
 
+# Rewrites a sibling crate's pinned version inside a Cargo.toml, covering both the
+# bare `dep = "x"` form and the `dep = { version = "x" }` table form.
 update_internal_dep() {
   local cargo_toml="$1"
   local dep_name="$2"
@@ -863,6 +887,8 @@ fi
 # Git commit
 log_step "Git commit"
 
+# Mints the UUID for the commit's session_id trailer via uuidgen or python3, and
+# aborts the release when neither is available.
 make_session_id() {
   if command -v uuidgen >/dev/null 2>&1; then
     uuidgen | tr 'A-F' 'a-f'
@@ -874,6 +900,9 @@ make_session_id() {
   fi
 }
 
+# Stages every surface a bump rewrites — changelog, manifests, lockfile, npm and
+# editor packages, and the web installer — so the commit CI reads agrees with the
+# working tree the local --assert-synced check just passed.
 stage_version_files() {
   git -C "$ROOT_DIR" add CHANGELOG.md Cargo.toml Cargo.lock
   git -C "$ROOT_DIR" add loctree-rs/src/lib.rs reports/src/components/document.rs

@@ -23,6 +23,8 @@ command -v jq >/dev/null 2>&1 || exit 0
 INPUT=$(cat)
 OUTPUT_MODE="${LOCT_SMART_SUGGEST_OUTPUT:-stderr}"
 
+# Render one suggestion - JSON systemMessage or a boxed stderr note - and bump
+# the per-day counter that caps the hook at three hints.
 emit_hint() {
     local hint="$1"
     local cmd="$2"
@@ -46,6 +48,8 @@ emit_hint() {
     echo $((SUGGEST_COUNT + 1)) > "$SUGGEST_COUNT_FILE"
 }
 
+# True when the bash command runs rg/grep/find directly, through a shell -c
+# wrapper, or behind an `env VAR=... ` prefix.
 is_text_search_command() {
     local command="$1"
     [[ "$command" =~ (^|[[:space:]\;\|\&])(rg|grep|find)([[:space:]]|$) ]] && return 0
@@ -54,11 +58,13 @@ is_text_search_command() {
     return 1
 }
 
+# Single-quote a value so the suggested loct command can be pasted verbatim.
 shell_quote() {
     local value="$1"
     printf "'%s'" "$(printf "%s" "$value" | sed "s/'/'\\\\''/g")"
 }
 
+# Build the `loct find --literal` equivalent of the text search just run.
 loct_literal_command() {
     local pattern="$1"
     if [[ -n "$pattern" ]]; then
@@ -68,6 +74,7 @@ loct_literal_command() {
     fi
 }
 
+# Build the `loct tree --files --match` equivalent of the `find` just run.
 loct_tree_command() {
     local pattern="$1"
     if [[ -n "$pattern" ]]; then
@@ -77,6 +84,8 @@ loct_tree_command() {
     fi
 }
 
+# Parse the command with python shlex and return `<tool>\t<pattern>`, resolving
+# flags that take values and converting find globs into a regex.
 extract_search_intent() {
     local command="$1"
 
@@ -231,6 +240,7 @@ fi
 
 [[ -z "$PATTERN" ]] && exit 0
 
+# Thin alias over emit_hint kept for the pattern-matching cases below.
 suggest() {
     local hint="$1"
     local cmd="$2"

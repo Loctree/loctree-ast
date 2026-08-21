@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# render-homebrew-formula.sh — emit a Homebrew formula for one released binary.
+# Called from .github/workflows/homebrew-release.yml with a formula name, version,
+# and output path; the per-arch sha256 env vars are required, so a missing digest
+# fails the release instead of publishing an unverifiable bottle.
 set -euo pipefail
 
 FORMULA_NAME=${1:?"formula name required (loct, loct-mcp, or loct-lsp)"}

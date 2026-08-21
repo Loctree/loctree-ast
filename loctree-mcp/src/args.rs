@@ -11,6 +11,8 @@
 
 use clap::Parser;
 
+/// Snapshots retained per MCP session when `--snapshot-cache-capacity` is
+/// omitted: one, so an alternating worktree cannot grow RAM without bound.
 pub(crate) const DEFAULT_SNAPSHOT_CACHE_CAPACITY: usize = 1;
 
 /// Environment fallback for `--token-store`.
@@ -33,6 +35,10 @@ pub(crate) enum TransportKind {
     Http,
 }
 
+/// Parsed command line for the server process.
+///
+/// Field defaults encode the safe posture: stdio transport, loopback bind, no
+/// `--allow-unauthenticated`, and a single-project snapshot cache.
 #[derive(Parser, Debug)]
 #[command(name = "loctree-mcp")]
 #[command(about = "Universal MCP server for loctree - works with any project")]

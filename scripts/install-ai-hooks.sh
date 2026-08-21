@@ -21,16 +21,26 @@ CYAN='\033[0;36m'
 BOLD='\033[1m'
 NC='\033[0m'
 
+# Prints a cyan informational line to stdout.
 info() { printf '%b\n' "${CYAN}i${NC} $*"; }
+# Prints a green OK line marking a completed installation step.
 pass() { printf '%b\n' "${GREEN}OK${NC} $*"; }
+# Prints a yellow WARN line to stderr without stopping the install.
 warn() { printf '%b\n' "${YELLOW}WARN${NC} $*" >&2; }
+# Prints a red FAIL line to stderr and aborts the installer with exit 1.
 fail() { printf '%b\n' "${RED}FAIL${NC} $*" >&2; exit 1; }
+# Prints a bold section heading preceded by a blank line.
 header() { printf '\n%b\n' "${BOLD}$*${NC}"; }
 
+# Succeeds when a claude binary is on PATH or ~/.claude exists.
 detect_claude() { command -v claude >/dev/null 2>&1 || [[ -d "$HOME/.claude" ]]; }
+# Succeeds when a codex binary is on PATH or ~/.codex exists.
 detect_codex() { command -v codex >/dev/null 2>&1 || [[ -d "$HOME/.codex" ]]; }
+# Succeeds when a gemini binary is on PATH or ~/.gemini exists.
 detect_gemini() { command -v gemini >/dev/null 2>&1 || [[ -d "$HOME/.gemini" ]]; }
 
+# Prompts for the hook package set and sets INSTALL_LOCTREE / INSTALL_AICX
+# accordingly; an unrecognised answer aborts the run.
 select_packages() {
     header "Select hook packages"
     printf '  1) loctree  - map-first guard + structural augmentation\n'
@@ -46,6 +56,8 @@ select_packages() {
     esac
 }
 
+# Resolves the package selection from HOOKS, falling back to the interactive
+# prompt when it is unset. The retired 'memex' value aborts with a migration hint.
 select_packages_from_env() {
     case "${HOOKS:-}" in
         '') select_packages ;;
@@ -59,17 +71,21 @@ select_packages_from_env() {
     esac
 }
 
+# Aborts the install when a hook payload about to be copied is missing.
 require_payload() {
     local path="$1"
     [[ -e "$path" ]] || fail "Required hook payload is missing: $path"
 }
 
+# Copies an existing file to a timestamped .backup sibling before it is rewritten.
 backup_once() {
     local path="$1"
     [[ -f "$path" ]] || return 0
     cp "$path" "$path.backup.$(date +%Y%m%d%H%M%S)"
 }
 
+# Deletes the retired Memex hook payloads from a hooks directory so they can no
+# longer fire after the upgrade.
 remove_legacy_memex_files() {
     local hooks_dir="$1"
     rm -f \
@@ -78,6 +94,9 @@ remove_legacy_memex_files() {
         "$hooks_dir/memory-on-compact.sh"
 }
 
+# Rewrites settings.json through jq: strips only the registrations this installer
+# owns (plus legacy Memex ones), re-adds the selected packages, and leaves every
+# unrelated user hook untouched.
 update_claude_settings() {
     local settings="$1"
     command -v jq >/dev/null 2>&1 || fail "jq is required to update Claude hooks without destroying unrelated settings"
@@ -145,6 +164,8 @@ update_claude_settings() {
     mv "$tmp" "$settings"
 }
 
+# Installs the selected payloads into ~/.claude/hooks, re-registers them in
+# settings.json, and runs the AICX recall self-test unless AI_HOOKS_SKIP_DOCTOR=1.
 install_claude() {
     header "Claude Code"
     local hooks_dir="$HOME/.claude/hooks"
@@ -182,6 +203,8 @@ install_claude() {
     fi
 }
 
+# Re-points a Codex plugin marketplace at a local path, removing the stale
+# registration first so the add cannot collide with it.
 replace_codex_marketplace() {
     local name="$1" path="$2"
     require_payload "$path/.agents/plugins/marketplace.json"
@@ -190,6 +213,8 @@ replace_codex_marketplace() {
     pass "registered Codex marketplace $name from $path"
 }
 
+# Copies a Codex plugin's cache tree aside so a failed reinstall can be repaired
+# for a Codex process that is already running against it.
 snapshot_codex_plugin_cache() {
     local marketplace="$1" plugin="$2" snapshot="$3"
     local base="$HOME/.codex/plugins/cache/$marketplace/$plugin"
@@ -199,6 +224,8 @@ snapshot_codex_plugin_cache() {
     fi
 }
 
+# Puts back any cached plugin version the reinstall removed, so an already-running
+# Codex process does not lose the plugin build it has loaded.
 restore_running_codex_cache() {
     local marketplace="$1" plugin="$2" snapshot="$3"
     local base="$HOME/.codex/plugins/cache/$marketplace/$plugin"
@@ -216,6 +243,8 @@ restore_running_codex_cache() {
     done
 }
 
+# Installs the selected Codex plugins from the bundled marketplaces, restoring the
+# cache snapshot when an add fails, then runs the AICX doctor unless skipped.
 install_codex() {
     header "Codex"
     command -v codex >/dev/null 2>&1 || fail "codex is required for Codex plugin installation"
@@ -258,6 +287,8 @@ install_codex() {
     fi
 }
 
+# Installs the Gemini augmentation payload with PostToolUse rewritten to AfterTool,
+# and deliberately installs no AICX hook because that lifecycle is unproven there.
 install_gemini() {
     header "Gemini"
     local hooks_dir="$HOME/.gemini/hooks"
@@ -274,6 +305,8 @@ install_gemini() {
     fi
 }
 
+# Dispatches one CLI name to its installer, warning rather than failing when that
+# CLI is not detected on the host.
 run_for_cli() {
     case "$1" in
         claude)
@@ -289,6 +322,8 @@ run_for_cli() {
     esac
 }
 
+# Entry point: resolves the package selection, installs into every CLI named by
+# CLI= (or every detected one), and prints the hook-registry restart notice.
 main() {
     header "AI Hooks Runtime Installer"
     printf 'Loctree gives sight. AICX preserves continuity.\n'

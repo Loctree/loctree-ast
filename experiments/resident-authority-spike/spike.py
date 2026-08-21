@@ -25,6 +25,9 @@ import subprocess
 import sys
 import time
 
+# Knobs: SPIKE_REPO must name a real loctree-suite checkout (the fallback below
+# is the authoring machine's path), SPIKE_TARGET a file inside it, and argv[1]
+# the sample count per surface.
 REPO = os.environ.get(
     "SPIKE_REPO", "/Users/maciejgad/vc-workspace/Loctree/loctree-suite"
 )
@@ -33,6 +36,7 @@ N = int(sys.argv[1]) if len(sys.argv) > 1 else 7
 
 
 def median_ms(samples):
+    """Median of a list of wall-clock seconds, reported in ms to one decimal."""
     return round(statistics.median(samples) * 1000.0, 1)
 
 
@@ -53,6 +57,7 @@ class LspClient:
     """Minimal stdio JSON-RPC client speaking LSP framing."""
 
     def __init__(self, argv):
+        """Spawn the server as a child process with piped stdio, stderr discarded."""
         self.proc = subprocess.Popen(
             argv, cwd=REPO, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -60,6 +65,7 @@ class LspClient:
         self._id = 0
 
     def _send(self, msg):
+        """Write one JSON-RPC message with the Content-Length header LSP framing needs."""
         body = json.dumps(msg).encode()
         self.proc.stdin.write(
             b"Content-Length: %d\r\n\r\n%s" % (len(body), body)
@@ -67,6 +73,7 @@ class LspClient:
         self.proc.stdin.flush()
 
     def _read_message(self):
+        """Read one framed message, blocking until Content-Length bytes have arrived."""
         headers = {}
         while True:
             line = self.proc.stdout.readline()
@@ -81,6 +88,7 @@ class LspClient:
         return json.loads(self.proc.stdout.read(length))
 
     def request(self, method, params):
+        """Send a request and return the first message carrying its id, skipping the rest."""
         self._id += 1
         rid = self._id
         self._send({"jsonrpc": "2.0", "id": rid, "method": method, "params": params})
@@ -90,9 +98,11 @@ class LspClient:
                 return msg
 
     def notify(self, method, params):
+        """Send a notification: no id, no reply awaited."""
         self._send({"jsonrpc": "2.0", "method": method, "params": params})
 
     def close(self):
+        """Ask the server to shut down, then kill the process whatever it answered."""
         try:
             self.request("shutdown", None)
             self.notify("exit", None)
@@ -101,6 +111,11 @@ class LspClient:
 
 
 def bench_lsp(n):
+    """Time the resident surface: cold start to first served slice, then n warm calls.
+
+    Returns (cold_start_seconds, warm_samples) and raises if the daemon never
+    serves a slice inside 300s.
+    """
     lsp = LspClient(["loctree-lsp", "--root", REPO])
     t_start = time.monotonic()
     lsp.request(
@@ -141,6 +156,7 @@ def bench_lsp(n):
 
 
 def main():
+    """Run all four measurements against the installed binaries, print one JSON record."""
     ver = subprocess.run(
         ["loct", "--version"], capture_output=True, text=True, check=True
     ).stdout.strip()

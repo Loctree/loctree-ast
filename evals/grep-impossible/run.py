@@ -19,6 +19,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+# Repo root (this file sits two levels down, in evals/grep-impossible/) and the
+# bundled fixture tree the framework-semantics questions are asked against.
 REPO = Path(__file__).resolve().parents[2]
 FIXTURES = REPO / "loctree-rs" / "tests" / "fixtures"
 
@@ -46,10 +48,17 @@ def loct_bin() -> str:
     return "loct"
 
 
+# Resolved once at import so every question and the scorecard banner below
+# report on the same binary.
 LOCT = loct_bin()
 
 
 def loct(args: list[str], cwd: Path = REPO, timeout: int = 240) -> subprocess.CompletedProcess:
+    """Invoke the binary under test and return the completed process untouched.
+
+    Never raises on a non-zero exit — questions read returncode and both streams
+    themselves — and blanks LOCT_DEBUG so debug chatter cannot pollute stdout.
+    """
     return subprocess.run(
         [LOCT, *args],
         cwd=cwd,
@@ -62,6 +71,11 @@ def loct(args: list[str], cwd: Path = REPO, timeout: int = 240) -> subprocess.Co
 
 
 def loct_json(args: list[str], cwd: Path = REPO, timeout: int = 240):
+    """Run a `--json` command and parse stdout, or fail the question with the reason.
+
+    Exit 1 counts as success because CI-mode surfaces use it for "findings
+    present", not "command broken"; anything else is an engine failure.
+    """
     proc = loct([*args, "--json"], cwd=cwd, timeout=timeout)
     if proc.returncode not in (0, 1):  # 1 = findings present in CI mode
         raise AssertionError(f"exit {proc.returncode}: {proc.stderr[:300]}")
@@ -71,6 +85,8 @@ def loct_json(args: list[str], cwd: Path = REPO, timeout: int = 240):
         raise AssertionError(f"non-JSON output: {proc.stdout[:200]!r}") from exc
 
 
+# Filled at import time by the @question decorator, in source order — which is
+# also the order the scorecard prints and evaluates them in.
 QUESTIONS: list[dict] = []
 
 
@@ -81,6 +97,7 @@ def question(qid: str, text: str, why: str, gap: bool = False):
     strict-xfail, so fixed engine behavior cannot stay silently unpromoted."""
 
     def wrap(fn):
+        """Register the question in QUESTIONS and hand the function back unchanged."""
         QUESTIONS.append({"id": qid, "text": text, "why": why, "gap": gap, "fn": fn})
         return fn
 
@@ -394,6 +411,11 @@ def _provenance() -> str:
 
 
 def main(argv: list[str]) -> int:
+    """Ask every question against the resolved binary and print the scorecard.
+
+    Returns 1 if any non-gap question failed or any gap question passed without
+    being promoted; `--list` prints the questions alone and never runs the engine.
+    """
     if "--list" in argv:
         for q in QUESTIONS:
             print(f"[{q['id']}] {q['text']}\n    grep can't: {q['why']}")

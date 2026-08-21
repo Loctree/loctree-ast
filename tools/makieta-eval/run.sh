@@ -40,6 +40,7 @@ REPO_LIMIT=1
 PINNED="8d5feffd"
 REPO_ROOT_ARGS=()
 
+# Prints the invocation banner to stderr and exits 2.
 usage() {
   echo "Usage: $0 --out <json> [--dry-run|--live] [--tasks N] [--repos M] [--repo-root PATH ...]" >&2
   exit 2
@@ -132,6 +133,9 @@ echo "Loaded $(python3 -c "import json,sys; print(len(json.load(open(sys.argv[1]
 # Arm A: pre-makieta simulation from pinned (strip intent/memory, label v3)
 # Verification reuses forcefeed-probe style + fact presence.
 
+# Writes one arm's context payload: cards 00/01/02/05/04 for both arms, plus the 03
+# intent overlay and seeded canaries for B only, with the task marker last so
+# structure-before-task order is provable from the file itself.
 build_payload() {
   local arm="$1"
   local outf="$2"
@@ -313,6 +317,9 @@ FI_COUNT=0
 FS_COUNT=0
 B_COUNT=0
 
+# Runs one arm's question through `claude -p` with tools and MCP denied from a
+# neutral CWD, so the answer can only come from the fed payload; under --dry-run it
+# returns a placeholder instead of calling the model.
 run_agent() {
   local arm="$1"
   local q="$2"
@@ -351,6 +358,9 @@ EOP
   echo "$ANSWER"
 }
 
+# Scores one answer against rubric.md by feeding the judge the arm's own 03-to-04
+# excerpt plus the ground-truth canary, and returns the binary verdict JSON; the
+# dry path returns a synthetic verdict favouring arm B.
 run_judge() {
   local task_id="$1"
   local arm="$2"

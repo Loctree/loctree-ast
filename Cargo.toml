@@ -1,3 +1,6 @@
+# The single Cargo workspace for the whole suite: these members share the root
+# Cargo.lock, inherit the identity in [workspace.package], and are built with
+# the [profile.release] settings at the bottom of this file.
 [workspace]
 resolver = "2"
 members = [
@@ -18,6 +21,9 @@ members = [
 #   (origin: github.com/Loctree/loct-io); sourced from
 #   feat/landing-polish-2026-05-02 (5c5a3a4d) at split time.
 
+# Identity inherited by every member crate that asks for it. Bumping `version`
+# here is what moves the entire suite onto a new release number; `rust-version`
+# is the floor CI and the Dockerfile toolchain must both satisfy.
 [workspace.package]
 version = "0.14.2"
 edition = "2024"

@@ -323,7 +323,7 @@
     "test": "npm run test:unit",
     "test:unit": "rm -rf out-test && tsc -p tsconfig.test.json && node --test out-test/test/*.test.js",
     "watch": "node esbuild.js --watch",
-    "lint": "eslint \"src/**/*.ts\"",
+    "lint": "eslint .",
     "package": "vsce package",
     "publish": "vsce publish",
     "publish:ovsx": "ovsx publish"

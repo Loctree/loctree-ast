@@ -3,11 +3,14 @@
   const root = document.getElementById('pill');
   const loctreeChannel = root ? root.getAttribute('data-channel') : '';
 
+  /** HTML-escape any value before it reaches innerHTML — the webview's only
+   *  defence against a file path or finding message injecting markup. */
   function esc(s) {
     return String(s ?? '').replace(/[&<>"']/g, (c) => (
       { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
     ));
   }
+  /** Render a list of strings or {kind,name} symbols as escaped tag chips. */
   function tags(items, cls) {
     return (items || []).map((t) => `<span class="tag ${cls}">${esc(typeof t === 'string' ? t : (t.kind ? t.kind + ' ' + t.name : t.name))}</span>`).join(' ');
   }
@@ -26,6 +29,7 @@
     const raw = String(kind || '');
     return raw ? raw.charAt(0).toUpperCase() + raw.slice(1) : '';
   }
+  /** Short badge label for the pill state; unknown states read "Unknown", never blank. */
   function contextStateLabel(vm) {
     const map = {
       ready: 'Ready',
@@ -38,6 +42,7 @@
     };
     return map[vm.state] || 'Unknown';
   }
+  /** The Context + LSP badge pair shown in every ready header. */
   function lspBadgesHtml(vm) {
     const lsp = vm.lsp || { phase: 'stopped', label: 'Stopped' };
     return `<span class="badge context">Context: ${esc(contextStateLabel(vm))}</span>` +
@@ -48,6 +53,7 @@
   function switcherHtml() {
     return '<input id="scope" class="scope-switcher" placeholder="Inspect symbol or file…" />';
   }
+  /** Bind the scope switcher's change event to a `rescope` message. */
   function wireSwitcher() {
     const s = document.getElementById('scope');
     if (s) s.addEventListener('change', (e) =>
@@ -59,6 +65,8 @@
     return typeof s === 'string' && (s.startsWith('/') || /^[A-Za-z]:[\\/]/.test(s) || s.includes('/') || s.includes('\\'));
   }
 
+  /** Empty state for a file outside every open project — shows no repo numbers,
+   *  only the switcher and an "open a project file" affordance. */
   function renderOutOfWorkspace(vm) {
     const pathLine = looksLikePath(vm.file)
       ? `<p class="empty-path">${esc(vm.file)}</p>`
@@ -77,6 +85,8 @@
     if (btn) btn.addEventListener('click', () => vscode.postMessage({ type: 'openProjectFile' }));
   }
 
+  /** Empty state when nothing is open; keeps the switcher so the pill is never a
+   *  dead panel. */
   function renderNoEditor() {
     root.innerHTML = `
       <div class="empty-state">
@@ -88,7 +98,9 @@
     wireSwitcher();
   }
 
-  function renderNotInSnapshot(vm) {
+  /** Empty state for an in-workspace file the snapshot has not indexed yet, with a
+   *  scan affordance. */
+  function renderNotInSnapshot(_vm) {
     root.innerHTML = `
       <div class="empty-state">
         <h2 class="empty-head">Not in the current snapshot</h2>
@@ -102,6 +114,8 @@
     if (btn) btn.addEventListener('click', () => vscode.postMessage({ type: 'scanWorkspace' }));
   }
 
+  /** Card shown while the LSP is starting, stopped or failed. Surfaces the resolved
+   *  binary and the server's own detail so a start failure is diagnosable here. */
   function renderLspUnavailable(vm) {
     const lsp = vm.lsp || { label: 'Stopped', message: 'Loctree LSP is not running.' };
     const title = vm.state === 'lsp-error'
@@ -133,6 +147,8 @@
   // ── Ready-render section builders. Each returns a string of HTML (possibly
   // empty); render() joins the non-empty ones so empty sections leave no shell.
 
+  /** Header row: the scope label plus badges. LOC and blast-radius badges are
+   *  scope-gated so a symbol pill never shows a file's numbers. */
   function headerHtml(vm) {
     const badges = [];
     badges.push(lspBadgesHtml(vm));
@@ -151,11 +167,14 @@
       </header>`;
   }
 
+  /** WHAT IT DOES block; empty string when the server sent no summary. */
   function summaryHtml(vm) {
     if (!vm.summary) return '';
     return `<div class="label">WHAT IT DOES</div><p class="summary">${esc(vm.summary)}</p>`;
   }
 
+  /** Risk-of-change band — states "safe to change" explicitly at zero consumers
+   *  rather than rendering an empty section. */
   function blastBandHtml(vm) {
     if (vm.blastRadius.count === 0) {
       return `<section class="decision-band">
@@ -170,6 +189,7 @@
       </section>`;
   }
 
+  /** Exports and dependencies columns; omits either column when it has no rows. */
   function structureColsHtml(vm) {
     const cols = [];
     if (vm.exports.length > 0) {
@@ -182,6 +202,8 @@
     return `<div class="cols">${cols.join('')}</div>`;
   }
 
+  /** Findings for THIS file (max 5) with repo-wide totals kept on a separate muted
+   *  line, so a reader never mistakes repo counts for file counts. */
   function fileRisksHtml(vm) {
     const rows = (vm.fileRisks || []).length
       ? vm.fileRisks.slice(0, 5).map((r) =>
@@ -194,6 +216,7 @@
         </div>`;
   }
 
+  /** Bottom row: body preview (with a show-full-body button) beside the findings. */
   function bottomColsHtml(vm) {
     return `<div class="cols">
         <div class="body-preview"><div class="label">BODY PREVIEW</div>
@@ -222,8 +245,9 @@
 
   // Keep the active literal query + groups in module state so Load-more can
   // append + dedup against what is already shown.
-  let literalState = null; // { query, groups, hasMore, nextOffset }
+  let literalState = null; // { query, groups, hasMore, nextOffset, state, lsp, agentPackStatus, repoHealth }
 
+  /** Literal occurrences as per-file groups of clickable line chips. */
   function occurrenceGroupsHtml(groups) {
     return (groups || []).map((g) => {
       const chips = (g.lines || []).map((ln) =>
@@ -236,6 +260,7 @@
     }).join('');
   }
 
+  /** Seed the module literal state from a fresh VM, then paint the occurrence pill. */
   function renderLiteral(vm) {
     literalState = {
       query: vm.scope.value,
@@ -243,10 +268,17 @@
       total: vm.literalTotal,
       hasMore: !!vm.literalHasMore,
       nextOffset: vm.literalNextOffset,
+      state: vm.state,
+      lsp: vm.lsp,
+      agentPackStatus: vm.agentPackStatus,
+      repoHealth: vm.repoHealth,
     };
     paintLiteral();
   }
 
+  /** Paint the literal pill from module state. Load more appears only with a
+   *  concrete next offset, so a bad contract cannot produce a button that refetches
+   *  the same page forever. */
   function paintLiteral() {
     const st = literalState;
     // Gate Load more on a concrete next offset (not just hasMore): a contract
@@ -259,12 +291,12 @@
     root.innerHTML = `
       <header class="pill-head">
         <span class="file">"${esc(st.query)}" · ${esc(st.total != null ? st.total : countOccurrences(st.groups))} occurrences</span>
-        <span class="badges"><span class="badge context">Context: Ready</span><span class="badge lsp running">LSP: Running</span></span>
+        <span class="badges">${lspBadgesHtml(st)}</span>
       </header>
       ${'<input id="scope" class="scope-switcher" placeholder="Inspect symbol or file…" />'}
       <div class="occurrences">${occurrenceGroupsHtml(st.groups)}</div>
       ${loadMore}
-      ${footerHtml({ agentPackStatus: 'ready', repoHealth: 0 }, true)}
+      ${footerHtml({ agentPackStatus: st.agentPackStatus, repoHealth: st.repoHealth }, true)}
     `;
     wireSwitcher();
     wireOccurrences();
@@ -274,10 +306,12 @@
       vscode.postMessage({ type: 'loadMoreLiteral', query: st.query, offset: st.nextOffset }));
   }
 
+  /** Total lines currently rendered across all groups. */
   function countOccurrences(groups) {
     return (groups || []).reduce((n, g) => n + ((g.lines || []).length), 0);
   }
 
+  /** Bind each occurrence chip to an `openFile` message carrying file + line. */
   function wireOccurrences() {
     root.querySelectorAll('.occ-chip').forEach((el) => {
       el.addEventListener('click', () => vscode.postMessage({
@@ -288,6 +322,7 @@
     });
   }
 
+  /** Bind the Copy Agent Context button, passing the editable task field along. */
   function wireCta() {
     const cta = document.getElementById('cta');
     if (cta) cta.addEventListener('click', () =>
@@ -357,6 +392,8 @@
       vscode.postMessage({ type: 'showAsLiteral', query: query }));
   }
 
+  /** Top-level render. Dispatches empty/LSP/literal cards first, then composes the
+   *  ready pill from the section builders, dropping any section that came back empty. */
   function render(vm) {
     if (vm.state === 'no-editor') { renderNoEditor(); return; }
     if (vm.state === 'lsp-starting' || vm.state === 'lsp-stopped' || vm.state === 'lsp-error') {
@@ -385,6 +422,8 @@
     if (full) full.addEventListener('click', () => vscode.postMessage({ type: 'showFullBody', symbol: vm.scope.value }));
   }
 
+  /** Accept a host message only when it carries this pill's channel token; anything
+   *  else is dropped without being read. */
   function trustedHostMessage(data) {
     const m = data;
     if (!m || typeof m !== 'object') return null;

@@ -61,6 +61,7 @@ THESIS_LINE_RE = re.compile(r"^\s*[✓⊘✗]\[[VUR]\] \d{4}-\d{2}-\d{2} · ")
 
 
 def _head(rest: str) -> str:
+    """First ` · `-separated segment of a card line, whitespace-stripped."""
     return rest.split(" · ", 1)[0].strip()
 
 
@@ -112,6 +113,7 @@ def parse_line_facts(line: str) -> set[str]:
 
 
 def parse_card_facts(text: str) -> set[str]:
+    """Union of the base-fact ids carried by every line of a rendered card."""
     facts: set[str] = set()
     for line in text.splitlines():
         facts |= parse_line_facts(line)
@@ -203,6 +205,7 @@ def derive_expected(card_name: str, payloads: dict[str, dict]) -> set[str]:
 
 
 def _sample(diff: set[str], cap: int = 5) -> str:
+    """Up to ``cap`` sorted fact ids for an error message, with a ``(+N more)`` tail."""
     shown = sorted(diff)[:cap]
     extra = len(diff) - len(shown)
     tail = f" (+{extra} more)" if extra > 0 else ""
@@ -210,6 +213,12 @@ def _sample(diff: set[str], cap: int = 5) -> str:
 
 
 def check_atlas(atlas_dir: Path, seed: int, run_mutation: bool) -> int:
+    """Primary FactSet mode: prove markdown == receipt == payload for every card.
+
+    Returns 0 only when no card drifts in either direction and the mutation
+    self-test notices every seeded fact-line removal; otherwise prints each
+    failure to stderr and returns 1.
+    """
     receipt_path = atlas_dir / "receipt.json"
     if not receipt_path.exists():
         print(f"FAIL: {receipt_path} missing — atlas without receipt is unverifiable", file=sys.stderr)
@@ -364,6 +373,7 @@ FACT_MARKERS = {
 
 
 def fact_present(fact_id: str, payload: str) -> bool:
+    """True when a regex marker for ``fact_id`` — or the id itself — occurs in the payload."""
     for marker in FACT_MARKERS.get(fact_id, [fact_id]):
         if re.search(marker, payload, re.I):
             return True
@@ -371,6 +381,8 @@ def fact_present(fact_id: str, payload: str) -> bool:
 
 
 def legacy_check(payload_path: Path, receipt_path: Path | None = None) -> dict:
+    """Legacy forcefeed mode: which expected fact ids a captured feed does and does
+    not contain, extended by any card ids the manifest declares. Never raises."""
     payload = payload_path.read_text(errors="ignore") if payload_path.exists() else ""
     expected = DEFAULT_FACTS[:]
     if receipt_path and receipt_path.exists():
@@ -400,6 +412,8 @@ def legacy_check(payload_path: Path, receipt_path: Path | None = None) -> dict:
 
 
 def main() -> None:
+    """CLI entry point: routes to the legacy probe when --payload is given, and to
+    the FactSet check otherwise, exiting with that mode's status."""
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("atlas_dir", nargs="?", type=Path, help="context-atlas directory (primary FactSet mode)")
     parser.add_argument("--seed", type=lambda v: int(v, 0), default=DEFAULT_MUTATION_SEED, help="mutation self-test seed")

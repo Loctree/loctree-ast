@@ -26,12 +26,14 @@ set -euo pipefail
 #   LOCTREE_MCP_AUTH_TOKEN            single shared bearer token (forwarded)
 #   LOCTREE_MCP_ALLOW_UNAUTHENTICATED forwarded; opens a non-loopback port
 
-LABEL="io.vetcoders.loctree.mcp"
+LABEL="com.loctree.loctree.mcp"
+LEGACY_LABEL="io.vetcoders.loctree.mcp"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 LOG_DIR="$HOME/.loctree/logs"
 BIND="${LOCTREE_MCP_BIND:-127.0.0.1:5174}"
 CAPACITY="${LOCTREE_MCP_CACHE_CAPACITY:-20}"
 
+# Prints one indented status line.
 note() { printf '  %s\n' "$*"; }
 
 if [ "$(uname -s)" != "Darwin" ]; then
@@ -39,11 +41,21 @@ if [ "$(uname -s)" != "Darwin" ]; then
   exit 0
 fi
 
+# Prints the launchd GUI domain target for the current user.
 gui_domain() { printf 'gui/%s' "$(id -u)"; }
 
+# Boot out a launchd label and delete its plist if present. Used for the
+# canonical label and to migrate machines still running the legacy
+# io.vetcoders.loctree.mcp agent so install/uninstall never leave two servers.
+retire_launchd_label() {
+  local label="$1"
+  launchctl bootout "$(gui_domain)/$label" 2>/dev/null || true
+  rm -f "$HOME/Library/LaunchAgents/$label.plist"
+}
+
 if [ "${1:-}" = "--uninstall" ]; then
-  launchctl bootout "$(gui_domain)/$LABEL" 2>/dev/null || true
-  rm -f "$PLIST"
+  retire_launchd_label "$LABEL"
+  retire_launchd_label "$LEGACY_LABEL"
   note "loctree mcp service: removed ($LABEL)"
   exit 0
 fi
@@ -72,6 +84,7 @@ BIND_XML="$(printf '%s' "$BIND" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>
 CAPACITY_XML="$(printf '%s' "$CAPACITY" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' -e 's/"/\&quot;/g' -e "s/'/\&apos;/g")"
 PATH_XML="$(printf '%s' "$LOCT_DIR:/usr/bin:/bin:$HOME/.local/bin:$HOME/.cargo/bin:/opt/homebrew/bin" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' -e 's/"/\&quot;/g' -e "s/'/\&apos;/g")"
 
+# Escapes the five XML metacharacters so a value can be embedded in the plist.
 xml_escape() { printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' -e 's/"/\&quot;/g' -e "s/'/\&apos;/g"; }
 
 # Forward the auth-relevant environment into the LaunchAgent. launchd does not
@@ -134,7 +147,10 @@ PLIST_EOF
 
 plutil -lint "$PLIST" >/dev/null
 
-# Idempotent refresh
+# Migrate machines still running the legacy io.vetcoders.loctree.mcp agent
+# so install never leaves two HTTP MCP servers. Then refresh the canonical
+# label without deleting the plist we just wrote.
+retire_launchd_label "$LEGACY_LABEL"
 launchctl bootout "$(gui_domain)/$LABEL" 2>/dev/null || true
 launchctl bootstrap "$(gui_domain)" "$PLIST"
 

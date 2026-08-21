@@ -28,20 +28,27 @@ const binaryName = target && target.includes('windows') ? 'loctree-lsp.exe' : 'l
 const extractedBinary = path.join(extractDir, `loctree-${version}-${target}`, 'bin', binaryName);
 const stagedBinary = path.join(workDir, binaryName);
 
+/** Strip a leading `v` and surrounding whitespace from a version string. */
 function normalizeVersion(raw) {
   return String(raw || '').trim().replace(/^v/, '');
 }
 
+/** Abort the fetch when a required input is missing, naming it in the error. */
 function requireValue(value, name) {
   if (!value) {
     throw new Error(`${name} is required`);
   }
 }
 
+/** Prefixed progress line on stdout, so CI logs are attributable. */
 function log(message) {
   process.stdout.write(`[loctree-vscode] ${message}\n`);
 }
 
+/**
+ * Download one URL to disk, following up to `redirectsLeft` redirects and
+ * aborting after 30s. Partial files are unlinked before the promise rejects.
+ */
 function download(url, destination, redirectsLeft = 5) {
   return new Promise((resolve, reject) => {
     const fail = (error) => {
@@ -88,12 +95,14 @@ function download(url, destination, redirectsLeft = 5) {
   });
 }
 
+/** SHA-256 of a file, as lowercase hex. */
 function sha256(filePath) {
   const hash = crypto.createHash('sha256');
   hash.update(fs.readFileSync(filePath));
   return hash.digest('hex');
 }
 
+/** First token of a checksum sidecar, lowercased; throws when the sidecar is empty. */
 function expectedSha(filePath) {
   const first = fs.readFileSync(filePath, 'utf8').trim().split(/\s+/)[0];
   if (!first) {
@@ -102,6 +111,7 @@ function expectedSha(filePath) {
   return first.toLowerCase();
 }
 
+/** Append a `key=value` line to `$GITHUB_OUTPUT` when running inside Actions. */
 function writeGithubOutput(key, value) {
   const outputPath = process.env.GITHUB_OUTPUT;
   if (outputPath) {
@@ -109,6 +119,11 @@ function writeGithubOutput(key, value) {
   }
 }
 
+/**
+ * Fetch and stage the release LSP for packaging. Refuses to proceed when the
+ * git tag disagrees with the VS Code package version, or when the downloaded
+ * archive fails its checksum — a mismatched runtime never reaches a VSIX.
+ */
 async function main() {
   requireValue(target, 'LOCTREE_TARGET');
   requireValue(version, 'LOCTREE_VERSION or package.json version');

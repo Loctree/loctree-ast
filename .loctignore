@@ -18,4 +18,7 @@ distribution/npm/index.d.ts
 # Tools fixtures and test files
 tools/fixtures/
 tools/test_ts/
-Makefile
+# Fixture Makefiles only. A bare `Makefile` is a literal prefix of the root
+# file, so the engine snapshot previously dropped the suite's own Makefile
+# and `loct find` could honestly (and wrongly) report it absent.
+loctree-rs/tests/fixtures/**/Makefile

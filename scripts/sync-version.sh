@@ -20,6 +20,8 @@ fi
 
 echo "Syncing version to: $VERSION"
 
+# Applies one sed expression in place to a release surface, picking GNU or BSD
+# -i syntax at runtime, and reports the file as updated or skipped.
 update_file() {
     local file="$1"
     local pattern="$2"
@@ -57,7 +59,7 @@ update_file "$ROOT_DIR/public_dist/install.sh" \
 if [ -f "$ROOT_DIR/distribution/npm/sync-version.mjs" ]; then
     if command -v node >/dev/null 2>&1; then
         node "$ROOT_DIR/distribution/npm/sync-version.mjs" "$VERSION"
-        echo "  Updated: distribution/npm/package.json"
+        echo "  Updated: distribution/npm/loct/package.json"
     else
         echo "Node.js is required to sync distribution/npm version" >&2
         exit 1

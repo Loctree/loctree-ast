@@ -5,11 +5,15 @@ export type Scope =
   | { kind: 'literal'; value: string }
   | { kind: 'out-of-workspace'; value: string };
 
+/** Stable `kind:value` identity for a scope — distinct per kind, so a symbol and
+ *  a literal of the same text never collide. */
 export function scopeKey(scope: Scope): string {
   return `${scope.kind}:${scope.value}`;
 }
 
+/** A bare identifier: routes the input to symbol scope. */
 const IDENT_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+/** A path separator or a file extension: routes the input to file scope. */
 const PATH_RE = /[\\/]|\.[A-Za-z0-9]+$/;
 
 /**

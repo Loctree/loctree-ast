@@ -17,6 +17,7 @@ REPO="."
 OUT=""
 RUNNER=""
 
+# Prints the invocation banner to stderr and exits 2.
 usage() {
   echo "Usage: $0 --runner <claude|codex|junie|grok> --repo <path> --out <json>" >&2
   exit 2

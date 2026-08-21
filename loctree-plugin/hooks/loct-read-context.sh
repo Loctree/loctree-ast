@@ -29,6 +29,8 @@ command -v jq   >/dev/null 2>&1 || exit 0
 LOG_FILE="${LOCT_HOOK_LOG_FILE:-$HOME/.claude/logs/loct-read.log}"
 mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
 
+# Append one line to the hook log; never writes to stdout, which must stay
+# valid JSON for Claude Code to parse.
 log_line() {
   printf '%s\n' "$*" >>"$LOG_FILE" 2>/dev/null || true
 }

@@ -94,6 +94,7 @@ for name in ("baseline", "rerun_identical", "attribution_bump", "source_event_ch
     v.validate(variants[name]["overlay"])
 
 def revs(name):
+    """Read the (store_revision, overlay_revision) pair a matrix variant reports."""
     o = variants[name]["overlay"]
     return o["store_revision"], o["overlay_revision"]
 
@@ -120,6 +121,7 @@ for na, sa, oa in pairs:
 
 # --- evidence_event_id fidelity to frozen C0A derivation v1 ---
 def all_evidence_ids(doc):
+    """Yield every evidence_event_id in the overlay, so each can be identity-checked."""
     for e in doc["entries"]:
         for r in e["refs"]:
             yield r["evidence_event_id"]

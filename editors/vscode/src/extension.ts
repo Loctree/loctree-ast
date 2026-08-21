@@ -35,23 +35,34 @@ let lspRuntimeState: LspRuntimeState = {
     phase: 'stopped',
     message: 'Loctree LSP has not started.',
 };
+/** The one gateway every surface shares; reads `client`/`lspRuntimeState` through
+ *  getters so it survives server restarts without being rebuilt. */
 const gateway = new LoctreeGateway(() => client, () => lspRuntimeState);
 
+/** Command that starts the LSP on demand — the escape hatch offered whenever the
+ *  extension stayed inactive or a surface has nothing to show. */
 const INITIALIZE_COMMAND = 'loctree.initialize';
+/** Filename probed inside the per-project cache dir to detect a prior scan. */
 const SNAPSHOT_FILE = 'snapshot.json';
 
+/** Quiet period after a save before an auto-refresh fires, so a burst of saves
+ *  triggers one reload rather than one per file. */
 const AUTO_REFRESH_DEBOUNCE_MS = 1500;
 // `loctree/refresh` is a fire-and-forget notification with no completion
 // signal, so give the server a moment to reload the snapshot before we
 // re-read health. Watcher-driven rescans use loctree/scanProgress instead.
 const REFRESH_SETTLE_MS = 600;
+/** Server-side workspace command that materializes an atlas card and returns its path. */
 const OPEN_ATLAS_CARD_COMMAND = 'loctree.openAtlasCard';
 
+/** Expected shape of the atlas-card command result; both fields are validated
+ *  before the path is opened. */
 interface OpenAtlasCardResponse {
     ok?: boolean;
     card_path?: string;
 }
 
+/** Unwrap the single-array argument form so the server always receives a flat list. */
 function normalizeOpenAtlasCardArgs(args: unknown[]): unknown[] {
     if (args.length === 1 && Array.isArray(args[0])) {
         return args[0] as unknown[];
@@ -59,6 +70,8 @@ function normalizeOpenAtlasCardArgs(args: unknown[]): unknown[] {
     return args;
 }
 
+/** Extract the card path only from a well-formed `ok: true` response — any other
+ *  shape yields undefined so the caller warns instead of opening garbage. */
 function cardPathFromResponse(response: unknown): string | undefined {
     if (typeof response !== 'object' || response === null || Array.isArray(response)) {
         return undefined;
@@ -72,6 +85,11 @@ function cardPathFromResponse(response: unknown): string | undefined {
     return undefined;
 }
 
+/**
+ * Register `loctree.openAtlasCard`: forwards to the server's workspace command
+ * and opens the returned card, refusing early (with a warning) when the LSP is
+ * not ready or the response carries no usable path.
+ */
 function registerOpenAtlasCardCommand(
     context: vscode.ExtensionContext,
     outputChannel: vscode.OutputChannel,
@@ -125,10 +143,13 @@ function registerOpenAtlasCardCommand(
     );
 }
 
+/** Message text of any thrown value, without assuming it is an Error. */
 function formatError(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
 }
 
+/** Single writer for the LSP lifecycle state: stores it, repaints the status bar,
+ *  refreshes the findings tree, and logs the transition. */
 function setLspRuntimeState(state: LspRuntimeState, outputChannel?: vscode.OutputChannel): void {
     lspRuntimeState = state;
     if (statusBarItem) {
@@ -142,6 +163,8 @@ function setLspRuntimeState(state: LspRuntimeState, outputChannel?: vscode.Outpu
     );
 }
 
+/** Build the error state for a failed start, keeping the binary path and two stack
+ *  frames so the user can see which runtime failed and why. */
 function startupErrorState(serverCommand: string | undefined, error: unknown): LspRuntimeState {
     return {
         phase: 'error',
@@ -151,6 +174,11 @@ function startupErrorState(serverCommand: string | undefined, error: unknown): L
     };
 }
 
+/**
+ * Repaint the status bar from a fresh health read. Deliberately leaves an
+ * existing Initializing/Error state alone when the LSP is not ready, so a
+ * startup failure is never masked as a normal "Ready" bar.
+ */
 async function refreshStatusBarFromHealth(
     outputChannel: vscode.OutputChannel
 ): Promise<void> {
@@ -202,6 +230,7 @@ function triggerRefresh(outputChannel: vscode.OutputChannel): void {
     }, REFRESH_SETTLE_MS);
 }
 
+/** True when `candidate` resolves inside `root` (equal counts as inside). */
 function isInsidePath(root: string, candidate: string): boolean {
     const normalizedRoot = path.normalize(root);
     const normalizedCandidate = path.normalize(candidate);
@@ -212,6 +241,8 @@ function isInsidePath(root: string, candidate: string): boolean {
     );
 }
 
+/** Split a relative path into segments, rejecting absolute paths, NUL bytes and
+ *  any `..` traversal. Null means the input is not safe to join onto a root. */
 function safeRelativeParts(raw: string): string[] | null {
     if (!raw || path.isAbsolute(raw) || raw.includes('\0')) {
         return null;
@@ -223,6 +254,8 @@ function safeRelativeParts(raw: string): string[] | null {
     return parts;
 }
 
+/** Join `segments` under `root`, returning null when a segment is unsafe or the
+ *  result would escape the root. */
 function safeChildPath(root: string, ...segments: string[]): string | null {
     const parts: string[] = [];
     for (const segment of segments) {
@@ -502,6 +535,12 @@ async function startLspClient(
     }
 }
 
+/**
+ * Extension entry point. Builds every surface (status bar, commands, findings
+ * tree, Context Pill) unconditionally, then decides whether to start the LSP —
+ * and with it the heavy server-side scan — based on a project signal or the
+ * explicit `loctree.autoScanOnStartup` opt-in.
+ */
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
     const outputChannel = vscode.window.createOutputChannel('Loctree');
     outputChannel.appendLine('Loctree extension activating...');
@@ -627,6 +666,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     outputChannel.appendLine('Loctree extension activated');
 }
 
+/** Shut the language server down on unload and reset the shared state so a later
+ *  reactivation starts from `stopped`, not from a stale phase. */
 export async function deactivate(): Promise<void> {
     if (client) {
         await stopClient(client);

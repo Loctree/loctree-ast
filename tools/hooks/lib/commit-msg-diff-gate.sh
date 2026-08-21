@@ -90,6 +90,9 @@ fi
 # ---------------------------------------------------------------------------
 # [1] type-vs-content
 # ---------------------------------------------------------------------------
+# Classifies one staged path as production source: docs, manifests, assets, and
+# test/fixture trees are excluded, source extensions and */src/* trees are not.
+# Drives the type-vs-content finding for test|docs|chore subjects.
 is_prod_source() {
     local p="$1"
     # Explicit non-product / non-source surfaces
@@ -181,6 +184,9 @@ while IFS= read -r line || [ -n "$line" ]; do
     fi
 done <"$msg_file"
 
+# Decides whether a no-touch sentence actually names a staged path, matching on the
+# full path, the basename, or a distinctive parent directory; generic parents such
+# as src or tests are rejected to keep the claim check from firing on noise.
 path_mentioned_in_line() {
     local line="$1"
     local staged="$2"

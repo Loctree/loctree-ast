@@ -18,7 +18,9 @@ REPO_URL="https://github.com/Loctree/Loctree"
 # Allow pinning a branch, tag, or commit; defaults to 'main' regardless of which branch this script is fetched from.
 LOCTREE_REF=${LOCTREE_REF:-"main"}
 
+# Prints a tagged progress line.
 info() { printf "[loctree] %s\n" "$*"; }
+# Prints a tagged warning line to stderr.
 warn() { printf "[loctree][warn] %s\n" "$*" >&2; }
 
 command -v cargo >/dev/null 2>&1 || {

@@ -1,7 +1,13 @@
 # syntax=docker/dockerfile:1.7
 
+# Container image for the Loctree MCP server. Two stages: build loctree-mcp
+# from the workspace, then ship that one binary on a slim Debian runtime under
+# a non-root uid. VCS_REF is baked in so the server can report its own commit.
+
 ARG VCS_REF=unknown
 
+# Build stage: full Rust toolchain plus protoc, producing a --locked release
+# build of loctree-mcp and staging it at /out.
 FROM rust:1.93.0-bookworm AS builder
 
 ARG VCS_REF
@@ -18,6 +24,9 @@ COPY . .
 RUN cargo build --locked --release --package loctree-mcp \
     && install -D -m 0755 target/release/loctree-mcp /out/loctree-mcp
 
+# Runtime stage: the binary plus its only runtime needs (CA roots and git),
+# running as uid 65532. /workspace is pre-marked safe.directory so a mounted
+# repo owned by another uid is not refused by git.
 FROM debian:bookworm-slim AS runtime
 
 ARG VCS_REF

@@ -1,4 +1,7 @@
 #!/bin/sh
+# Vibecrafted pre-commit hook — non-mutating checks only.
+# Verifies workspace Rust formatting when any .rs file is staged; everything
+# heavier (clippy, tests, cycles) is deferred to `make preflight`.
 set -e
 
 # Get repo root

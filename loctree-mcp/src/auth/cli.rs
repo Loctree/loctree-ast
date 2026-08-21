@@ -121,6 +121,9 @@ pub(crate) async fn run(action: &TokenAction, token_store: Option<&str>) -> Resu
     Ok(())
 }
 
+/// Turn repeated `--scope` strings into the canonical grain, defaulting to
+/// `context-read` (the whole read-only MCP surface) when none were passed.
+/// An unrecognized token aborts token creation rather than silently narrowing.
 fn parse_scopes(raw: &[String]) -> Result<Vec<Scope>> {
     if raw.is_empty() {
         return Ok(vec![Scope::ContextRead]);
@@ -128,6 +131,8 @@ fn parse_scopes(raw: &[String]) -> Result<Vec<Scope>> {
     raw.iter().map(|value| value.parse::<Scope>()).collect()
 }
 
+/// Render granted scopes as the comma-separated cell used by the `create` and
+/// `list` output tables.
 fn join_scopes(scopes: &[Scope]) -> String {
     scopes
         .iter()

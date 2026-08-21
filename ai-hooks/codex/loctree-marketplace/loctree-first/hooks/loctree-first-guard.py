@@ -73,6 +73,12 @@ def grep_targets(head: str, cwd: str):
 
 
 def main() -> int:
+    """Deny one PreToolUse shell command when it maps the session's own git repo.
+
+    Returns 2 for a bare grep/rg/egrep/fgrep whose targets resolve inside the repo
+    holding ``cwd``; returns 0 for ``command``-prefixed fallbacks, pipe filters,
+    out-of-repo searches, and every parse failure (fail-open by design).
+    """
     try:
         payload = json.load(sys.stdin)
         command = (payload.get("tool_input") or {}).get("command", "")

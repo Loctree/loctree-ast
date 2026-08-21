@@ -224,6 +224,13 @@ jobs:
       - name: Build release binaries
         run: cargo build -p loctree -p loctree-mcp -p loctree-lsp --release --target aarch64-apple-darwin
 
+      - name: Smoke macOS dylib portability
+        run: |
+          set -euo pipefail
+          bin="target/aarch64-apple-darwin/release"
+          bash distribution/macos/smoke-releaseability.sh \
+            "$bin/loct" "$bin/loctree" "$bin/loctree-mcp" "$bin/loctree-lsp"
+
       - name: Package CLI macOS ARM64 artifact
         env:
           MACOS_DEVELOPER_ID_APPLICATION: ${{ secrets.MACOS_DEVELOPER_ID_APPLICATION }}
@@ -308,6 +315,13 @@ jobs:
 
       - name: Build release binaries
         run: cargo build -p loctree -p loctree-mcp -p loctree-lsp --release --target x86_64-apple-darwin
+
+      - name: Smoke macOS dylib portability
+        run: |
+          set -euo pipefail
+          bin="target/x86_64-apple-darwin/release"
+          bash distribution/macos/smoke-releaseability.sh \
+            "$bin/loct" "$bin/loctree" "$bin/loctree-mcp" "$bin/loctree-lsp"
 
       - name: Package CLI macOS x86_64 artifact
         env:
@@ -476,6 +490,12 @@ jobs:
       - name: Build release binary
         run: cargo build -p loctree-mcp --release --target aarch64-apple-darwin
 
+      - name: Smoke macOS dylib portability
+        run: |
+          set -euo pipefail
+          bash distribution/macos/smoke-releaseability.sh \
+            target/aarch64-apple-darwin/release/loctree-mcp
+
       - name: Package MCP macOS ARM64 artifact
         env:
           MACOS_DEVELOPER_ID_APPLICATION: ${{ secrets.MACOS_DEVELOPER_ID_APPLICATION }}
@@ -535,6 +555,12 @@ jobs:
 
       - name: Build release binary
         run: cargo build -p loctree-mcp --release --target x86_64-apple-darwin
+
+      - name: Smoke macOS dylib portability
+        run: |
+          set -euo pipefail
+          bash distribution/macos/smoke-releaseability.sh \
+            target/x86_64-apple-darwin/release/loctree-mcp
 
       - name: Package MCP macOS x86_64 artifact
         env:

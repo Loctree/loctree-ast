@@ -90,6 +90,8 @@ use loctree::snapshot::{
 mod deserialize_usize_lenient {
     use serde::{self, Deserialize, Deserializer};
 
+    /// Accept a required count as either a JSON number or a decimal string, so a
+    /// client that quotes its integers still parses instead of failing the call.
     pub fn deserialize<'de, D>(deserializer: D) -> Result<usize, D::Error>
     where
         D: Deserializer<'de>,
@@ -109,6 +111,9 @@ mod deserialize_usize_lenient {
         }
     }
 
+    /// Same leniency for an optional count: absent stays `None`, a quoted number
+    /// parses, and unparseable text is a deserialization error rather than a
+    /// silent default.
     pub fn deserialize_option<'de, D>(deserializer: D) -> Result<Option<usize>, D::Error>
     where
         D: Deserializer<'de>,
@@ -155,6 +160,9 @@ fn set_default_project_root(root: &str) {
     let _ = DEFAULT_PROJECT_ROOT.set(resolved);
 }
 
+/// Serde default for every tool's `project` field: the `--root` pin when one
+/// was set, otherwise the server's cwd resolved to an absolute path so an agent
+/// with a different cwd still lands on the same tree.
 fn default_project() -> String {
     // A `--root` / `--project` pin wins over cwd. Per-request `project`
     // params still override this — serde only calls us when the field is
@@ -168,6 +176,8 @@ fn default_project() -> String {
         .unwrap_or_else(|_| ".".to_string())
 }
 
+/// Strip a term to lowercase alphanumerics so `public-entry`, `public_entry`,
+/// and `PublicEntry` all collapse to one comparable key for tagmap recall.
 fn tagmap_normalize(value: &str) -> String {
     value
         .chars()
@@ -176,6 +186,9 @@ fn tagmap_normalize(value: &str) -> String {
         .to_ascii_lowercase()
 }
 
+/// Match a snapshot fact against a tagmap keyword, first on raw lowercase
+/// substring and then on the separator-stripped form, so a dashed query still
+/// recalls an underscored symbol.
 fn tagmap_matches(value: &str, keyword_lower: &str, keyword_normalized: &str) -> bool {
     let value_lower = value.to_ascii_lowercase();
     value_lower.contains(keyword_lower)
@@ -183,10 +196,15 @@ fn tagmap_matches(value: &str, keyword_lower: &str, keyword_normalized: &str) ->
             && tagmap_normalize(&value_lower).contains(keyword_normalized))
 }
 
+/// Apply the caller's `file` narrowing through the shared occurrence scope
+/// matcher, so MCP file filters behave identically to the CLI's.
 fn path_filter_matches(path: &str, filter: &str) -> bool {
     loctree::analyzer::occurrences::path_matches_scope(path, filter)
 }
 
+/// Reduce a signature-shaped query such as `async fn find` to its trailing
+/// identifier, dropping keywords, so where-symbol can retry on the bare name
+/// when the full phrase finds nothing.
 fn signature_symbol_anchor(query: &str) -> Option<String> {
     let mut tokens = query
         .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
@@ -200,6 +218,9 @@ fn signature_symbol_anchor(query: &str) -> Option<String> {
     tokens.next_back().map(|token| token.to_ascii_lowercase())
 }
 
+/// Test whether a match's context line contains the anchor as a whole
+/// identifier — this is what lets where-symbol prefer `fn find` over the
+/// substring hit `fn find_helper`.
 fn context_has_identifier(context: &str, ident: &str) -> bool {
     context
         .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
@@ -256,9 +277,12 @@ fn allowed_project_roots() -> Option<Vec<PathBuf>> {
 pub struct LexicallyValidatedPath(PathBuf);
 
 impl LexicallyValidatedPath {
+    /// Borrow the validated path without consuming the witness.
     pub fn as_path(&self) -> &Path {
         self.0.as_path()
     }
+    /// Consume the witness and hand back the owned lexical path; the caller takes
+    /// on the duty to canonicalize and re-check containment before any `fs::*` use.
     pub fn into_path_buf(self) -> PathBuf {
         self.0
     }
@@ -430,6 +454,7 @@ fn enforce_allowed_root(canonical: &Path, allowed_roots: Option<&[PathBuf]>) -> 
     }
 }
 
+/// Inputs for the tools that need nothing but a project: `repo-view`.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct ForAiParams {
     /// Project directory (default: current directory)
@@ -440,6 +465,9 @@ struct ForAiParams {
     force_no_git: bool,
 }
 
+/// Inputs for `context` — snapshot freshness policy, the optional focus
+/// (file / task / scope / changed), the AICX toggle, and the markdown
+/// format plus section cursor.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct ContextParams {
     /// Project directory (default: current directory)
@@ -487,6 +515,8 @@ struct ContextParams {
     section: Option<usize>,
 }
 
+/// Response shape `context` returns: pretty JSON by default, or the paginated
+/// operator-readable markdown pack.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 enum ContextFormat {
@@ -495,6 +525,8 @@ enum ContextFormat {
     Markdown,
 }
 
+/// Inputs for `slice`: the target file, whether consumers are included, the
+/// traversal depth, and an optional forced rescan for freshly created files.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct SliceParams {
     /// Project directory (default: current directory)
@@ -519,6 +551,8 @@ struct SliceParams {
     rescan: bool,
 }
 
+/// Inputs for `find` across all seven modes. Most fields are mode-specific and
+/// ignored elsewhere — the literal-mode tuning block in particular.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct FindParams {
     /// Project directory (default: current directory)
@@ -573,6 +607,8 @@ struct FindParams {
     offset: usize,
 }
 
+/// Inputs for `impact`: the file whose blast radius is wanted, and how far up
+/// the reverse-dependency graph to walk.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct ImpactParams {
     /// Project directory (default: current directory)
@@ -591,6 +627,8 @@ struct ImpactParams {
     depth: Option<usize>,
 }
 
+/// Inputs for `body`: the symbol to resolve, an optional file to disambiguate
+/// duplicate definitions, and the per-body line cap.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct BodyParams {
     /// Project directory (default: current directory).
@@ -615,6 +653,8 @@ struct BodyParams {
     rescan: bool,
 }
 
+/// Inputs for `diff`: the git ref to use as the comparison base, and whether
+/// generated or vendored exports count as changes.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct DiffParams {
     /// Project directory (default: current directory).
@@ -630,10 +670,14 @@ struct DiffParams {
     include_artifacts: bool,
 }
 
+/// Example items per prism section when the caller does not say — eight, enough
+/// to read a band without flooding the response.
 fn default_prism_limit() -> usize {
     8
 }
 
+/// Inputs for `prism`: the two-or-more task framings to score against each
+/// other, plus the AICX overlay controls and per-section example cap.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct PrismParams {
     /// Project directory (default: current directory)
@@ -662,14 +706,18 @@ struct PrismParams {
     limit: usize,
 }
 
+/// Serde default for opt-out booleans such as `consumers` and `with_aicx`,
+/// which are on unless the caller turns them off.
 fn default_true() -> bool {
     true
 }
 
+/// Result cap applied when `find` is called without `limit`.
 fn default_limit() -> usize {
     50
 }
 
+/// Mode `find` falls back to when the caller does not name one.
 fn default_find_mode() -> String {
     "symbols".to_string()
 }
@@ -717,6 +765,10 @@ fn scan_literal_occurrences(
     scan_files_for_literal_query(&borrowed, ident, opts, scope)
 }
 
+/// Regex counterpart to the literal scan: compile the caller's pattern, read
+/// every snapshot file off disk, and report matches with the same coverage
+/// accounting the CLI produces. An invalid pattern surfaces as a scan error, not
+/// a panic.
 fn scan_regex_occurrences(
     snapshot: &Snapshot,
     base: &Path,
@@ -746,6 +798,10 @@ fn scan_regex_occurrences(
     Ok(scan_files_with_regex(borrowed, &re, scope))
 }
 
+/// Materialize a throwaway worktree at `reference`, scan it, then remove the
+/// worktree — this is how `diff` gets a base snapshot without disturbing the
+/// live checkout. A cleanup failure is reported even when the scan succeeded,
+/// so a leaked worktree is never silent.
 fn snapshot_at_git_ref(project: &Path, reference: &str) -> Result<(Snapshot, String), String> {
     let repo = GitRepo::discover(project).map_err(|err| err.to_string())?;
     let commit = repo
@@ -782,6 +838,9 @@ fn snapshot_at_git_ref(project: &Path, reference: &str) -> Result<(Snapshot, Str
     }
 }
 
+/// Freshness policy carried into every `get_snapshot` call: refuse to scan,
+/// refuse a stale snapshot, force a rescan, and whether a non-git root is
+/// acceptable.
 #[derive(Debug, Clone, Copy, Default)]
 struct SnapshotLoadOptions {
     no_scan: bool,
@@ -791,6 +850,8 @@ struct SnapshotLoadOptions {
 }
 
 impl SnapshotLoadOptions {
+    /// Lift the four freshness flags off `context`'s parameters, keeping the
+    /// policy in one place instead of re-deriving it at each call site.
     fn from_context(params: &ContextParams) -> Self {
         Self {
             no_scan: params.no_scan,
@@ -801,6 +862,8 @@ impl SnapshotLoadOptions {
     }
 }
 
+/// Render a failure as `{"error": "…"}` so a tool that fails still returns
+/// parseable JSON rather than a bare string the client cannot deserialize.
 fn json_error(err: impl std::fmt::Display) -> String {
     serde_json::json!({ "error": err.to_string() }).to_string()
 }
@@ -814,6 +877,9 @@ fn json_error(err: impl std::fmt::Display) -> String {
 /// initial fresh scan legitimately needs more time.
 const CONTEXT_DEADLINE_ENV: &str = "LOCT_MCP_CONTEXT_DEADLINE_SECS";
 
+/// Resolve the per-call `context` deadline from the environment, falling back
+/// to 90s. Zero and unparseable values fall back too, so a typo cannot disable
+/// the deadline.
 fn context_deadline() -> std::time::Duration {
     let secs = std::env::var(CONTEXT_DEADLINE_ENV)
         .ok()
@@ -839,8 +905,13 @@ fn context_deadline() -> std::time::Duration {
 /// top-level `## ` sections (synthesis-first, so early sections carry the most
 /// value) and walked via the `next_section` cursor.
 const CONTEXT_MARKDOWN_BUDGET_ENV: &str = "LOCT_MCP_CONTEXT_MAX_CHARS";
+/// Default body budget in characters — roughly half the observed MCP token
+/// ceiling once JSON escaping is accounted for.
 const CONTEXT_MARKDOWN_BUDGET_DEFAULT: usize = 38_000;
 
+/// Resolve the response character budget from the environment. Values under
+/// 2,000 are rejected because a tiny budget would shred the pack into pages too
+/// small to be useful.
 fn context_markdown_budget() -> usize {
     std::env::var(CONTEXT_MARKDOWN_BUDGET_ENV)
         .ok()
@@ -849,8 +920,13 @@ fn context_markdown_budget() -> usize {
         .unwrap_or(CONTEXT_MARKDOWN_BUDGET_DEFAULT)
 }
 
+/// Protocol tag on the marker object emitted when a tool response is capped, so
+/// a client can recognize the truncation envelope by schema rather than prose.
 const MCP_RESPONSE_BUDGET_PROTOCOL: &str = "loctree.mcp.response_budget.v1";
 
+/// Pretty-print a tool result and put it through the response budget. Every
+/// tool returns through here, so the cap is a property of the surface rather
+/// than of individual handlers.
 fn tool_json_response(tool: &str, project: Option<&Path>, value: serde_json::Value) -> String {
     match serde_json::to_string_pretty(&value) {
         Ok(raw) => budget_tool_response(tool, project, raw),
@@ -858,6 +934,9 @@ fn tool_json_response(tool: &str, project: Option<&Path>, value: serde_json::Val
     }
 }
 
+/// Return the payload untouched when it fits the budget; otherwise spill the
+/// full text to a sibling artifact and return a marker pointing at it. The
+/// response is capped before the MCP harness would reject it outright.
 fn budget_tool_response(tool: &str, project: Option<&Path>, raw: String) -> String {
     let budget = context_markdown_budget();
     if raw.chars().count() <= budget {
@@ -870,6 +949,9 @@ fn budget_tool_response(tool: &str, project: Option<&Path>, raw: String) -> Stri
     }
 }
 
+/// Write the uncapped payload to `.loctree/mcp-response-payloads/` under the
+/// project (or the temp dir when no project is known), named by tool and
+/// content digest so identical payloads reuse one file.
 fn write_full_tool_payload(tool: &str, project: Option<&Path>, raw: &str) -> io::Result<PathBuf> {
     // Without a project, payloads go to the per-user loctree cache (the same
     // root snapshots use), never to the world-shared OS temp dir: a predictable
@@ -888,6 +970,8 @@ fn write_full_tool_payload(tool: &str, project: Option<&Path>, raw: &str) -> io:
     Ok(artifact_path)
 }
 
+/// Reduce a tool name to a filename-safe stem, substituting anything outside
+/// `[A-Za-z0-9_-]`, so an artifact path can never escape its directory.
 fn sanitize_artifact_stem(value: &str) -> String {
     let sanitized: String = value
         .chars()
@@ -906,6 +990,10 @@ fn sanitize_artifact_stem(value: &str) -> String {
     }
 }
 
+/// Build the truncation envelope: original size and digest, the artifact
+/// pointer, and a payload preview. The preview is halved repeatedly until the
+/// rendered marker itself fits the budget, so the escape hatch can never
+/// overflow the cap it exists to respect.
 fn budget_marker_response(
     tool: &str,
     raw: &str,
@@ -953,6 +1041,8 @@ fn budget_marker_response(
     }
 }
 
+/// Cut a string to at most `max_chars` characters on a char boundary, so a
+/// preview never splits a multi-byte codepoint.
 fn truncate_chars(value: &str, max_chars: usize) -> String {
     if value.chars().count() <= max_chars {
         return value.to_string();
@@ -1172,6 +1262,9 @@ fn full_markdown_sha256(markdown: &str) -> String {
         .collect()
 }
 
+/// Inputs for `tree`, mirroring the CLI's traversal and filtering flags:
+/// depth, path prefixes, regex match, top/summary ranking, and the hidden /
+/// ignored / artifact toggles.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct TreeParams {
     /// Project directory (default: current directory)
@@ -1221,6 +1314,8 @@ struct TreeParams {
     find_artifacts: bool,
 }
 
+/// Inputs for `focus`: the directory to read, whether external consumers are
+/// included (with an explicit inverse alias), and the dependency depth.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct FocusParams {
     /// Project directory (default: current directory)
@@ -1245,10 +1340,12 @@ struct FocusParams {
     depth: Option<usize>,
 }
 
+/// Scope `follow` runs when the caller does not pick one — every trail at once.
 fn default_follow_scope() -> String {
     "all".to_string()
 }
 
+/// Trails returned per `follow` scope when the caller does not say.
 fn default_follow_limit() -> usize {
     10
 }
@@ -1284,6 +1381,8 @@ struct SuppressionsParams {
     include_fixtures: bool,
 }
 
+/// Inputs for `follow`: which signal trail to pursue, the handler name the
+/// `trace` scope requires, and the per-trail cap.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct FollowParams {
     /// Project directory (default: current directory)
@@ -1306,10 +1405,13 @@ struct FollowParams {
     limit: usize,
 }
 
+/// LOC at which `tree` flags a file as large when the caller sets no threshold.
 fn default_loc_threshold() -> usize {
     500
 }
 
+/// Count the leading characters two strings share — the prefix component of the
+/// directory suggestion score.
 fn common_prefix_len(a: &str, b: &str) -> usize {
     a.chars()
         .zip(b.chars())
@@ -1317,6 +1419,9 @@ fn common_prefix_len(a: &str, b: &str) -> usize {
         .count()
 }
 
+/// Rank the snapshot's directories against a `focus` query that matched nothing
+/// and return the closest names, so a typo comes back with candidates instead
+/// of a bare failure. Falls back to the first directories when nothing scores.
 fn suggest_directories(snapshot: &Snapshot, query: &str, max: usize) -> Vec<String> {
     if max == 0 {
         return Vec::new();
@@ -1394,6 +1499,7 @@ struct SnapshotCache {
 }
 
 impl SnapshotCache {
+    /// Build an empty cache bounded to `capacity` projects.
     fn new(capacity: usize) -> Self {
         Self {
             capacity,
@@ -1402,12 +1508,16 @@ impl SnapshotCache {
         }
     }
 
+    /// Return a cached snapshot and mark it most-recently-used, so a hit protects
+    /// the entry from the next eviction.
     fn get(&mut self, project: &Path) -> Option<Arc<Snapshot>> {
         let snapshot = self.entries.get(project).map(Arc::clone)?;
         self.mark_recent(project);
         Some(snapshot)
     }
 
+    /// Store a snapshot and evict the least-recently-used project when the cache
+    /// overflows, returning what was dropped. Capacity 0 stores nothing at all.
     fn insert(&mut self, project: PathBuf, snapshot: Arc<Snapshot>) -> Option<PathBuf> {
         if self.capacity == 0 {
             return None;
@@ -1428,6 +1538,8 @@ impl SnapshotCache {
         Some(evicted)
     }
 
+    /// Move a project to the newest end of the recency queue, removing any earlier
+    /// entry so a project is never queued twice.
     fn mark_recent(&mut self, project: &Path) {
         if let Some(index) = self.recency.iter().position(|entry| entry == project) {
             self.recency.remove(index);
@@ -1446,11 +1558,15 @@ pub(crate) struct LoctreeServer {
 }
 
 impl LoctreeServer {
+    /// Test-only constructor using the default cache capacity.
     #[cfg(test)]
     pub(crate) fn new() -> Self {
         Self::with_cache_capacity(args::DEFAULT_SNAPSHOT_CACHE_CAPACITY)
     }
 
+    /// Build a server with its own bounded snapshot cache and tool router. The
+    /// HTTP transport calls this once per session, so sessions do not share cached
+    /// snapshots.
     pub(crate) fn with_cache_capacity(snapshot_cache_capacity: usize) -> Self {
         Self {
             cache: Arc::new(RwLock::new(SnapshotCache::new(snapshot_cache_capacity))),
@@ -1496,6 +1612,9 @@ impl LoctreeServer {
         }
     }
 
+    /// Canonicalize the caller's project and refuse it when it is not inside a git
+    /// checkout, unless `force_no_git` opts a scratch directory in. This is the
+    /// guard between an MCP call and an accidental scan of the whole filesystem.
     fn resolve_project(project: &str, force_no_git: bool) -> Result<PathBuf> {
         let canonical = Self::resolve_existing_project_path(project)?;
         if !force_no_git && find_git_root(&canonical).is_none() {
@@ -1715,10 +1834,15 @@ impl LoctreeServer {
         ))
     }
 
+    /// Whether the requested path resolves to a real file inside the project — the
+    /// check that decides if a snapshot miss is worth a rescan.
     fn requested_file_exists(project: &Path, file: &str) -> bool {
         Self::resolve_existing_file_under_project(project, file).is_ok()
     }
 
+    /// Resolve a caller-supplied file to an absolute path plus its repo-relative
+    /// form, confined to the project. Rejects empty and NUL-bearing input, refuses
+    /// anything that escapes the project, and requires the target to be a file.
     fn resolve_existing_file_under_project(
         project: &Path,
         file: &str,
@@ -1757,6 +1881,8 @@ impl LoctreeServer {
         Ok((path, rel))
     }
 
+    /// Classify a file's language from its extension, or from the whole filename
+    /// for extensionless files such as `Makefile`.
     fn disk_file_language(path: &Path) -> String {
         let ext = path
             .extension()
@@ -1773,6 +1899,10 @@ impl LoctreeServer {
         detect_language_from_filename(filename)
     }
 
+    /// Build a core-only slice by reading the file straight off disk. This is the
+    /// fallback for a file that genuinely exists but is excluded from the snapshot
+    /// (for example by `.loctignore`), so an explicit request still gets an answer
+    /// carrying the exclusion note.
     fn disk_core_slice_payload(
         project: &Path,
         file: &str,
@@ -1799,11 +1929,16 @@ impl LoctreeServer {
         }))
     }
 
+    /// Explain why a file that exists on disk is absent from the snapshot, naming
+    /// the ignore rule that parked it.
     fn requested_file_ignore_explanation(project: &Path, file: &str) -> Option<String> {
         let (path, _) = Self::resolve_existing_file_under_project(project, file).ok()?;
         loctree::fs_utils::explain_ignore_for_path(project, &path)
     }
 
+    /// Resolve a file against the snapshot, and on a miss for a file that does
+    /// exist on disk, force one fresh scan and retry. Errors accumulate so the
+    /// caller sees both the original miss and what the rescan found.
     async fn resolve_file_in_snapshot_or_refresh(
         &self,
         snapshot: Arc<Snapshot>,
@@ -1850,6 +1985,10 @@ impl LoctreeServer {
         }
     }
 
+    /// Build the receipt block: which sections were loaded, the snapshot authority
+    /// report, the bundle diagnostic, and a digest over session, project, and
+    /// snapshot fingerprint. It is what lets a client prove which tree an answer
+    /// came from.
     fn context_receipt_payload(
         session_id: &str,
         project: &Path,
@@ -1902,6 +2041,7 @@ impl LoctreeServer {
 
 #[tool_router]
 impl LoctreeServer {
+    /// Compose the full Agent Context Pack for a project, under a server-side deadline.
     #[tool(
         name = "context",
         description = "Get a complete Agent Context Pack with structural, runtime, risk, action, authority, and optional AICX memory context. Start here for onboarding."
@@ -1921,6 +2061,10 @@ impl LoctreeServer {
         }
     }
 
+    /// The real `context` body, wrapped by the deadline. Resolves the project,
+    /// loads a snapshot under the requested freshness policy, composes the pack,
+    /// materializes the atlas, and returns either paginated markdown or the full
+    /// JSON pack with its receipt.
     async fn context_inner(&self, params: ContextParams) -> String {
         let load_options = SnapshotLoadOptions::from_context(&params);
         let project = match Self::resolve_project(&params.project, params.force_no_git) {
@@ -3903,6 +4047,7 @@ impl LoctreeServer {
         tool_json_response("follow", Some(&project), result)
     }
 
+    /// Inventory source-side silencers across the project (literal-only, free tier).
     #[tool(
         name = "suppressions",
         description = "Source-side silencer inventory. LITERAL-ONLY detection (free-tier scope): surfaces every Rust #[allow(...)], Rust #[ignore], Rust unsafe { ... } (with Rust 2024 env-var boilerplate triaged as 'unsafe-env-var'), Semgrep nosemgrep comments, TypeScript @ts-ignore, @ts-expect-error, @ts-nocheck, ESLint eslint-disable, Python # noqa, Python # type: ignore, Python # pylint: disable, Python # mypy:, Shell # shellcheck disable. Returns structured JSON: { matches: [{ kind, file, line, snippet, rule_id }], counts: { kind: count }, files_per_kind: { kind: file_count }, total, total_files }. Filter with kinds=[...]. NO semantic enrichment — semantic classification (suspicious/stale/similar-to-fixed) is paid-tier Wave 7+ delta and explicitly out of scope here. Distinct from .loctree/suppressions.toml (that's loctree's OWN finding-suppression file; different concept, similar name)."
@@ -3958,6 +4103,7 @@ impl LoctreeServer {
         )
     }
 
+    /// Score conceptual smear across two or more framings of the same task.
     #[tool(
         name = "prism",
         description = "Score conceptual smear across two or more task framings. Composes one ContextPack per task, computes file overlap and Jaccard distance, and emits the canonical loctree.prism.v1 JSON schema (axes, band, recommendation, task summaries, overlap). Use when a feature feels like it lives in multiple places at once and you need to decide whether vc-polarize is warranted."
@@ -3989,7 +4135,10 @@ impl LoctreeServer {
             Err(err) => return json_error(err),
         };
 
-        serde_json::to_string(&report).unwrap_or_else(json_error)
+        match serde_json::to_value(&report) {
+            Ok(value) => tool_json_response("prism", Some(&project), value),
+            Err(err) => json_error(err),
+        }
     }
 }
 
@@ -4003,10 +4152,16 @@ impl LoctreeServer {
 /// without reverse-engineering the tool schema. See `loctree-fail.md`
 /// ("live binary predates the committed fix").
 const BUILD_VERSION: &str = env!("LOCTREE_MCP_BUILD_VERSION");
+/// Short commit the binary was built from, or `unknown` outside a checkout.
 const GIT_COMMIT: &str = env!("LOCTREE_MCP_GIT_COMMIT");
+/// Whether the build tree carried uncommitted changes, which means the binary
+/// corresponds to no commit at all.
 const GIT_DIRTY: bool = env!("LOCTREE_MCP_GIT_DIRTY").as_bytes()[0] == b'1';
 /// Richer human-facing commit stamp: `git describe --always --dirty --tags`.
 const GIT_DESCRIBE: &str = env!("LOCTREE_MCP_GIT_DESCRIBE");
+/// One-line tool roster placed directly under the build banner in the
+/// `initialize` instructions, so an agent sees the available surface before
+/// reading the catalogue.
 const TOOL_SURFACE_DIGEST: &str =
     "TOOLS: context,repo-view,focus,slice,body,find,impact,diff,tree,follow,suppressions,prism";
 
@@ -4047,6 +4202,7 @@ fn build_identity_banner() -> String {
     )
 }
 
+/// This binary's identity marker, assembled from the build-time stamp.
 fn mcp_bundle_identity() -> BundleIdentity<'static> {
     BundleIdentity::new(
         "loctree-mcp",
@@ -4057,6 +4213,9 @@ fn mcp_bundle_identity() -> BundleIdentity<'static> {
     )
 }
 
+/// Compare this binary against the installed `loct` core bundle. `impact`
+/// consults the verdict and refuses destructive authority when the two
+/// disagree, because a mismatched pair cannot be trusted about deletion safety.
 fn bundle_diagnostic() -> BundleDiagnostic<'static> {
     compare_bundles(&core_bundle_identity("loct"), &mcp_bundle_identity())
 }
@@ -4091,6 +4250,9 @@ impl ServerHandler for LoctreeServer {
 // Main Entry Point
 // ============================================================================
 
+/// Parse the command line and dispatch: print the identity marker for
+/// `--version`, run a `token` subcommand, or bring up the chosen transport.
+/// Logging is pinned to stderr because stdout belongs to JSON-RPC.
 async fn run_server() -> Result<()> {
     let args = Args::parse();
 
@@ -4193,6 +4355,9 @@ async fn serve_stdio(snapshot_cache_capacity: usize) -> Result<()> {
     Ok(())
 }
 
+/// Install the SIGPIPE and panic handling first, then run the server. A broken
+/// pipe means the client disconnected and exits successfully; anything else
+/// logs and exits non-zero.
 #[tokio::main]
 async fn main() -> ExitCode {
     // Ignore SIGPIPE - allows broken pipe to be handled as error instead of signal
@@ -5759,6 +5924,38 @@ pub fn page() {
         );
         let artifact = fs::read_to_string(artifact_path).expect("read full payload artifact");
         assert_eq!(artifact, raw, "artifact must preserve unmodified payload");
+    }
+
+    #[test]
+    fn oversized_prism_tool_response_writes_full_payload_artifact_and_marker() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let value = serde_json::json!({
+            "tool": "prism",
+            "items": ["x".repeat(CONTEXT_MARKDOWN_BUDGET_DEFAULT + 8_000)]
+        });
+        let pretty = serde_json::to_string_pretty(&value).expect("pretty payload");
+        let response = tool_json_response("prism", Some(temp.path()), value);
+        assert!(
+            response.chars().count() <= CONTEXT_MARKDOWN_BUDGET_DEFAULT,
+            "budgeted prism response must stay under default budget"
+        );
+
+        let marker: Value = serde_json::from_str(&response).expect("marker JSON");
+        assert_eq!(marker["protocol"], MCP_RESPONSE_BUDGET_PROTOCOL);
+        assert_eq!(marker["tool"], "prism");
+        assert_eq!(marker["status"], "truncated_for_mcp_token_budget");
+        let artifact_path = marker["full_payload"]["path"]
+            .as_str()
+            .expect("full payload path");
+        assert!(
+            artifact_path.ends_with(".full.json"),
+            "marker must point at concrete full JSON artifact: {artifact_path}"
+        );
+        let artifact = fs::read_to_string(artifact_path).expect("read full payload artifact");
+        assert_eq!(
+            artifact, pretty,
+            "prism artifact must preserve the pretty-printed payload"
+        );
     }
 
     #[test]

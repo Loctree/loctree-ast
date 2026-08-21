@@ -1,4 +1,8 @@
 #!/bin/sh
+# install-git-hooks.sh — install the Git hooks as an immutable per-revision snapshot.
+# Behind `make git-hooks`. Refuses any foreign or higher-precedence core.hooksPath,
+# copies the hook blobs out of HEAD (never the working tree) into an absolute path
+# shared by every worktree, and removes only exact legacy Loctree symlinks.
 set -eu
 
 ROOT_DIR="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd -P)"
@@ -24,6 +28,9 @@ if [ "$worktree_config_enabled" = "true" ]; then
   current_worktree_hooks_path="$(git -C "$ROOT_DIR" config --worktree --get core.hooksPath 2>/dev/null || true)"
 fi
 
+# Refuses installation when a configured core.hooksPath is foreign — anything other
+# than empty, the legacy tools/hooks value, or a marker-bearing snapshot this
+# installer produced.
 validate_owned_path() {
   candidate="$1"
   label="$2"
@@ -147,6 +154,8 @@ if ! mkdir "$LOCK_DIR" 2>/dev/null; then
   exit 1
 fi
 
+# EXIT trap: removes a half-built snapshot directory, the worktree-config list, and
+# the installation lock so a failed run leaves no wedged state behind.
 cleanup() {
   if [ -n "$TMP_INSTALL_DIR" ] && [ -d "$TMP_INSTALL_DIR" ]; then
     rm -R "$TMP_INSTALL_DIR"

@@ -14,10 +14,13 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { HealthResponse, LoctreeGateway, RiskItem, isSnapshotNotLoaded, lspStateLabel } from './gateway';
 
+/** The four top-level buckets the findings tree groups risks into. */
 type GroupKind = 'dead' | 'cycles' | 'twins' | 'hotspots';
 
+/** Fixed render order of the group rows — the tree never sorts by count. */
 const GROUP_ORDER: GroupKind[] = ['dead', 'cycles', 'twins', 'hotspots'];
 
+/** Human labels for the group rows. */
 const GROUP_TITLE: Record<GroupKind, string> = {
     dead: 'Dead Exports',
     cycles: 'Circular Imports',
@@ -25,6 +28,7 @@ const GROUP_TITLE: Record<GroupKind, string> = {
     hotspots: 'Hotspots',
 };
 
+/** Codicon id per group. */
 const GROUP_ICON: Record<GroupKind, string> = {
     dead: 'warning',
     cycles: 'sync-ignored',
@@ -32,6 +36,7 @@ const GROUP_ICON: Record<GroupKind, string> = {
     hotspots: 'flame',
 };
 
+/** Theme colour id per group, contributed by the extension's colour set. */
 const GROUP_COLOR: Record<GroupKind, string> = {
     dead: 'loctree.danger',
     cycles: 'loctree.amber',
@@ -55,18 +60,22 @@ function riskKindToGroup(kind: string): GroupKind | undefined {
     }
 }
 
+/** The single score row at the top of the tree. */
 interface HealthNode {
     type: 'health';
 }
+/** A collapsible bucket row; collapsible only when its count is non-zero. */
 interface GroupNode {
     type: 'group';
     kind: GroupKind;
 }
+/** One finding under a group; clicking it navigates to the offending file. */
 interface RiskNode {
     type: 'risk';
     kind: GroupKind;
     risk: RiskItem;
 }
+/** A non-navigable placeholder row: "no findings", a bare count, or an error. */
 interface InfoNode {
     type: 'info';
     kind: GroupKind;
@@ -74,8 +83,11 @@ interface InfoNode {
     description?: string;
 }
 
+/** Every row the provider can emit; `getTreeItem` switches on `type`. */
 type TreeNode = HealthNode | GroupNode | RiskNode | InfoNode;
 
+/** Shorten a finding's path for display: file URIs are resolved and in-workspace
+ *  paths are made relative; anything outside the root is shown in full. */
 function toDisplayPath(filePath: string, workspaceRoot: string): string {
     let candidate = filePath;
     if (candidate.startsWith('file://')) {
@@ -91,6 +103,7 @@ function toDisplayPath(filePath: string, workspaceRoot: string): string {
     return candidate;
 }
 
+/** Pick the health counter that belongs to a group row. */
 function countForGroup(health: HealthResponse, kind: GroupKind): number {
     switch (kind) {
         case 'dead':
@@ -104,27 +117,35 @@ function countForGroup(health: HealthResponse, kind: GroupKind): number {
     }
 }
 
+/**
+ * Sidebar findings tree. Loads health from the LSP lazily on first expansion and
+ * caches it until `refresh()` invalidates, so expanding groups costs no requests.
+ */
 export class LoctreeFindingsTreeProvider implements vscode.TreeDataProvider<TreeNode> {
     private readonly onDidChangeEmitter = new vscode.EventEmitter<TreeNode | undefined | void>();
     private health: HealthResponse | undefined;
     private error: string | undefined;
     private loaded = false;
     private retriedNotLoaded = false;
+    /** Delay before the single retry issued when the snapshot is still warming. */
     private static readonly NOT_LOADED_RETRY_MS = 800;
 
     public readonly onDidChangeTreeData = this.onDidChangeEmitter.event;
 
+    /** @param workspaceRoot used only to shorten finding paths for display. */
     constructor(
         private readonly workspaceRoot: string,
         private readonly outputChannel: vscode.OutputChannel,
         private readonly gateway: LoctreeGateway
     ) { }
 
+    /** Invalidate the cached health and repaint — the tree refetches on next read. */
     public refresh(): void {
         this.loaded = false;
         this.onDidChangeEmitter.fire();
     }
 
+    /** The subset of `top_risks` belonging to one group; empty when health is absent. */
     private risksForGroup(kind: GroupKind): RiskItem[] {
         if (!this.health) {
             return [];
@@ -132,6 +153,7 @@ export class LoctreeFindingsTreeProvider implements vscode.TreeDataProvider<Tree
         return this.health.top_risks.filter((risk) => riskKindToGroup(risk.kind) === kind);
     }
 
+    /** Render one node: score row, group row, placeholder, or a navigable finding. */
     public getTreeItem(element: TreeNode): vscode.TreeItem {
         if (element.type === 'health') {
             const health = this.health;
@@ -197,6 +219,8 @@ export class LoctreeFindingsTreeProvider implements vscode.TreeDataProvider<Tree
         return item;
     }
 
+    /** Children of a node (or the roots). A load error collapses the whole tree to a
+     *  single info row rather than showing groups with misleading zeros. */
     public async getChildren(element?: TreeNode): Promise<TreeNode[]> {
         await this.ensureLoaded();
 
@@ -234,6 +258,11 @@ export class LoctreeFindingsTreeProvider implements vscode.TreeDataProvider<Tree
         return risks.map((risk) => ({ type: 'risk', kind: element.kind, risk }));
     }
 
+    /**
+     * Load health once per refresh cycle. A not-running LSP becomes a descriptive
+     * error row; a -32001 "snapshot not loaded" is treated as warming and retried
+     * once, so the initial scan never leaves a sticky failure on screen.
+     */
     private async ensureLoaded(): Promise<void> {
         if (this.loaded) {
             return;

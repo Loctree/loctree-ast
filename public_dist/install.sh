@@ -11,7 +11,9 @@
 #   LOCTREE_BASE_URL  release base URL (default: https://loct.io/releases)
 #   LOCTREE_GPG_KEY_URL  release signing public key URL (default: https://loct.io/loctree-signing.asc)
 #   LOCTREE_GPG_FINGERPRINT  expected release key fingerprint
-#   LOCTREE_REQUIRE_GPG=1  fail if the GPG key or .sig sidecar is unavailable
+#   LOCTREE_REQUIRE_GPG    signature policy (default: 1 = fail closed if the
+#                          GPG key or .sig sidecar is unavailable;
+#                          set 0 to warn and continue unsigned)
 #   LOCTREE_NO_PROFILE_UPDATE=1  do not edit ~/.zshrc when PATH is missing
 #   LOCTREE_ALLOW_SOURCE_FALLBACK=1  contributor fallback when no bundle exists
 
@@ -55,11 +57,18 @@ GPG_FINGERPRINT="${LOCTREE_GPG_FINGERPRINT:-8868139E8A9A2291D067135FB979B60C7079
 REQUIRE_GPG="${LOCTREE_REQUIRE_GPG:-1}"
 RELEASE_BINARIES="loct loctree loctree-mcp loctree-lsp aicx aicx-mcp"
 
-red() { printf '\033[0;31m%s\033[0m\n' "$*"; }
+# Prints its arguments in red on stderr; used for fatal messages before `exit 1`.
+# stdout stays for green/yellow/blue so `curl|bash >/dev/null` still shows why it died.
+red() { printf '\033[0;31m%s\033[0m\n' "$*" >&2; }
+# Prints its arguments in green on stdout; marks a check or step that passed.
 green() { printf '\033[0;32m%s\033[0m\n' "$*"; }
+# Prints its arguments in yellow on stdout; marks a degraded-but-continuing outcome.
 yellow() { printf '\033[0;33m%s\033[0m\n' "$*"; }
+# Prints its arguments in blue on stdout; used for the "[n/4]" step banners.
 blue() { printf '\033[0;34m%s\033[0m\n' "$*"; }
 
+# Aborts the install with a red error unless the named command is on PATH.
+# Used as a hard precondition for curl/tar (bundle path) and cargo (fallback).
 need_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
     red "missing required command: $1"
@@ -67,6 +76,8 @@ need_cmd() {
   fi
 }
 
+# Prints the SHA-256 of a file using whichever of shasum/sha256sum exists,
+# and aborts the install when neither is available.
 sha256_file() {
   if command -v shasum >/dev/null 2>&1; then
     shasum -a 256 "$1" | awk '{print $1}'
@@ -78,6 +89,9 @@ sha256_file() {
   fi
 }
 
+# Decides what an unverifiable release means. With REQUIRE_GPG=1 (the default)
+# it does NOT skip: it prints the reason in red and exits 1. Only
+# LOCTREE_REQUIRE_GPG=0 downgrades the reason to a warning and continues.
 skip_signature_verification() {
   reason="$1"
   if [ "$REQUIRE_GPG" = "1" ]; then
@@ -87,8 +101,28 @@ skip_signature_verification() {
   yellow "$reason; skipping signature verification"
 }
 
+# Strips whitespace and upper-cases a GPG fingerprint so the configured and the
+# imported value can be compared as plain strings.
 normalize_fingerprint() {
   printf '%s' "$1" | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]'
+}
+
+# Compare dotted versions field-by-field as integers. Decimal comparison is
+# wrong here: 2.4 and 2.9 both read greater than 2.39 as floats. Exit 0 iff
+# $1 < $2.
+version_lt() {
+  awk -v a="$1" -v b="$2" 'BEGIN {
+    n = split(a, A, ".")
+    m = split(b, B, ".")
+    max = (n > m) ? n : m
+    for (i = 1; i <= max; i++) {
+      ai = (i <= n) ? A[i] + 0 : 0
+      bi = (i <= m) ? B[i] + 0 : 0
+      if (ai < bi) exit 0
+      if (ai > bi) exit 1
+    }
+    exit 1
+  }'
 }
 
 detect_libc() {
@@ -114,10 +148,16 @@ detect_libc() {
     printf 'gnu'
     return
   fi
-  # awk numeric comparison: glibc_ver < 2.39  →  use musl static bundle.
-  awk -v v="$glibc_ver" -v min="2.39" 'BEGIN { print (v + 0 < min + 0) ? "musl" : "gnu" }'
+  if version_lt "$glibc_ver" "2.39"; then
+    printf 'musl'
+  else
+    printf 'gnu'
+  fi
 }
 
+# Maps uname os/arch onto a published release-bundle triple, picking the gnu or
+# musl Linux variant via detect_libc. Prints an empty string for any platform
+# with no bundle, which is what routes the caller into install_from_cargo.
 target_triple() {
   os="$(uname -s | tr '[:upper:]' '[:lower:]')"
   arch="$(uname -m)"
@@ -148,6 +188,9 @@ unsupported_platform_reason() {
   esac
 }
 
+# Verifies a downloaded archive against the release signing key: pins the key by
+# fingerprint, cross-checks SHA256SUMS when published, then verifies the .sig
+# sidecar in a throwaway GNUPGHOME. Missing pieces go to skip_signature_verification.
 verify_signature() {
   file="$1"
   base_url="$2"
@@ -205,6 +248,8 @@ verify_signature() {
   fi
 }
 
+# Copies one unpacked binary into INSTALL_DIR with mode 0755 and echoes the
+# resulting path for the install summary.
 install_binary_from_payload() {
   bin="$1"
   src="$2"
@@ -212,6 +257,9 @@ install_binary_from_payload() {
   printf '  %s -> %s\n' "$bin" "$INSTALL_DIR/$bin"
 }
 
+# Installs every binary found in an unpacked bundle: the RELEASE_BINARIES list
+# first, then any other executable in the payload not already installed.
+# Aborts when the payload contains nothing installable.
 install_payload_binaries() {
   payload="$1"
   mkdir -p "$INSTALL_DIR"
@@ -244,6 +292,9 @@ install_payload_binaries() {
   fi
 }
 
+# Binary-first install path: downloads the release tarball and its .sha256 for the
+# given triple, verifies checksum and signature, unpacks into a temp dir and
+# installs the payload. Either download failing falls back to install_from_cargo.
 install_prebuilt() {
   target="$1"
   archive="loctree-$VERSION-$target.tar.gz"
@@ -259,13 +310,13 @@ install_prebuilt() {
   if ! curl -fsSL "$url" -o "$tmp/$archive"; then
     rm -rf "$tmp"
     trap - EXIT
-    install_from_cargo "$target"
+    install_from_cargo "$target" 2
     return
   fi
   if ! curl -fsSL "$sha_url" -o "$tmp/$archive.sha256"; then
     rm -rf "$tmp"
     trap - EXIT
-    install_from_cargo "$target"
+    install_from_cargo "$target" 2
     return
   fi
 
@@ -286,9 +337,19 @@ install_prebuilt() {
   install_payload_binaries "$payload"
 }
 
+# Contributor-only source path. Without LOCTREE_ALLOW_SOURCE_FALLBACK=1 it only
+# explains why no bundle applies and exits 1; with it set it cargo-installs the
+# Loctree binaries (aicx ships in bundles only) and links them into INSTALL_DIR.
+# $2 is the first [n/4] step to print: 1 when this is the whole path, 2 when
+# install_prebuilt already printed [1/4] downloading.
 install_from_cargo() {
   attempted_target="${1:-}"
-  blue "[1/4] prebuilt bundle unavailable for this platform"
+  start_step="${2:-1}"
+  if [ "$start_step" = "1" ]; then
+    blue "[1/4] prebuilt bundle unavailable for this platform"
+  else
+    yellow "prebuilt bundle unavailable; switching to contributor fallback"
+  fi
   if [ "${LOCTREE_ALLOW_SOURCE_FALLBACK:-0}" != "1" ]; then
     if [ -z "$attempted_target" ]; then
       red "no prebuilt Loctree bundle target for this platform"
@@ -313,6 +374,7 @@ install_from_cargo() {
   cargo install loctree-lsp --force || true
   yellow "aicx/aicx-mcp are distributed via prebuilt bundles; source fallback installs Loctree binaries only"
 
+  blue "[3/4] linking binaries into $INSTALL_DIR"
   mkdir -p "$INSTALL_DIR"
   for bin in loct loctree loctree-mcp loctree-lsp; do
     if [ -x "$CARGO_BIN/$bin" ]; then
@@ -322,6 +384,9 @@ install_from_cargo() {
   done
 }
 
+# Final step: reports whether INSTALL_DIR is on PATH and, unless
+# LOCTREE_NO_PROFILE_UPDATE=1, appends an export line to an existing writable
+# ~/.zshrc. Any other shell (or a missing ~/.zshrc) only gets a warning.
 ensure_path() {
   blue "[4/4] checking PATH"
   case ":$PATH:" in
@@ -345,6 +410,39 @@ ensure_path() {
     yellow "$INSTALL_DIR is not in PATH"
   fi
 }
+
+# Table-driven glibc compare: 2.5/2.39, 2.35/2.39, 2.41/2.39, 2.5/2.41.
+# Invoked as `bash public_dist/install.sh --self-test-libc`.
+if [ "${1:-}" = "--self-test-libc" ]; then
+  fail=0
+  expect_lt() {
+    local have="$1" min="$2" want="$3"
+    if version_lt "$have" "$min"; then
+      got="lt"
+    else
+      got="ge"
+    fi
+    if [ "$got" != "$want" ]; then
+      printf 'FAIL version_lt %s %s: got %s want %s\n' "$have" "$min" "$got" "$want" >&2
+      fail=1
+    else
+      printf 'ok  version_lt %s %s -> %s\n' "$have" "$min" "$got"
+    fi
+  }
+  expect_lt 2.5 2.39 lt
+  expect_lt 2.35 2.39 lt
+  expect_lt 2.41 2.39 ge
+  expect_lt 2.5 2.41 lt
+  # The decimal trap the previous compare hit: 2.4 and 2.9 as floats look
+  # greater than 2.39, so they would have been handed the gnu bundle.
+  expect_lt 2.4 2.39 lt
+  expect_lt 2.9 2.39 lt
+  if [ "$fail" -ne 0 ]; then
+    exit 1
+  fi
+  printf 'detect_libc version compare tests passed\n'
+  exit 0
+fi
 
 printf '\n'
 blue "Loctree installer"

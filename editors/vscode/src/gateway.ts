@@ -16,8 +16,11 @@
 
 import { LanguageClient, Range } from 'vscode-languageclient/node';
 
+/** Lifecycle phase of the loctree-lsp process, as every editor surface sees it. */
 export type LspRuntimePhase = 'stopped' | 'starting' | 'running' | 'error';
 
+/** Full LSP lifecycle snapshot: phase plus the resolved binary identity and any
+ *  warning/detail the status bar, tree and pill render verbatim. */
 export interface LspRuntimeState {
     phase: LspRuntimePhase;
     message: string;
@@ -29,11 +32,13 @@ export interface LspRuntimeState {
     exitCode?: number | null;
 }
 
+/** The pre-start state every surface shows before `activate` resolves a binary. */
 export const DEFAULT_LSP_RUNTIME_STATE: LspRuntimeState = {
     phase: 'stopped',
     message: 'Loctree LSP has not started.',
 };
 
+/** One capitalised word for a phase — the shared label the UI never re-derives. */
 export function lspStateLabel(state: LspRuntimeState): string {
     switch (state.phase) {
         case 'starting':
@@ -47,6 +52,8 @@ export function lspStateLabel(state: LspRuntimeState): string {
     }
 }
 
+/** Fallback state derivation for gateways constructed without a state getter:
+ *  a running client means `running`, anything else means stopped. */
 function stateFromClient(client: LanguageClient | undefined): LspRuntimeState {
     if (client?.isRunning()) {
         return {
@@ -57,6 +64,7 @@ function stateFromClient(client: LanguageClient | undefined): LspRuntimeState {
     return DEFAULT_LSP_RUNTIME_STATE;
 }
 
+/** Compose the user-facing sentence thrown by {@link LoctreeNotRunningError}. */
 function notRunningMessage(state: LspRuntimeState): string {
     const suffix = state.detail ? ` ${state.detail}` : '';
     if (state.phase === 'error') {
@@ -88,6 +96,7 @@ export interface HealthResponse {
     recommended_actions: string[];
 }
 
+/** One `top_risks` entry — the row the findings tree and pill render per finding. */
 export interface RiskItem {
     kind: string; // cycle | dead_export | twin | hotspot
     file: string;
@@ -124,6 +133,7 @@ export interface OccurrencePage {
     next_offset?: number | null;
 }
 
+/** `literal_matches` payload: the occurrence page plus its scope-wide counters. */
 export interface OccurrenceResults {
     query: string;
     total: number;
@@ -136,6 +146,7 @@ export interface OccurrenceResults {
     page?: OccurrencePage;
 }
 
+/** A near-miss the server offers when a literal scan found nothing exact. */
 export interface FuzzySuggestion {
     file: string;
     /** Optional: the Rust producer skips this field when absent (None). */
@@ -185,11 +196,14 @@ export interface SymbolBody {
     line_cap: number;
 }
 
+/** `loctree/body` envelope — every definition the snapshot knows for a symbol. */
 export interface BodyResponse {
     symbol: string;
     bodies: SymbolBody[];
 }
 
+/** The single body the client picked out of a {@link BodyResponse}, plus how many
+ *  candidates it chose from. */
 export interface RankedBody {
     found: boolean;
     file: string;
@@ -319,6 +333,7 @@ export interface SymbolContextOptions {
     wholeToken?: boolean;
 }
 
+/** Caller-side options for `loctree/find`; each field maps 1:1 to an LSP param. */
 export interface FindOptions {
     mode?: 'single' | 'split' | 'and' | 'literal';
     lang?: string;
@@ -342,6 +357,7 @@ export interface FindOptions {
     symbol_id?: string;
 }
 
+/** Caller-side options for `loctree/follow` (handler is trace-scope only). */
 export interface FollowOptions {
     handler?: string;
     limit?: number;
@@ -374,6 +390,11 @@ export interface ContextPackOptions {
     task?: string;
 }
 
+/**
+ * Thrown instead of dispatching a request when the LSP is not running. Carries
+ * the state so callers can show why (starting, stopped, or a startup failure)
+ * rather than a generic transport error.
+ */
 export class LoctreeNotRunningError extends Error {
     public readonly state: LspRuntimeState;
 
@@ -410,6 +431,12 @@ export function isSnapshotNotLoaded(error: unknown): boolean {
 export class LoctreeGateway {
     private readonly getRuntimeState: () => LspRuntimeState;
 
+    /**
+     * @param getClient live client accessor — held as a getter, not a value, so the
+     *        gateway keeps working across server restarts.
+     * @param getRuntimeState optional state source; defaults to deriving it from the
+     *        client, which loses the resolved-binary detail.
+     */
     constructor(
         private readonly getClient: () => LanguageClient | undefined,
         getRuntimeState?: () => LspRuntimeState,
@@ -428,6 +455,8 @@ export class LoctreeGateway {
         return this.lspState().phase === 'running' && client !== undefined && client.isRunning();
     }
 
+    /** Return the live client or throw {@link LoctreeNotRunningError} — the single
+     *  gate every request below passes through. */
     private require(): LanguageClient {
         const client = this.getClient();
         if (!client || !client.isRunning() || this.lspState().phase !== 'running') {
@@ -436,12 +465,16 @@ export class LoctreeGateway {
         return client;
     }
 
+    /** Fetch repo health counts; `includeTopRisks` also pulls the per-finding rows
+     *  the tree and the pill's per-file findings need. */
     public health(includeTopRisks = false): Promise<HealthResponse> {
         return this.require().sendRequest<HealthResponse>('loctree/health', {
             include_top_risks: includeTopRisks,
         });
     }
 
+    /** Symbol/literal search. Defaults to `single` mode and explicitly sends every
+     *  option so the server never falls back to its own defaults for these. */
     public find(query: string, options: FindOptions = {}): Promise<FindResponse> {
         return this.require().sendRequest<FindResponse>('loctree/find', {
             query,
@@ -466,6 +499,7 @@ export class LoctreeGateway {
         return this.find(query, { ...options, mode: 'literal' });
     }
 
+    /** Pursue a structural signal (`dead`, `cycles`, `twins`, `hotspots`, `trace`…). */
     public follow(scope: string, options: FollowOptions = {}): Promise<FollowResponse> {
         return this.require().sendRequest<FollowResponse>('loctree/follow', {
             scope,
@@ -475,10 +509,14 @@ export class LoctreeGateway {
         });
     }
 
+    /** Blast radius of a file. Untyped on purpose: callers narrow it against their
+     *  own verified shape (see viewModel's `ImpactResult`). */
     public impact(target: string, transitive = false): Promise<unknown> {
         return this.require().sendRequest('loctree/impact', { target, transitive });
     }
 
+    /** File context — the file, its dependencies and (optionally) its consumers.
+     *  Untyped for the same reason as {@link LoctreeGateway.impact}. */
     public slice(
         target: string,
         consumers = true,
@@ -488,6 +526,7 @@ export class LoctreeGateway {
         return this.require().sendRequest('loctree/slice', { target, consumers, depth, cursor });
     }
 
+    /** Bounded source body/bodies of a symbol; `file` disambiguates common names. */
     public body(symbol: string, options: { file?: string; max_lines?: number } = {}): Promise<BodyResponse> {
         return this.require().sendRequest<BodyResponse>('loctree/body', {
             symbol,
@@ -551,6 +590,8 @@ export class LoctreeGateway {
         });
     }
 
+    /** Fire-and-forget snapshot reload. Silently no-ops when the LSP is not ready,
+     *  so a refresh keystroke can never throw at the user. */
     public refresh(): void {
         if (!this.isReady()) {
             return;

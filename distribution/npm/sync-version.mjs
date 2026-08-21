@@ -27,9 +27,12 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const ROOT = __dirname; // distribution/npm
 
+// Directory of the single user-facing wrapper package under distribution/npm.
 const WRAPPER = "loct";
+// Platform packages published beside the wrapper as its optionalDependencies.
 const PLATFORMS = ["darwin-arm64", "darwin-x64", "linux-x64-gnu", "win32-x64-msvc"];
 
+/** Every package.json this script owns: the wrapper plus its 4 platform packages. */
 function allPackageJsonPaths() {
   const paths = [path.join(ROOT, WRAPPER, "package.json")];
   for (const plat of PLATFORMS) {
@@ -38,14 +41,20 @@ function allPackageJsonPaths() {
   return paths;
 }
 
+/** Read and parse one package.json. */
 function readJson(p) {
   return JSON.parse(fs.readFileSync(p, "utf8"));
 }
 
+/** Write one package.json back with 2-space indent and a trailing newline. */
 function writeJson(p, obj) {
   fs.writeFileSync(p, `${JSON.stringify(obj, null, 2)}\n`);
 }
 
+/**
+ * Stamp `version` into all five package.json files and into every @loctree/*
+ * optionalDependency pin, aborting first if any of those files is missing.
+ */
 function bump(version) {
   const paths = allPackageJsonPaths();
   const missing = paths.filter((p) => !fs.existsSync(p));
@@ -72,6 +81,11 @@ function bump(version) {
   console.log(`distribution/npm synced to ${version} across ${paths.length} package.json files`);
 }
 
+/**
+ * Verify the five package.json files carry one identical version (and
+ * `expectedVersion` when given) with matching @loctree/* dep pins, exiting 1 on
+ * any mismatch so a release cannot publish a split version set.
+ */
 function check(expectedVersion) {
   const paths = allPackageJsonPaths();
   const missing = paths.filter((p) => !fs.existsSync(p));
@@ -120,6 +134,7 @@ function check(expectedVersion) {
   console.log(`distribution/npm: ${paths.length} package.json files all at version ${firstVersion}`);
 }
 
+/** Parse argv and dispatch to --check or a semver bump; bad input exits 1. */
 function main() {
   const argv = process.argv.slice(2);
   if (argv.length === 0) {

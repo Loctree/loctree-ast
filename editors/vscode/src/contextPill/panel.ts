@@ -59,11 +59,21 @@ interface InboundMessage {
     offset?: unknown;
 }
 
+/**
+ * Owns the Context Pill webview: its CSP-hardened HTML, the inbound message
+ * allowlist, the ambient rescope to the active editor, and the copy path. All
+ * analysis is delegated to `assembleViewModel` over the real gateway.
+ */
 export class ContextPillViewProvider implements vscode.WebviewViewProvider {
+    /** View id registered in package.json; also the target of `loctree.context.focus`. */
     public static readonly viewId = 'loctree.context';
 
+    /** The resolved view, if the pill has been opened at least once this session. */
     private view?: vscode.WebviewView;
+    /** Per-provider token stamped on every outbound message; the webview drops any
+     *  message that does not carry it, so foreign frames cannot drive the pill. */
     private readonly webviewChannel = getNonce();
+    /** The scope the pill is currently bound to — what a Copy Agent Context exports. */
     private currentScope: Scope = { kind: 'literal', value: '' };
     /** Monotonic rescope generation. Each `rescope` bumps it before awaiting and
      *  drops its render if a newer rescope started meanwhile (fast editor
@@ -74,12 +84,18 @@ export class ContextPillViewProvider implements vscode.WebviewViewProvider {
      *  assembleViewModel's first page. Null whenever the scope is not literal. */
     private literalAccum: LiteralHarvest | null = null;
 
+    /**
+     * @param getTaskSignal pulled lazily (not captured) so an inferred task always
+     *        reflects the WIP diff and selection at copy time.
+     */
     constructor(
         private readonly context: vscode.ExtensionContext,
         private readonly gateway: LoctreeGateway,
         private readonly getTaskSignal: () => { changedFiles: string[]; selection: string },
     ) { }
 
+    /** VS Code entry point: enable scripts, restrict resource roots to `media/`,
+     *  paint the shell, wire the inbound handler, and bind to the active editor. */
     public resolveWebviewView(view: vscode.WebviewView): void {
         this.view = view;
 
@@ -133,6 +149,8 @@ export class ContextPillViewProvider implements vscode.WebviewViewProvider {
         await this.rescope({ kind: 'file', value: rel });
     }
 
+    /** Assemble and post a VM for `scope`, dropping the render if a newer rescope
+     *  started meanwhile, and reseeding the literal harvest to match the new scope. */
     private async rescope(scope: Scope): Promise<void> {
         this.currentScope = scope;
         const gen = ++this.rescopeGen;
@@ -275,6 +293,7 @@ export class ContextPillViewProvider implements vscode.WebviewViewProvider {
         void vscode.window.showInformationMessage('Copied Agent Context');
     }
 
+    /** Send to the webview with the channel token attached. */
     private postMessage(message: Record<string, unknown>): void {
         void this.view?.webview.postMessage({
             ...message,
@@ -282,6 +301,8 @@ export class ContextPillViewProvider implements vscode.WebviewViewProvider {
         });
     }
 
+    /** Inbound webview dispatch. Enforces the type allowlist before any handler runs,
+     *  and routes navigation through existing commands rather than opening files here. */
     private async onMessage(msg: InboundMessage): Promise<void> {
         // SECURITY: enforce the inbound allowlist before any handler runs.
         const type = typeof msg?.type === 'string' ? msg.type : '';
@@ -370,6 +391,8 @@ export class ContextPillViewProvider implements vscode.WebviewViewProvider {
         }
     }
 
+    /** Webview shell with a per-render nonce and a `default-src 'none'` CSP: only the
+     *  nonced script and the extension's own styles/images can load. */
     private html(webview: vscode.Webview): string {
         const nonce = getNonce();
         const scriptUri = webview.asWebviewUri(

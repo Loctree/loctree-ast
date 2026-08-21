@@ -8,6 +8,7 @@ import sys
 
 
 def send(proc: subprocess.Popen[str], payload: dict) -> None:
+    """Write one newline-delimited JSON-RPC message to the app-server stdin."""
     assert proc.stdin is not None
     proc.stdin.write(json.dumps(payload) + "\n")
     proc.stdin.flush()

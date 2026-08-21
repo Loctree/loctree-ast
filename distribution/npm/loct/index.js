@@ -28,6 +28,10 @@ const PLATFORM_PACKAGES = {
   'win32-x64-msvc': '@loctree/loctree-win32-x64-msvc',
 };
 
+/**
+ * Normalize process.platform/process.arch into the key that selects a platform
+ * package, adding the libc flavour on Linux. Null when Loctree ships no build.
+ */
 function getPlatformKey() {
   const platform = process.platform;
   const arch = process.arch;
@@ -52,6 +56,10 @@ function getPlatformKey() {
   return null;
 }
 
+/**
+ * Detect a musl-based Linux from `ldd --version` output. Any failure is read as
+ * glibc, so a missing ldd never breaks resolution on the common distro.
+ */
 function isMuslLibc() {
   const { spawnSync } = require('child_process');
   try {
@@ -62,16 +70,23 @@ function isMuslLibc() {
   }
 }
 
+/** Map the current platform key to its @loctree/loctree-* package, or null. */
 function platformPackageName() {
   const key = getPlatformKey();
   if (!key) return null;
   return PLATFORM_PACKAGES[key] || null;
 }
 
+/** Add the .exe suffix Windows binaries carry inside the platform package. */
 function binaryFileName(name) {
   return process.platform === 'win32' ? `${name}.exe` : name;
 }
 
+/**
+ * Join one binary file name onto the platform package's bin/ directory and refuse
+ * anything that is not a plain name resolving inside it, so a crafted name cannot
+ * make the wrapper execute a binary from outside the package.
+ */
 function childPathInsidePackage(pkgDir, fileName) {
   if (!/^[A-Za-z0-9._-]+$/.test(fileName) || basename(fileName) !== fileName) {
     throw new Error(`Unsafe Loctree binary file name: ${fileName}`);

@@ -90,6 +90,8 @@ impl NamespaceSecurityConfig {
         Ok(config)
     }
 
+    /// Read the config file off disk and parse it. Parked alongside
+    /// [`Self::from_toml_str`] — nothing in the runtime calls this yet.
     pub(crate) async fn load_from_path(path: impl AsRef<std::path::Path>) -> Result<Self> {
         let path = path.as_ref();
         let contents = tokio::fs::read_to_string(path)
