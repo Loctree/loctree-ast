@@ -1630,12 +1630,8 @@ mod tests {
     // is one named symbol from that report.
     #[test]
     fn swift_framework_witnesses_are_not_high_confidence_dead() {
-        let dir = std::env::temp_dir().join(format!(
-            "loctree-witness-probe-{}-{}",
-            std::process::id(),
-            line!()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         let file = dir.join("Fixture.swift");
         std::fs::write(
             &file,
@@ -1691,12 +1687,8 @@ mod tests {
 
     #[test]
     fn swift_override_is_not_high_confidence_dead() {
-        let dir = std::env::temp_dir().join(format!(
-            "loctree-override-probe-{}-{}",
-            std::process::id(),
-            line!()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         let file = dir.join("Window.swift");
         std::fs::write(
             &file,

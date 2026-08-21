@@ -871,9 +871,12 @@ fn budget_tool_response(tool: &str, project: Option<&Path>, raw: String) -> Stri
 }
 
 fn write_full_tool_payload(tool: &str, project: Option<&Path>, raw: &str) -> io::Result<PathBuf> {
+    // Without a project, payloads go to the per-user loctree cache (the same
+    // root snapshots use), never to the world-shared OS temp dir: a predictable
+    // path there is open to symlink planting by any other local user.
     let artifact_dir = project
         .map(|project| project.join(".loctree").join("mcp-response-payloads"))
-        .unwrap_or_else(|| std::env::temp_dir().join("loctree-mcp-response-payloads"));
+        .unwrap_or_else(|| loctree::snapshot::cache_base_dir().join("mcp-response-payloads"));
     fs::create_dir_all(&artifact_dir)?;
 
     let artifact_path = artifact_dir.join(format!(

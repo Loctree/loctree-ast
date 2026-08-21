@@ -8,6 +8,11 @@ on:
   # predates the move to hosted runners and is kept as defence in depth.
   pull_request: {}
 
+# The default GITHUB_TOKEN is read-only for every job here; a job that has to
+# write (release uploads) grants itself a narrower, explicit permission.
+permissions:
+  contents: read
+
 jobs:
   test:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository

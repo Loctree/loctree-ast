@@ -19,6 +19,11 @@ on:
       - 'Cargo.lock'
       - '.github/workflows/vscode-extension.yml'
 
+# The default GITHUB_TOKEN is read-only for every job here; a job that has to
+# write (release uploads) grants itself a narrower, explicit permission.
+permissions:
+  contents: read
+
 jobs:
   build-vsix:
     name: Build VSIX (${{ matrix.name }})

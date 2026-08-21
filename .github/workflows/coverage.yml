@@ -3,6 +3,11 @@ name: coverage
 on:
   workflow_dispatch:
 
+# The default GITHUB_TOKEN is read-only for every job here; a job that has to
+# write (release uploads) grants itself a narrower, explicit permission.
+permissions:
+  contents: read
+
 jobs:
   coverage:
     runs-on: ubuntu-latest

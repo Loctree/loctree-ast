@@ -2013,10 +2013,11 @@ mod tests {
     /// One SwiftPM product target is a manifest fact, not a language assumption.
     #[test]
     fn namesake_single_module_package_swift_sets_exclude_from_score() {
-        let dir =
-            std::env::temp_dir().join(format!("loctree-namesake-single-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        // Unique, 0700, owned by this test and removed on drop — a predictable
+        // name under the shared temp dir is exactly what Semgrep's temp-dir rule
+        // flags, and `tempfile` is already a dependency.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         let manifest = write_package_swift(
             &dir,
             r#"
@@ -2045,10 +2046,11 @@ let package = Package(
     /// Two SwiftPM targets: suppression must not fire, even for shapeless namesakes.
     #[test]
     fn namesake_multi_target_package_swift_does_not_suppress() {
-        let dir =
-            std::env::temp_dir().join(format!("loctree-namesake-multi-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        // Unique, 0700, owned by this test and removed on drop — a predictable
+        // name under the shared temp dir is exactly what Semgrep's temp-dir rule
+        // flags, and `tempfile` is already a dependency.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         let manifest = write_package_swift(
             &dir,
             r#"

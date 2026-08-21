@@ -11,6 +11,11 @@ on:
   pull_request:
     branches: [main, develop]
 
+# The default GITHUB_TOKEN is read-only for every job here; a job that has to
+# write (release uploads) grants itself a narrower, explicit permission.
+permissions:
+  contents: read
+
 env:
   HEALTH_THRESHOLD: 60
 

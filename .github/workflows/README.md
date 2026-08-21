@@ -27,7 +27,6 @@ Loctree monorepo.
 |----------|---------|---------|--------|
 | **claude.yml** | Manual dispatch | Claude AI assistance | ✅ Active |
 | **gemini-*.yml** | Issues, PR comments | Gemini AI triage and review | ✅ Active |
-| **codex-auto-fix.yml** | PR comments | Automated code fixes | ✅ Active |
 
 ## Release Shape
 
