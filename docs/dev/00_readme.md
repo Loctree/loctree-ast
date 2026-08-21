@@ -29,7 +29,6 @@ make install        # builds + installs loct, loctree, loctree-mcp, loctree-lsp
 | `loctree-lsp`   | `loctree-lsp/` | LSP server (`loctree-lsp` binary)               |
 | `loctree-ast`   | `loctree-ast/` | Tree-sitter AST extractor surface               |
 | `report-leptos` | `reports/`     | Leptos-based HTML report renderer               |
-| `rmcp-common`   | `rmcp-common/` | Shared MCP plumbing                             |
 
 Workspace versions are pinned in `Cargo.toml` under `[workspace.package]`. Current line: `0.13.0`. `loctree` and
 `report-leptos` publish to crates.io; `loctree-mcp` and `loctree-lsp` are in-tree/runtime crates with `publish = false`

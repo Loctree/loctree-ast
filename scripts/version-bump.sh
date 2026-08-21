@@ -16,7 +16,6 @@
 #   --mcp             Only loctree-mcp crate
 #   --lsp             Only loctree-lsp crate
 #   --report-wasm     Only report-wasm crate
-#   --rmcp-common     Only rmcp-common crate
 #
 # Suffix options:
 #   --dev             Add -dev suffix
@@ -73,7 +72,6 @@ CRATE_LIST=(
   "report-wasm|reports/wasm|no|report-leptos"
   "loctree-mcp|loctree-mcp|yes|loctree"
   "loctree-lsp|loctree-lsp|no|loctree,loctree-ast"
-  "rmcp-common|rmcp-common|no|"
 )
 # `landing-page` removed — extracted to standalone repo at ../loct-io.
 
@@ -251,7 +249,7 @@ while [[ $# -gt 0 ]]; do
       bump_type="explicit"
       shift 2
       ;;
-    --all|--loctree|--report|--report-wasm|--mcp|--lsp|--rmcp-common|--ast)
+    --all|--loctree|--report|--report-wasm|--mcp|--lsp|--ast)
       scope="${1#--}"
       shift
       ;;
@@ -289,7 +287,6 @@ resolve_scope() {
     report-wasm) echo "report-wasm" ;;
     mcp) echo "loctree-mcp" ;;
     lsp) echo "loctree-lsp" ;;
-    rmcp-common) echo "rmcp-common" ;;
     *) echo "$1" ;;
   esac
 }
@@ -524,7 +521,7 @@ printf "%-18s │ %-12s │ %-12s │ %-8s │ %s\n" "Crate" "Current" "New" "St
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 # Print in dependency order
-for crate in report-leptos loctree-ast loctree report-wasm loctree-mcp loctree-lsp rmcp-common; do
+for crate in report-leptos loctree-ast loctree report-wasm loctree-mcp loctree-lsp; do
   old=$(get_version "$crate" "$VERSIONS_FILE")
   new=$(get_version "$crate" "$NEW_VERSIONS_FILE")
   deps=$(get_crate_field "$crate" "deps")

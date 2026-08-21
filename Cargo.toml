@@ -8,7 +8,6 @@ members = [
     "loctree-rs",
     "loctree-mcp",
     "loctree-lsp",
-    "rmcp-common",
     "reports",
     "reports/wasm",
 ]

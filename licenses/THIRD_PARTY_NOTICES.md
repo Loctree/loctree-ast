@@ -1,7 +1,7 @@
 # Third-Party Notices — Loctree Suite
 
 **Product:** Loctree Suite (`loct` CLI, `loctree-mcp`, `loctree-lsp`, `loctree`
-library, `report-leptos` / reports, `rmcp-common`, and the VS Code / JetBrains /
+library, `report-leptos` / reports, and the VS Code / JetBrains /
 Claude Code editor integrations).
 **Notices version:** 1.0 — generated 2026-06-02 against workspace version `0.11.3`
 (branch `feat/jetbrains-plugin`, commit `b7dff5e6`).

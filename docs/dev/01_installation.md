@@ -90,7 +90,6 @@ cargo clippy --workspace -- -D warnings
 ├── loctree-rs/          # core library + CLI binaries (loct, loctree)
 ├── loctree-mcp/         # MCP server crate (loctree-mcp binary)
 ├── loctree-lsp/         # LSP server crate (loctree-lsp binary)
-├── rmcp-common/         # shared MCP plumbing
 ├── reports/             # Leptos-based HTML report renderer (lib + wasm)
 ├── distribution/        # npm wrappers, codesigning, Homebrew formulas
 └── editors/             # VS Code extension, Neovim plugin

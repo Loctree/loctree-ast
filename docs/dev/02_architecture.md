@@ -30,8 +30,6 @@ loctree-suite/                    # Cargo workspace root
 ├── loctree-lsp/                  # LSP server crate (loctree-lsp binary)
 │   └── src/main.rs
 │
-├── rmcp-common/                  # Shared MCP plumbing
-│
 ├── reports/                      # Leptos HTML reports
 │   ├── src/lib.rs                # Report generation
 │   └── wasm/                     # Browser-side hydration
@@ -61,12 +59,6 @@ Crates removed from the workspace (kept in their own repos): `rmcp-memex` (now o
        ┌────────────┐ ┌──────────────┐ ┌──────────────┐
        │ loctree-mcp│ │ loctree-lsp  │ │ report-leptos│
        └────────────┘ └──────────────┘ └──────────────┘
-              │               │
-              └──────┬────────┘
-                     ▼
-              ┌────────────┐
-              │ rmcp-common│
-              └────────────┘
 ```
 
 ## Crate Details
@@ -113,7 +105,7 @@ snapshot is the product.
 
 **Version line**: 0.10.x (workspace-pinned)
 **Type**: Binary only
-**Dependencies**: rmcp, loctree, rmcp-common
+**Dependencies**: rmcp, loctree
 
 MCP server exposing the same snapshot-backed structural truth to AI agents.
 **12 tools** (not a mirrored CLI; see [integrations/mcp-server.md](../integrations/mcp-server.md)):
