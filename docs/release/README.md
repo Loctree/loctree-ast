@@ -72,9 +72,10 @@ semgrep scan --config auto --error --quiet \
   --exclude-rule html.security.audit.missing-integrity.missing-integrity .
 ```
 
-The excluded rule fires on generated `public_dist/**` pages that already carry
-inline `nosemgrep` markers semgrep does not honour inside HTML comments.
-Override with `SEMGREP_CONFIG`, `SEMGREP_EXCLUDE_RULE`, `SEMGREP_TARGET`.
+The gate runs the same configs as the CI workflow (`auto`, `p/rust`,
+`p/typescript`) and blocks on WARNING/ERROR; INFO audit rules surface in Code
+Scanning for review. No rule is excluded. Override with `SEMGREP_CONFIGS`,
+`SEMGREP_SEVERITY`, `SEMGREP_TARGET`.
 
 `make git-hooks` explicitly installs an immutable, source-commit-addressed
 snapshot of only the lightweight pre-commit and commit-message checks under the

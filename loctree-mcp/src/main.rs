@@ -2089,6 +2089,8 @@ impl LoctreeServer {
             json: matches!(params.format, ContextFormat::Json),
             full: true,
             markdown: matches!(params.format, ContextFormat::Markdown),
+            memory_hours: None,
+            memory_limit: None,
         };
 
         let pack = match compose_context_pack_from_snapshot(&opts, &project, &snapshot) {
@@ -4526,35 +4528,35 @@ mod tests {
         // SAFETY: this is the only test that touches CONTEXT_DEADLINE_ENV;
         // all scenarios run sequentially inside a single test function so
         // there is no race with another #[test] reading the variable.
-        unsafe { std::env::remove_var(CONTEXT_DEADLINE_ENV) };
+        crate::test_env::remove_var(CONTEXT_DEADLINE_ENV);
         assert_eq!(
             context_deadline(),
             std::time::Duration::from_secs(90),
             "default applies when env var is unset"
         );
 
-        unsafe { std::env::set_var(CONTEXT_DEADLINE_ENV, "30") };
+        crate::test_env::set_var(CONTEXT_DEADLINE_ENV, "30");
         assert_eq!(
             context_deadline(),
             std::time::Duration::from_secs(30),
             "valid override is honored"
         );
 
-        unsafe { std::env::set_var(CONTEXT_DEADLINE_ENV, "0") };
+        crate::test_env::set_var(CONTEXT_DEADLINE_ENV, "0");
         assert_eq!(
             context_deadline(),
             std::time::Duration::from_secs(90),
             "zero falls back to default"
         );
 
-        unsafe { std::env::set_var(CONTEXT_DEADLINE_ENV, "not-a-number") };
+        crate::test_env::set_var(CONTEXT_DEADLINE_ENV, "not-a-number");
         assert_eq!(
             context_deadline(),
             std::time::Duration::from_secs(90),
             "garbage falls back to default"
         );
 
-        unsafe { std::env::remove_var(CONTEXT_DEADLINE_ENV) };
+        crate::test_env::remove_var(CONTEXT_DEADLINE_ENV);
     }
 
     #[test]
@@ -5852,7 +5854,7 @@ pub fn page() {
         // SAFETY: this is the only test that touches CONTEXT_MARKDOWN_BUDGET_ENV;
         // all scenarios run sequentially inside this single test function, so
         // there is no race with another #[test] reading the variable.
-        unsafe { std::env::remove_var(CONTEXT_MARKDOWN_BUDGET_ENV) };
+        crate::test_env::remove_var(CONTEXT_MARKDOWN_BUDGET_ENV);
         assert_eq!(
             context_markdown_budget(),
             CONTEXT_MARKDOWN_BUDGET_DEFAULT,
@@ -5863,7 +5865,7 @@ pub fn page() {
         // context_format_markdown_returns_pill) just sees a larger single page
         // from this test's transient env mutation — the getter logic is
         // identical regardless of the magnitude.
-        unsafe { std::env::set_var(CONTEXT_MARKDOWN_BUDGET_ENV, "60000") };
+        crate::test_env::set_var(CONTEXT_MARKDOWN_BUDGET_ENV, "60000");
         assert_eq!(
             context_markdown_budget(),
             60_000,
@@ -5872,28 +5874,28 @@ pub fn page() {
 
         // Below the 2_000 floor is rejected (a tiny budget would shred the pack
         // into uselessly small pages).
-        unsafe { std::env::set_var(CONTEXT_MARKDOWN_BUDGET_ENV, "1500") };
+        crate::test_env::set_var(CONTEXT_MARKDOWN_BUDGET_ENV, "1500");
         assert_eq!(
             context_markdown_budget(),
             CONTEXT_MARKDOWN_BUDGET_DEFAULT,
             "sub-floor value is rejected and falls back to the default"
         );
 
-        unsafe { std::env::set_var(CONTEXT_MARKDOWN_BUDGET_ENV, "0") };
+        crate::test_env::set_var(CONTEXT_MARKDOWN_BUDGET_ENV, "0");
         assert_eq!(
             context_markdown_budget(),
             CONTEXT_MARKDOWN_BUDGET_DEFAULT,
             "zero is rejected and falls back to the default"
         );
 
-        unsafe { std::env::set_var(CONTEXT_MARKDOWN_BUDGET_ENV, "not-a-number") };
+        crate::test_env::set_var(CONTEXT_MARKDOWN_BUDGET_ENV, "not-a-number");
         assert_eq!(
             context_markdown_budget(),
             CONTEXT_MARKDOWN_BUDGET_DEFAULT,
             "non-numeric is rejected and falls back to the default"
         );
 
-        unsafe { std::env::remove_var(CONTEXT_MARKDOWN_BUDGET_ENV) };
+        crate::test_env::remove_var(CONTEXT_MARKDOWN_BUDGET_ENV);
     }
 
     #[test]
@@ -6604,5 +6606,24 @@ pub fn page() {
              explicitly (free-tier scope OR paid-tier Wave 7+ delta). \
              Found: {description_line}"
         );
+    }
+}
+
+/// Test-only environment mutation — the one audited `unsafe` for
+/// `std::env::set_var` / `remove_var` in this binary. Callers must be
+/// serialised with every other test touching the same variables.
+#[cfg(test)]
+mod test_env {
+    use std::ffi::OsStr;
+
+    pub(crate) fn set_var<K: AsRef<OsStr>, V: AsRef<OsStr>>(key: K, value: V) {
+        // SAFETY: test-only; callers are serialised, so no other thread
+        // observes the environment while it changes.
+        unsafe { std::env::set_var(key, value) }
+    }
+
+    pub(crate) fn remove_var<K: AsRef<OsStr>>(key: K) {
+        // SAFETY: as for `set_var`.
+        unsafe { std::env::remove_var(key) }
     }
 }

@@ -1680,13 +1680,13 @@ mod tests {
         std::fs::set_permissions(path, perms).expect("chmod mock script");
     }
 
-    unsafe fn clear_aicx_env() {
-        // SAFETY: tests in this module are serialised on the `aicx_env` group
-        // because they mutate process-global env vars.
-        unsafe {
-            std::env::remove_var(AICX_BINARY_ENV);
-            std::env::remove_var(AICX_MODE_ENV);
-            std::env::remove_var(AICX_MCP_BINARY_ENV);
+    fn clear_aicx_env() {
+        // Tests in this module are serialised on the `aicx_env` group because
+        // they mutate process-global env vars; `test_env` holds the unsafe.
+        {
+            crate::test_env::remove_var(AICX_BINARY_ENV);
+            crate::test_env::remove_var(AICX_MODE_ENV);
+            crate::test_env::remove_var(AICX_MCP_BINARY_ENV);
         }
         // Also reset the per-thread AICX kill-switch opt-in. Not
         // strictly required for correctness (the opt-in is
@@ -1741,14 +1741,14 @@ mod tests {
     #[test]
     #[serial_test::serial(aicx_env)]
     fn mode_selector_accepts_inprocess() {
-        unsafe {
+        {
             clear_aicx_env();
-            std::env::set_var(AICX_MODE_ENV, "inprocess");
+            crate::test_env::set_var(AICX_MODE_ENV, "inprocess");
         }
 
         let mode = AicxMode::from_env();
 
-        unsafe {
+        {
             clear_aicx_env();
         }
 
@@ -1777,21 +1777,21 @@ mod tests {
         let aicx_home = dir.path().join("aicx-home");
         std::fs::create_dir_all(aicx_home.join("store")).expect("aicx store dir");
 
-        unsafe {
+        {
             clear_aicx_env();
             enable_aicx_for_test();
-            std::env::set_var("AICX_HOME", &aicx_home);
-            std::env::set_var(AICX_MODE_ENV, "auto");
-            std::env::set_var(AICX_MCP_BINARY_ENV, &mcp_script);
-            std::env::set_var(AICX_BINARY_ENV, &cli_script);
+            crate::test_env::set_var("AICX_HOME", &aicx_home);
+            crate::test_env::set_var(AICX_MODE_ENV, "auto");
+            crate::test_env::set_var(AICX_MCP_BINARY_ENV, &mcp_script);
+            crate::test_env::set_var(AICX_BINARY_ENV, &cli_script);
         }
 
         let client = AicxClient::new("Loctree/loctree-suite");
         let rows = client.intents(168, 100);
 
-        unsafe {
+        {
             clear_aicx_env();
-            std::env::remove_var("AICX_HOME");
+            crate::test_env::remove_var("AICX_HOME");
         }
 
         assert!(rows.is_empty());
@@ -1905,11 +1905,11 @@ done
         // Point the wrapper at a path that cannot be spawned.
         // SAFETY: tests in this module are serialised on the `aicx_env` group
         // because they mutate process-global env vars.
-        unsafe {
+        {
             clear_aicx_env();
             enable_aicx_for_test();
-            std::env::set_var(AICX_MODE_ENV, "cli");
-            std::env::set_var(AICX_BINARY_ENV, "/this/path/does/not/exist/aicx-12345");
+            crate::test_env::set_var(AICX_MODE_ENV, "cli");
+            crate::test_env::set_var(AICX_BINARY_ENV, "/this/path/does/not/exist/aicx-12345");
         }
 
         let client = AicxClient::new("loctree-suite");
@@ -1917,7 +1917,7 @@ done
         let steer = client.steer(SteerFilters::default());
         let search = client.search("foo", 168, 20);
 
-        unsafe {
+        {
             clear_aicx_env();
         }
 
@@ -1943,16 +1943,16 @@ done
             "#!/bin/sh\nprintf 'not json at all { [ \\n'\nexit 0\n",
         );
 
-        unsafe {
+        {
             clear_aicx_env();
             enable_aicx_for_test();
-            std::env::set_var(AICX_MODE_ENV, "cli");
-            std::env::set_var(AICX_BINARY_ENV, &script);
+            crate::test_env::set_var(AICX_MODE_ENV, "cli");
+            crate::test_env::set_var(AICX_BINARY_ENV, &script);
         }
         let client = AicxClient::new("loctree-suite");
         let intents = client.intents(720, 100);
         let search = client.search("foo", 168, 20);
-        unsafe {
+        {
             clear_aicx_env();
         }
 
@@ -1974,11 +1974,11 @@ done
         );
         write_script(&script, &body);
 
-        unsafe {
+        {
             clear_aicx_env();
             enable_aicx_for_test();
-            std::env::set_var(AICX_MODE_ENV, "cli");
-            std::env::set_var(AICX_BINARY_ENV, &script);
+            crate::test_env::set_var(AICX_MODE_ENV, "cli");
+            crate::test_env::set_var(AICX_BINARY_ENV, &script);
         }
         let client = AicxClient::new("x");
         let first = client.intents(720, 100);
@@ -1987,7 +1987,7 @@ done
         // Different cache key → must invoke binary again and see the second
         // payload, proving the mock script does change output between calls.
         let third = client.intents(168, 100);
-        unsafe {
+        {
             clear_aicx_env();
         }
 
@@ -2056,16 +2056,16 @@ done
         write_mcp_mock(&mcp, &log, mcp_text);
         write_cli_mock(&cli, &log, r#"[]"#);
 
-        unsafe {
+        {
             clear_aicx_env();
             enable_aicx_for_test();
-            std::env::set_var(AICX_MODE_ENV, "mcp");
-            std::env::set_var(AICX_MCP_BINARY_ENV, &mcp);
-            std::env::set_var(AICX_BINARY_ENV, &cli);
+            crate::test_env::set_var(AICX_MODE_ENV, "mcp");
+            crate::test_env::set_var(AICX_MCP_BINARY_ENV, &mcp);
+            crate::test_env::set_var(AICX_BINARY_ENV, &cli);
         }
         let client = AicxClient::new("x");
         let intents = client.intents(720, 100);
-        unsafe {
+        {
             clear_aicx_env();
         }
 
@@ -2086,16 +2086,16 @@ done
         let cli_text = r#"[{"kind":"intent","summary":"cli-intent","project":"x","agent":"codex","date":"2026-04-28","session_id":"c1","source_chunk":"/tmp/cli.md"}]"#;
         write_cli_mock(&cli, &log, cli_text);
 
-        unsafe {
+        {
             clear_aicx_env();
             enable_aicx_for_test();
-            std::env::set_var(AICX_MODE_ENV, "cli");
-            std::env::set_var(AICX_MCP_BINARY_ENV, "/this/path/must/not/be/probed");
-            std::env::set_var(AICX_BINARY_ENV, &cli);
+            crate::test_env::set_var(AICX_MODE_ENV, "cli");
+            crate::test_env::set_var(AICX_MCP_BINARY_ENV, "/this/path/must/not/be/probed");
+            crate::test_env::set_var(AICX_BINARY_ENV, &cli);
         }
         let client = AicxClient::new("x");
         let intents = client.intents(720, 100);
-        unsafe {
+        {
             clear_aicx_env();
         }
 
@@ -2124,16 +2124,16 @@ done
         // PermissionDenied flake in `strict_acquire_trusts_fresh_snapshot_…`).
         // Nothing in this test reads `HOME`: both transports are explicit
         // mock paths via `AICX_BINARY_ENV` / `AICX_MCP_BINARY_ENV`.
-        unsafe {
+        {
             clear_aicx_env();
             enable_aicx_for_test();
-            std::env::set_var(AICX_MODE_ENV, "auto");
-            std::env::set_var(AICX_MCP_BINARY_ENV, "/this/path/does/not/exist/aicx-mcp");
-            std::env::set_var(AICX_BINARY_ENV, &cli);
+            crate::test_env::set_var(AICX_MODE_ENV, "auto");
+            crate::test_env::set_var(AICX_MCP_BINARY_ENV, "/this/path/does/not/exist/aicx-mcp");
+            crate::test_env::set_var(AICX_BINARY_ENV, &cli);
         }
         let client = AicxClient::new("x");
         let intents = client.intents(720, 100);
-        unsafe {
+        {
             clear_aicx_env();
         }
 
@@ -2164,12 +2164,12 @@ done
         write_mcp_mock(&mcp, &log, mcp_text);
         write_cli_mock(&cli, &log, "[]");
 
-        unsafe {
+        {
             clear_aicx_env();
             enable_aicx_for_test();
-            std::env::set_var(AICX_MODE_ENV, "mcp");
-            std::env::set_var(AICX_MCP_BINARY_ENV, &mcp);
-            std::env::set_var(AICX_BINARY_ENV, &cli);
+            crate::test_env::set_var(AICX_MODE_ENV, "mcp");
+            crate::test_env::set_var(AICX_MCP_BINARY_ENV, &mcp);
+            crate::test_env::set_var(AICX_BINARY_ENV, &cli);
         }
 
         // Build an explicit multi-thread runtime as the AMBIENT one.
@@ -2189,7 +2189,7 @@ done
             client.intents(720, 100)
         });
 
-        unsafe {
+        {
             clear_aicx_env();
         }
 
@@ -2211,23 +2211,23 @@ done
         write_mcp_mock(&mcp, &log, wire_text);
         write_cli_mock(&cli, &log, wire_text);
 
-        unsafe {
+        {
             clear_aicx_env();
             enable_aicx_for_test();
-            std::env::set_var(AICX_MODE_ENV, "cli");
-            std::env::set_var(AICX_BINARY_ENV, &cli);
+            crate::test_env::set_var(AICX_MODE_ENV, "cli");
+            crate::test_env::set_var(AICX_BINARY_ENV, &cli);
         }
         let cli_intents = AicxClient::new("x").intents(720, 100);
 
-        unsafe {
+        {
             clear_aicx_env();
             enable_aicx_for_test();
-            std::env::set_var(AICX_MODE_ENV, "mcp");
-            std::env::set_var(AICX_MCP_BINARY_ENV, &mcp);
-            std::env::set_var(AICX_BINARY_ENV, &cli);
+            crate::test_env::set_var(AICX_MODE_ENV, "mcp");
+            crate::test_env::set_var(AICX_MCP_BINARY_ENV, &mcp);
+            crate::test_env::set_var(AICX_BINARY_ENV, &cli);
         }
         let mcp_intents = AicxClient::new("x").intents(720, 100);
-        unsafe {
+        {
             clear_aicx_env();
         }
 
@@ -2474,16 +2474,16 @@ done
         );
         write_script(&script, &body);
 
-        unsafe {
+        {
             clear_aicx_env();
             enable_aicx_for_test();
-            std::env::set_var(AICX_MODE_ENV, "cli");
-            std::env::set_var(AICX_BINARY_ENV, &script);
+            crate::test_env::set_var(AICX_MODE_ENV, "cli");
+            crate::test_env::set_var(AICX_BINARY_ENV, &script);
         }
         let client = AicxClient::new("x");
         let first = client.intents(720, 100);
         let second = client.intents(720, 100);
-        unsafe {
+        {
             clear_aicx_env();
         }
 

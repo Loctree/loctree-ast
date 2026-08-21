@@ -958,14 +958,14 @@ mod tests {
     }
 
     fn set_env_var<K: AsRef<std::ffi::OsStr>, V: AsRef<std::ffi::OsStr>>(key: K, value: V) {
-        unsafe {
-            std::env::set_var(key, value);
+        {
+            crate::test_env::set_var(key, value);
         }
     }
 
     fn remove_env_var<K: AsRef<std::ffi::OsStr>>(key: K) {
-        unsafe {
-            std::env::remove_var(key);
+        {
+            crate::test_env::remove_var(key);
         }
     }
 

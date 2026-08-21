@@ -4539,6 +4539,8 @@ pub(crate) fn write_auto_artifacts(
         json: true,
         full: true,
         markdown: false,
+        memory_hours: None,
+        memory_limit: None,
     };
     // Materialize the Context Atlas first (report.html below points at it).
     // We capture the manifest summary here and announce it AFTER write_report
@@ -4697,14 +4699,14 @@ pub(crate) mod test_env {
         key: K,
         value: V,
     ) {
-        unsafe {
-            std::env::set_var(key, value);
+        {
+            crate::test_env::set_var(key, value);
         }
     }
 
     pub(crate) fn remove_env_var<K: AsRef<std::ffi::OsStr>>(key: K) {
-        unsafe {
-            std::env::remove_var(key);
+        {
+            crate::test_env::remove_var(key);
         }
     }
 

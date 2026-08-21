@@ -1,4 +1,0 @@
-User-agent: *
-Allow: /
-
-Sitemap: https://loct.io/sitemap.xml

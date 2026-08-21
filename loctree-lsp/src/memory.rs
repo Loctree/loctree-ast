@@ -69,9 +69,13 @@ pub(crate) fn current_rss_bytes() -> Option<u64> {
 pub(crate) fn current_rss_bytes() -> Option<u64> {
     let statm = std::fs::read_to_string("/proc/self/statm").ok()?;
     let resident_pages: u64 = statm.split_whitespace().nth(1)?.parse().ok()?;
-    // SAFETY: sysconf with a valid name has no memory-safety concerns.
-    let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
-    Some(resident_pages.saturating_mul(if page > 0 { page as u64 } else { 4096 }))
+    let page = nix::unistd::sysconf(nix::unistd::SysconfVar::PAGE_SIZE)
+        .ok()
+        .flatten()
+        .filter(|p| *p > 0)
+        .map(|p| p as u64)
+        .unwrap_or(4096);
+    Some(resident_pages.saturating_mul(page))
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]

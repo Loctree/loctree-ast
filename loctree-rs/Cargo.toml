@@ -105,6 +105,7 @@ tree-sitter-cpp = "0.23.4"
 # Both are Unix-only; the corresponding code paths are `#[cfg(unix)]`.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+nix = { version = "0.31", default-features = false, features = ["signal", "process"] }
 
 [dev-dependencies]
 assert_cmd = "2.0"

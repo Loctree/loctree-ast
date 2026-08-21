@@ -100,6 +100,14 @@ pub struct ContextOptions {
 
     /// Emit the full ContextPack JSON.
     pub full: bool,
+    /// Explicit intent-window override in hours for the memory slice.
+    /// `None` falls back to `LOCT_CONTEXT_MEMORY_HOURS`, then the 168 h
+    /// default. Callers with a per-request value (the LSP `hours` field)
+    /// set this instead of mutating the process environment.
+    pub memory_hours: Option<u64>,
+    /// Explicit cap on memory-slice entries. `None` falls back to
+    /// `LOCT_CONTEXT_MEMORY_LIMIT`, then 50.
+    pub memory_limit: Option<usize>,
 }
 
 /// Provenance label attached to every fact in the ContextPack.
@@ -2824,8 +2832,8 @@ pub fn compose_memory_slice(
     };
 
     let keywords = build_scope_keywords(structural, runtime);
-    let limit = memory_limit();
-    let hours = memory_hours();
+    let limit = opts.memory_limit.unwrap_or_else(memory_limit);
+    let hours = opts.memory_hours.unwrap_or_else(memory_hours);
     // Plan L04 / Finding #17 — raw_limit now scales with the time
     // window so a wider `LOCT_CONTEXT_MEMORY_HOURS` actually reaches
     // older intents. Operators can override with
@@ -7154,10 +7162,10 @@ python_version = "3.12"
         ]"#;
         let script = write_mock_aicx(dir.path(), payload);
 
-        unsafe {
+        {
             crate::aicx::set_aicx_test_opt_in();
-            std::env::set_var(crate::aicx::AICX_MODE_ENV, "cli");
-            std::env::set_var(crate::aicx::AICX_BINARY_ENV, &script);
+            crate::test_env::set_var(crate::aicx::AICX_MODE_ENV, "cli");
+            crate::test_env::set_var(crate::aicx::AICX_BINARY_ENV, &script);
         }
         let client = AicxClient::new("loctree-suite");
         let opts = ContextOptions {
@@ -7170,9 +7178,9 @@ python_version = "3.12"
         );
         let memory =
             compose_memory_slice(&opts, &structural, &RuntimeSlice::default(), Some(&client));
-        unsafe {
-            std::env::remove_var(crate::aicx::AICX_BINARY_ENV);
-            std::env::remove_var(crate::aicx::AICX_MODE_ENV);
+        {
+            crate::test_env::remove_var(crate::aicx::AICX_BINARY_ENV);
+            crate::test_env::remove_var(crate::aicx::AICX_MODE_ENV);
             crate::aicx::clear_aicx_test_opt_in();
         }
 
@@ -7211,10 +7219,10 @@ python_version = "3.12"
         ]"#;
         let script = write_mock_aicx(dir.path(), payload);
 
-        unsafe {
+        {
             crate::aicx::set_aicx_test_opt_in();
-            std::env::set_var(crate::aicx::AICX_MODE_ENV, "cli");
-            std::env::set_var(crate::aicx::AICX_BINARY_ENV, &script);
+            crate::test_env::set_var(crate::aicx::AICX_MODE_ENV, "cli");
+            crate::test_env::set_var(crate::aicx::AICX_BINARY_ENV, &script);
         }
         let client = AicxClient::new("loctree-suite");
         let opts = ContextOptions {
@@ -7227,9 +7235,9 @@ python_version = "3.12"
         );
         let memory =
             compose_memory_slice(&opts, &structural, &RuntimeSlice::default(), Some(&client));
-        unsafe {
-            std::env::remove_var(crate::aicx::AICX_BINARY_ENV);
-            std::env::remove_var(crate::aicx::AICX_MODE_ENV);
+        {
+            crate::test_env::remove_var(crate::aicx::AICX_BINARY_ENV);
+            crate::test_env::remove_var(crate::aicx::AICX_MODE_ENV);
             crate::aicx::clear_aicx_test_opt_in();
         }
 
@@ -7262,11 +7270,11 @@ python_version = "3.12"
         let payload = format!("[{}]", rows.join(","));
         let script = write_mock_aicx(dir.path(), &payload);
 
-        unsafe {
+        {
             crate::aicx::set_aicx_test_opt_in();
-            std::env::set_var(crate::aicx::AICX_MODE_ENV, "cli");
-            std::env::set_var(crate::aicx::AICX_BINARY_ENV, &script);
-            std::env::set_var("LOCT_CONTEXT_MEMORY_LIMIT", "3");
+            crate::test_env::set_var(crate::aicx::AICX_MODE_ENV, "cli");
+            crate::test_env::set_var(crate::aicx::AICX_BINARY_ENV, &script);
+            crate::test_env::set_var("LOCT_CONTEXT_MEMORY_LIMIT", "3");
         }
         let client = AicxClient::new("loctree-suite");
         let opts = ContextOptions {
@@ -7279,11 +7287,11 @@ python_version = "3.12"
         );
         let memory =
             compose_memory_slice(&opts, &structural, &RuntimeSlice::default(), Some(&client));
-        unsafe {
-            std::env::remove_var(crate::aicx::AICX_BINARY_ENV);
-            std::env::remove_var(crate::aicx::AICX_MODE_ENV);
+        {
+            crate::test_env::remove_var(crate::aicx::AICX_BINARY_ENV);
+            crate::test_env::remove_var(crate::aicx::AICX_MODE_ENV);
             crate::aicx::clear_aicx_test_opt_in();
-            std::env::remove_var("LOCT_CONTEXT_MEMORY_LIMIT");
+            crate::test_env::remove_var("LOCT_CONTEXT_MEMORY_LIMIT");
         }
 
         assert_eq!(
@@ -7310,10 +7318,10 @@ python_version = "3.12"
         ]"#;
         let script = write_mock_aicx(dir.path(), payload);
 
-        unsafe {
+        {
             crate::aicx::set_aicx_test_opt_in();
-            std::env::set_var(crate::aicx::AICX_MODE_ENV, "cli");
-            std::env::set_var(crate::aicx::AICX_BINARY_ENV, &script);
+            crate::test_env::set_var(crate::aicx::AICX_MODE_ENV, "cli");
+            crate::test_env::set_var(crate::aicx::AICX_BINARY_ENV, &script);
         }
         let client = AicxClient::new("loctree-suite");
         let opts = ContextOptions {
@@ -7326,9 +7334,9 @@ python_version = "3.12"
         );
         let memory =
             compose_memory_slice(&opts, &structural, &RuntimeSlice::default(), Some(&client));
-        unsafe {
-            std::env::remove_var(crate::aicx::AICX_BINARY_ENV);
-            std::env::remove_var(crate::aicx::AICX_MODE_ENV);
+        {
+            crate::test_env::remove_var(crate::aicx::AICX_BINARY_ENV);
+            crate::test_env::remove_var(crate::aicx::AICX_MODE_ENV);
             crate::aicx::clear_aicx_test_opt_in();
         }
 
@@ -7399,10 +7407,10 @@ python_version = "3.12"
         }"#;
         let script = write_mock_aicx(dir.path(), payload);
 
-        unsafe {
+        {
             crate::aicx::set_aicx_test_opt_in();
-            std::env::set_var(crate::aicx::AICX_MODE_ENV, "cli");
-            std::env::set_var(crate::aicx::AICX_BINARY_ENV, &script);
+            crate::test_env::set_var(crate::aicx::AICX_MODE_ENV, "cli");
+            crate::test_env::set_var(crate::aicx::AICX_BINARY_ENV, &script);
         }
         let client = AicxClient::new("loctree-suite");
         let opts = ContextOptions {
@@ -7415,9 +7423,9 @@ python_version = "3.12"
         );
         let memory =
             compose_memory_slice(&opts, &structural, &RuntimeSlice::default(), Some(&client));
-        unsafe {
-            std::env::remove_var(crate::aicx::AICX_BINARY_ENV);
-            std::env::remove_var(crate::aicx::AICX_MODE_ENV);
+        {
+            crate::test_env::remove_var(crate::aicx::AICX_BINARY_ENV);
+            crate::test_env::remove_var(crate::aicx::AICX_MODE_ENV);
             crate::aicx::clear_aicx_test_opt_in();
         }
 
@@ -7483,10 +7491,10 @@ python_version = "3.12"
         }"#;
         let script = write_mock_aicx(dir.path(), payload);
 
-        unsafe {
+        {
             crate::aicx::set_aicx_test_opt_in();
-            std::env::set_var(crate::aicx::AICX_MODE_ENV, "cli");
-            std::env::set_var(crate::aicx::AICX_BINARY_ENV, &script);
+            crate::test_env::set_var(crate::aicx::AICX_MODE_ENV, "cli");
+            crate::test_env::set_var(crate::aicx::AICX_BINARY_ENV, &script);
         }
         let client = AicxClient::new("loctree-suite");
         let opts = ContextOptions {
@@ -7499,9 +7507,9 @@ python_version = "3.12"
         );
         let memory =
             compose_memory_slice(&opts, &structural, &RuntimeSlice::default(), Some(&client));
-        unsafe {
-            std::env::remove_var(crate::aicx::AICX_BINARY_ENV);
-            std::env::remove_var(crate::aicx::AICX_MODE_ENV);
+        {
+            crate::test_env::remove_var(crate::aicx::AICX_BINARY_ENV);
+            crate::test_env::remove_var(crate::aicx::AICX_MODE_ENV);
             crate::aicx::clear_aicx_test_opt_in();
         }
 
@@ -7631,10 +7639,10 @@ python_version = "3.12"
         }"#;
         let script = write_mock_aicx(dir.path(), payload);
 
-        unsafe {
+        {
             crate::aicx::set_aicx_test_opt_in();
-            std::env::set_var(crate::aicx::AICX_MODE_ENV, "cli");
-            std::env::set_var(crate::aicx::AICX_BINARY_ENV, &script);
+            crate::test_env::set_var(crate::aicx::AICX_MODE_ENV, "cli");
+            crate::test_env::set_var(crate::aicx::AICX_BINARY_ENV, &script);
         }
         let client = AicxClient::new("loctree-suite");
         let opts = ContextOptions {
@@ -7647,9 +7655,9 @@ python_version = "3.12"
         );
         let memory =
             compose_memory_slice(&opts, &structural, &RuntimeSlice::default(), Some(&client));
-        unsafe {
-            std::env::remove_var(crate::aicx::AICX_BINARY_ENV);
-            std::env::remove_var(crate::aicx::AICX_MODE_ENV);
+        {
+            crate::test_env::remove_var(crate::aicx::AICX_BINARY_ENV);
+            crate::test_env::remove_var(crate::aicx::AICX_MODE_ENV);
             crate::aicx::clear_aicx_test_opt_in();
         }
 
@@ -8034,10 +8042,10 @@ python_version = "3.12"
         ]"#;
         let script = write_mock_aicx(dir.path(), payload);
 
-        unsafe {
+        {
             crate::aicx::set_aicx_test_opt_in();
-            std::env::set_var(crate::aicx::AICX_MODE_ENV, "cli");
-            std::env::set_var(crate::aicx::AICX_BINARY_ENV, &script);
+            crate::test_env::set_var(crate::aicx::AICX_MODE_ENV, "cli");
+            crate::test_env::set_var(crate::aicx::AICX_BINARY_ENV, &script);
         }
         let client = AicxClient::new("loctree-suite");
         let opts = ContextOptions {
@@ -8050,9 +8058,9 @@ python_version = "3.12"
         );
         let memory =
             compose_memory_slice(&opts, &structural, &RuntimeSlice::default(), Some(&client));
-        unsafe {
-            std::env::remove_var(crate::aicx::AICX_BINARY_ENV);
-            std::env::remove_var(crate::aicx::AICX_MODE_ENV);
+        {
+            crate::test_env::remove_var(crate::aicx::AICX_BINARY_ENV);
+            crate::test_env::remove_var(crate::aicx::AICX_MODE_ENV);
             crate::aicx::clear_aicx_test_opt_in();
         }
 
@@ -8074,8 +8082,8 @@ python_version = "3.12"
     #[test]
     #[serial_test::serial(memory_raw_limit_env)]
     fn raw_limit_scales_with_hours_when_env_unset() {
-        unsafe {
-            std::env::remove_var("LOCT_CONTEXT_MEMORY_RAW_LIMIT");
+        {
+            crate::test_env::remove_var("LOCT_CONTEXT_MEMORY_RAW_LIMIT");
         }
         // 7-day window (168 h) → 84 → bumped up by limit*2 floor (50*2=100)
         // → final 100. Stays close to legacy default.
@@ -8093,12 +8101,12 @@ python_version = "3.12"
     #[test]
     #[serial_test::serial(memory_raw_limit_env)]
     fn raw_limit_env_override_takes_precedence() {
-        unsafe {
-            std::env::set_var("LOCT_CONTEXT_MEMORY_RAW_LIMIT", "777");
+        {
+            crate::test_env::set_var("LOCT_CONTEXT_MEMORY_RAW_LIMIT", "777");
         }
         let v = memory_raw_limit(168, 50);
-        unsafe {
-            std::env::remove_var("LOCT_CONTEXT_MEMORY_RAW_LIMIT");
+        {
+            crate::test_env::remove_var("LOCT_CONTEXT_MEMORY_RAW_LIMIT");
         }
         assert_eq!(v, 777, "env override must win over scaling default");
     }
@@ -8106,12 +8114,12 @@ python_version = "3.12"
     #[test]
     #[serial_test::serial(memory_raw_limit_env)]
     fn raw_limit_env_zero_falls_back_to_scaling() {
-        unsafe {
-            std::env::set_var("LOCT_CONTEXT_MEMORY_RAW_LIMIT", "0");
+        {
+            crate::test_env::set_var("LOCT_CONTEXT_MEMORY_RAW_LIMIT", "0");
         }
         let v = memory_raw_limit(720, 50);
-        unsafe {
-            std::env::remove_var("LOCT_CONTEXT_MEMORY_RAW_LIMIT");
+        {
+            crate::test_env::remove_var("LOCT_CONTEXT_MEMORY_RAW_LIMIT");
         }
         assert_eq!(
             v, 360,
@@ -8169,10 +8177,10 @@ python_version = "3.12"
         ]"#;
         let script = write_mock_aicx(dir.path(), payload);
 
-        unsafe {
+        {
             crate::aicx::set_aicx_test_opt_in();
-            std::env::set_var(crate::aicx::AICX_MODE_ENV, "cli");
-            std::env::set_var(crate::aicx::AICX_BINARY_ENV, &script);
+            crate::test_env::set_var(crate::aicx::AICX_MODE_ENV, "cli");
+            crate::test_env::set_var(crate::aicx::AICX_BINARY_ENV, &script);
         }
         let client = AicxClient::new("loctree-suite");
         let opts = ContextOptions {
@@ -8187,9 +8195,9 @@ python_version = "3.12"
         );
         let memory =
             compose_memory_slice(&opts, &structural, &RuntimeSlice::default(), Some(&client));
-        unsafe {
-            std::env::remove_var(crate::aicx::AICX_BINARY_ENV);
-            std::env::remove_var(crate::aicx::AICX_MODE_ENV);
+        {
+            crate::test_env::remove_var(crate::aicx::AICX_BINARY_ENV);
+            crate::test_env::remove_var(crate::aicx::AICX_MODE_ENV);
             crate::aicx::clear_aicx_test_opt_in();
         }
 

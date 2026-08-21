@@ -211,8 +211,8 @@ invalid_command_names = ["npm"]
         // Avoid env-var leakage when other tests set LOCTREE_PARSER.
         // SAFETY: integration tests that toggle this env serialize via
         // `serial_test`; this unit test runs single-threaded by default.
-        unsafe {
-            std::env::remove_var("LOCTREE_PARSER");
+        {
+            crate::test_env::remove_var("LOCTREE_PARSER");
         }
         let config = LoctreeConfig::default();
         assert_eq!(config.parser_strategy(), "oxc");
@@ -220,8 +220,8 @@ invalid_command_names = ["npm"]
 
     #[test]
     fn parser_strategy_respects_config_field() {
-        unsafe {
-            std::env::remove_var("LOCTREE_PARSER");
+        {
+            crate::test_env::remove_var("LOCTREE_PARSER");
         }
         let temp = TempDir::new().expect("temp dir");
         let loctree_dir = temp.path().join(".loctree");
@@ -242,8 +242,8 @@ parser = "ts"
 
     #[test]
     fn parser_strategy_falls_back_on_unknown_value() {
-        unsafe {
-            std::env::remove_var("LOCTREE_PARSER");
+        {
+            crate::test_env::remove_var("LOCTREE_PARSER");
         }
         let mut config = LoctreeConfig::default();
         config.analyzer.parser = "swc".to_string();

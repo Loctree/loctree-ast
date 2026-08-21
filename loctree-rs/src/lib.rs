@@ -387,6 +387,11 @@ pub mod symbols;
 /// to empty results when the binary is missing — see [`aicx::AicxClient`].
 pub mod aicx;
 
+/// Test-only environment mutation, consolidated so the crate carries a single
+/// audited `unsafe` for `std::env::set_var` / `remove_var`.
+#[cfg(test)]
+pub(crate) mod test_env;
+
 #[used]
 static EMBEDDED_IDIOM_CATALOG_SMOKE: &str = concat!(
     include_str!("semantic/idioms/shell.toml"),

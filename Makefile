@@ -274,16 +274,19 @@ precheck:
 
 # Canonical security gate (the `semgrep` step the release runbook names).
 #
-# Wired to the same rule surface the CI lane uses, so a local `make semgrep`
-# and the Semgrep workflow agree on pass/fail. The HTML
-# integrity rule is excluded at the CLI level because the generated
-# `public_dist/**` pages carry inline `nosemgrep` markers that semgrep does not
-# honour inside HTML comments.
+# Runs the SAME rule surface as .github/workflows/semgrep.yml (auto + p/rust
+# + p/typescript) so a local `make semgrep` sees what Code Scanning sees. It
+# fails on WARNING and ERROR findings. INFO-level audit rules (unsafe-usage,
+# current-exe, args) are review prompts, not defects: they still upload to
+# Code Scanning from CI, but they do not block here. No rule is excluded;
+# the former html integrity exclusion went away with the generated
+# `public_dist/**` pages that caused it. Suppressing a finding in source
+# (`nosemgrep`) is not an accepted fix in this repository — fix the sink.
 #
-# Overridable: SEMGREP_CONFIG, SEMGREP_EXCLUDE_RULE, SEMGREP_TARGET.
+# Overridable: SEMGREP_CONFIGS, SEMGREP_SEVERITY, SEMGREP_TARGET.
 SEMGREP ?= semgrep
-SEMGREP_CONFIG ?= auto
-SEMGREP_EXCLUDE_RULE ?= html.security.audit.missing-integrity.missing-integrity
+SEMGREP_CONFIGS ?= auto p/rust p/typescript
+SEMGREP_SEVERITY ?= WARNING ERROR
 SEMGREP_TARGET ?= .
 
 semgrep:
@@ -291,9 +294,10 @@ semgrep:
 		echo "ERROR: semgrep not found. Install it with: pip install semgrep (or brew install semgrep)" >&2; \
 		exit 1; \
 	fi
-	@echo "=== Semgrep security gate (config=$(SEMGREP_CONFIG)) ==="
-	$(SEMGREP) scan --config $(SEMGREP_CONFIG) --error --quiet \
-		--exclude-rule $(SEMGREP_EXCLUDE_RULE) $(SEMGREP_TARGET)
+	@echo "=== Semgrep security gate (configs=$(SEMGREP_CONFIGS); blocking on $(SEMGREP_SEVERITY)) ==="
+	$(SEMGREP) scan $(foreach c,$(SEMGREP_CONFIGS),--config $(c)) \
+		$(foreach s,$(SEMGREP_SEVERITY),--severity $(s)) \
+		--error --quiet $(SEMGREP_TARGET)
 	@echo "=== Semgrep clean ==="
 
 # Explicit full validation before a PR or release. This is intentionally not

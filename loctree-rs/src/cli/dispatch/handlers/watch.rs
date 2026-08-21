@@ -44,8 +44,12 @@ impl Drop for OwnedCompanion {
         }
 
         #[cfg(unix)]
-        unsafe {
-            libc::kill(self.child.id() as libc::pid_t, libc::SIGTERM);
+        {
+            // Best-effort graceful stop; a dead or foreign pid just errors.
+            let _ = nix::sys::signal::kill(
+                nix::unistd::Pid::from_raw(self.child.id() as i32),
+                nix::sys::signal::Signal::SIGTERM,
+            );
         }
         #[cfg(not(unix))]
         let _ = self.child.kill();
@@ -399,12 +403,13 @@ fn spawn_background_watcher(roots: &[PathBuf], opts: &WatchOptions) -> DispatchR
         use std::os::unix::process::CommandExt;
         // Detach from parent process group so the child survives the
         // parent's exit and isn't killed by Ctrl+C in the launching shell.
+        // SAFETY: `pre_exec` is unsafe because the closure runs in the
+        // forked child before exec, where only async-signal-safe calls are
+        // allowed. `setsid` is one, it allocates nothing, and the closure
+        // touches no locks or heap.
         unsafe {
             cmd.pre_exec(|| {
-                let r = libc::setsid();
-                if r == -1 {
-                    return Err(std::io::Error::last_os_error());
-                }
+                nix::unistd::setsid().map_err(std::io::Error::from)?;
                 Ok(())
             });
         }

@@ -278,23 +278,14 @@ pub fn compute(
     let runtime = compose_runtime_slice(&opts, snapshot);
 
     let client = AicxClient::new(namespace.clone());
-    // Override the public default of `hours` — the LSP shape exposes
-    // it directly. We still rely on the composer's internal `limit` /
-    // `raw_limit` knobs so heuristics stay aligned with the CLI.
-    if let Some(hours) = params.hours {
-        // The composer reads its window from env. Set per-call so the
-        // request stays self-contained without leaking into the
-        // process-wide environment.
-        // SAFETY: env mutation is synchronous; the LSP request handler
-        // is the only writer for this variable in-process. The
-        // composer reads it inline and the scope of effect is bounded
-        // by `with_env_var`'s drop guard.
-        let _guard = with_env_var("LOCT_CONTEXT_MEMORY_HOURS", &hours.to_string());
-        let _ = _guard; // silence unused warning when feature gate is off
-    }
-    let limit = clamp_limit(params.limit);
-    let _limit_guard = with_env_var("LOCT_CONTEXT_MEMORY_LIMIT", &limit.to_string());
-    let _ = _limit_guard;
+    // Per-request window and cap travel in the options, not through the
+    // process environment. The previous env-guard approach was both a data
+    // race (handlers run on arbitrary Tokio worker threads; `setenv` racing
+    // `getenv` is undefined behaviour on POSIX) and a silent no-op for
+    // `hours`: its guard was dropped at the end of the `if` block, before the
+    // composer ever ran.
+    opts.memory_hours = params.hours;
+    opts.memory_limit = Some(clamp_limit(params.limit));
 
     let memory = compose_memory_slice(&opts, &structural, &runtime, Some(&client));
 
@@ -317,41 +308,6 @@ pub fn compute(
         source_chunks,
         skip_reason,
         symbol_id_version: SymbolIdV1::VERSION,
-    }
-}
-
-/// Scoped env-var setter. Restores the prior value on drop so a
-/// per-request override never leaks into other LSP handlers running
-/// concurrently. (Tokio multi-thread runtime: handlers run on
-/// arbitrary worker threads; the AICX composer reads from `std::env`,
-/// so we synchronize through the process env. The `_guard` returned
-/// by this helper deliberately has the lifetime of the handler.)
-fn with_env_var(key: &'static str, value: &str) -> EnvVarGuard {
-    let prior = std::env::var(key).ok();
-    // SAFETY: AICX composer reads env at slice-composition time on the
-    // current thread; no other handler reads or mutates this key in
-    // parallel because the LSP backend runs each request to completion
-    // before another handler can mutate the same key. The guard
-    // restores the prior value on drop.
-    unsafe {
-        std::env::set_var(key, value);
-    }
-    EnvVarGuard { key, prior }
-}
-
-struct EnvVarGuard {
-    key: &'static str,
-    prior: Option<String>,
-}
-
-impl Drop for EnvVarGuard {
-    fn drop(&mut self) {
-        unsafe {
-            match self.prior.take() {
-                Some(v) => std::env::set_var(self.key, v),
-                None => std::env::remove_var(self.key),
-            }
-        }
     }
 }
 

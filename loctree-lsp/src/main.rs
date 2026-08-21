@@ -79,6 +79,8 @@ fn install_panic_hook() {
 /// Ignore SIGPIPE so broken pipes surface as EPIPE errors instead of killing the process.
 #[cfg(unix)]
 fn ignore_sigpipe() {
+    // SAFETY: installing SIG_IGN for SIGPIPE is async-signal-safe, takes no
+    // handler pointer, and runs once at startup before any thread exists.
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_IGN);
     }
