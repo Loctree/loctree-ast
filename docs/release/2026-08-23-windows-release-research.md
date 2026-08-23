@@ -107,8 +107,9 @@ narrow clean-main change after release assets exist.
 1. AICX 0.12.5 is complete: signed merged-main release, GitHub assets, npm
    packages, hosted cold installs on all three OSes, and a real SSH Windows
    cold install all passed.
-2. Merge the synchronized Loctree 0.14.4 release PR with AICX 0.12.5 as its
-   bundle default, sign the merged-main tag, and prove all five bundles.
+2. The synchronized Loctree 0.14.4 branch rehearsal with AICX 0.12.5 passed all
+   five bundles. Merge the release PR, sign the exact merged-main tag, and
+   repeat the five-platform proof on the immutable tag before publication.
 3. Advance the public installer and release registry through the merged,
    deprivatized `loctree-com` VM deployment contract.
 4. Re-run real client verification on Windows plus macOS and Debian/Linux
@@ -238,3 +239,23 @@ returned npm exit 0 and both `aicx` and `aicx-mcp` as
 were all removed. The mandatory AICX deprivatize pass reported no unambiguous
 PII or secret leaks. Loctree 0.14.4 therefore selects AICX 0.12.5 as its
 canonical combined-bundle input.
+
+## Final Loctree branch rehearsal
+
+Workflow-dispatch run `32672964365` completed successfully at exact release
+head `3e6e090152c0db904048b6b5d2673990a5ed5112`. Input verification and all five
+bundle jobs passed: macOS arm64/x64, Linux GNU/musl, and Windows MSVC. The
+publish job was correctly skipped because this was a branch rehearsal rather
+than an immutable `v*` tag push.
+
+The Debian 12 musl smoke reported the extracted `loct` executable as statically
+linked, ran `loct 0.14.4+g3e6e0901`, and scanned the one-file committed Git
+fixture successfully without installing Git in the container. This directly
+closes the original v0.14.2 `no git repository at '/fixture'` failure.
+
+The hosted Windows job ran all six bundled executables from the archive:
+Loctree `0.14.4+g3e6e0901` for `loct`, `loctree`, `loctree-mcp`, and
+`loctree-lsp`, plus `aicx` and `aicx-mcp` at `0.12.5+gced57997`. Its committed
+Git fixture scan completed with `Status: OK`, and the raw
+`loctree-lsp-windows-x64.exe` asset plus checksum uploaded successfully. The
+immutable tag run must repeat this proof before any publish button is used.
