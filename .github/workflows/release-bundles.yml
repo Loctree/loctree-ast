@@ -174,7 +174,7 @@ jobs:
           if [[ "${TARGET}" == *-linux-gnu || "${TARGET}" == *-linux-musl ]]; then
             command -v cargo-zigbuild >/dev/null 2>&1 || cargo install --locked cargo-zigbuild
             # pip install of ziglang dies on PEP 668 (externally-managed env) on
-            # ops-linux — install a pinned official zig tarball instead.
+            # managed Linux runners — install a pinned official zig tarball instead.
             if ! command -v zig >/dev/null 2>&1 && ! python3 -m ziglang version >/dev/null 2>&1; then
               ZIG_VERSION=0.16.0
               ZIG_SHA256=70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00
@@ -364,6 +364,12 @@ jobs:
           rm -rf "$extract_dir" "$fixture_dir"
           mkdir -p "$extract_dir" "$fixture_dir"
           printf 'fn main() { println!("debian musl smoke"); }\n' > "$fixture_dir/main.rs"
+          git -C "$fixture_dir" init -q
+          git -C "$fixture_dir" add main.rs
+          git -C "$fixture_dir" \
+            -c user.name=smoke \
+            -c user.email=smoke@loct.io \
+            commit -qm fixture
           tar -xzf "$bundle" -C "$extract_dir"
           file "$extract_dir/$root/bin/loct"
           { ldd "$extract_dir/$root/bin/loct" 2>&1 || true; } | tee "$RUNNER_TEMP/linux-musl-ldd.txt"
