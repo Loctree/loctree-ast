@@ -166,3 +166,34 @@ beside the staging directory and moves the finished file into the requested
 distribution directory. The Windows contract wraps tar and rejects absolute or
 drive-qualified create operands, so this cannot regress behind a Linux-only
 test path.
+
+The third branch run (`32660678820`) proved archive creation on Windows and all
+four non-Windows bundles, then failed while extracting selected files for
+verification. Git Bash exposed `RUNNER_TEMP` as `D:\\a\\_temp`; GNU tar does
+not apply MSYS argument conversion to its `-C` operand and tried to open the
+literal escaped drive path. The build job now normalizes the runner temp once
+with `cygpath -u` on Windows and publishes `BASH_RUNNER_TEMP` to every later
+Bash step. Bundle verification, the six-binary runtime smoke, and raw LSP
+staging therefore share one POSIX path contract. The Windows bundle test
+asserts both the normalization and the absence of the three known raw
+`RUNNER_TEMP` tar paths.
+
+## AICX npm Windows extractor finding
+
+After the AICX 0.12.3 binary release succeeded, all four npm packages were
+published and cold installs passed on hosted macOS and Linux. Hosted Windows
+still failed while the real SSH Windows host succeeded. The optional Windows
+package downloaded the correct release ZIP, but its `postinstall.js` invoked
+an unqualified `tar`. Git Bash placed GNU tar first on hosted CI and it could
+not extract the ZIP; PowerShell placed the native Windows bsdtar first on the
+real host.
+
+AICX PR #58 resolves and validates `%SystemRoot%\\System32\\tar.exe` (falling
+back to `%WINDIR%`) and invokes it without a shell. A metadata regression
+forbids the unqualified Windows extraction call. A pre-release probe copied
+the changed installer into an isolated directory on the real SSH Windows host,
+downloaded and checksum-verified the public 0.12.3 ZIP, and ran both installed
+binaries as `0.12.3+g8243654a` with exit 0. The exact temporary directory was
+then removed; global npm and Cargo installations were untouched. Because npm
+versions are immutable, this repair will ship as AICX 0.12.4 rather than
+overwriting 0.12.3.

@@ -5,6 +5,16 @@ ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 TMP_ROOT=$(mktemp -d)
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
+workflow="$ROOT_DIR/.github/workflows/release-bundles.yml"
+grep -F 'bash_runner_temp="$(cygpath -u "$RUNNER_TEMP")"' "$workflow" >/dev/null
+grep -F 'verify_dir="$BASH_RUNNER_TEMP/bundle-verify"' "$workflow" >/dev/null
+grep -F 'extract_dir="$BASH_RUNNER_TEMP/version-smoke"' "$workflow" >/dev/null
+grep -F 'work="$BASH_RUNNER_TEMP/lsp-asset"' "$workflow" >/dev/null
+if grep -E '(verify_dir|extract_dir|work)="\$RUNNER_TEMP/(bundle-verify|version-smoke|lsp-asset)"' "$workflow" >/dev/null; then
+  echo "Windows tar paths must use the Git Bash-normalized runner temp" >&2
+  exit 1
+fi
+
 mkdir -p "$TMP_ROOT/bin" "$TMP_ROOT/release-payload"
 
 cat > "$TMP_ROOT/bin/make" <<'SH'

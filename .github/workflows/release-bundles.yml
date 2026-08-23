@@ -176,6 +176,16 @@ jobs:
           targets: ${{ matrix.target }}
           components: rustfmt, clippy
 
+      - name: Normalize runner temp for bash tools
+        run: |
+          set -euo pipefail
+          bash_runner_temp="$RUNNER_TEMP"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            command -v cygpath >/dev/null 2>&1
+            bash_runner_temp="$(cygpath -u "$RUNNER_TEMP")"
+          fi
+          printf 'BASH_RUNNER_TEMP=%s\n' "$bash_runner_temp" >> "$GITHUB_ENV"
+
       - name: Install Linux build dependencies
         if: runner.os == 'Linux'
         env:
@@ -199,12 +209,12 @@ jobs:
             if ! command -v zig >/dev/null 2>&1 && ! python3 -m ziglang version >/dev/null 2>&1; then
               ZIG_VERSION=0.16.0
               ZIG_SHA256=70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00
-              curl -fsSL -o "$RUNNER_TEMP/zig.tar.xz" \
+              curl -fsSL -o "$BASH_RUNNER_TEMP/zig.tar.xz" \
                 "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
-              echo "${ZIG_SHA256}  $RUNNER_TEMP/zig.tar.xz" | sha256sum -c -
-              mkdir -p "$RUNNER_TEMP/zig"
-              tar -xJf "$RUNNER_TEMP/zig.tar.xz" -C "$RUNNER_TEMP/zig" --strip-components=1
-              echo "$RUNNER_TEMP/zig" >> "$GITHUB_PATH"
+              echo "${ZIG_SHA256}  $BASH_RUNNER_TEMP/zig.tar.xz" | sha256sum -c -
+              mkdir -p "$BASH_RUNNER_TEMP/zig"
+              tar -xJf "$BASH_RUNNER_TEMP/zig.tar.xz" -C "$BASH_RUNNER_TEMP/zig" --strip-components=1
+              echo "$BASH_RUNNER_TEMP/zig" >> "$GITHUB_PATH"
             fi
           fi
 
@@ -230,9 +240,9 @@ jobs:
             exit 0
           fi
 
-          KEYCHAIN="$RUNNER_TEMP/loctree-bundle.keychain-db"
-          CERT_PATH="$RUNNER_TEMP/loctree-bundle-cert.p12"
-          CA_PATH="$RUNNER_TEMP/DeveloperIDG2CA.cer"
+          KEYCHAIN="$BASH_RUNNER_TEMP/loctree-bundle.keychain-db"
+          CERT_PATH="$BASH_RUNNER_TEMP/loctree-bundle-cert.p12"
+          CA_PATH="$BASH_RUNNER_TEMP/DeveloperIDG2CA.cer"
 
           echo "$MACOS_CERT_P12_BASE64" | base64 --decode > "$CERT_PATH"
           curl -fsSL "https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer" -o "$CA_PATH"
@@ -286,7 +296,7 @@ jobs:
           if [[ "$TARGET" == *-windows-* ]]; then
             suffix=".exe"
           fi
-          tar -tzf "$bundle" > "$RUNNER_TEMP/bundle-files.txt"
+          tar -tzf "$bundle" > "$BASH_RUNNER_TEMP/bundle-files.txt"
           # loctree-suite native binaries are mandatory on every target.
           REQUIRED=(
             "$root/bin/loct${suffix}"
@@ -303,16 +313,16 @@ jobs:
             REQUIRED+=("$root/components/loctree-aicx.json")
             FORBIDDEN=("$root/bin/aicx" "$root/bin/aicx-mcp")
             for path in "${FORBIDDEN[@]}"; do
-              if grep -Fx "$path" "$RUNNER_TEMP/bundle-files.txt" >/dev/null; then
+              if grep -Fx "$path" "$BASH_RUNNER_TEMP/bundle-files.txt" >/dev/null; then
                 echo "core bundle must not include $path" >&2
                 exit 1
               fi
             done
           fi
           for path in "${REQUIRED[@]}"; do
-            grep -Fx "$path" "$RUNNER_TEMP/bundle-files.txt" >/dev/null
+            grep -Fx "$path" "$BASH_RUNNER_TEMP/bundle-files.txt" >/dev/null
           done
-          verify_dir="$RUNNER_TEMP/bundle-verify"
+          verify_dir="$BASH_RUNNER_TEMP/bundle-verify"
           rm -rf "$verify_dir"
           mkdir -p "$verify_dir"
           VERIFY_PATHS=("$root/components.json" "$root/README.md")
@@ -337,7 +347,7 @@ jobs:
           set -euo pipefail
           bundle="dist/release-bundles/${VERSION}/loctree-${VERSION}-${TARGET}${ARTIFACT_SUFFIX}.tar.gz"
           root="loctree-${VERSION}-${TARGET}${ARTIFACT_SUFFIX}"
-          extract_dir="$RUNNER_TEMP/version-smoke"
+          extract_dir="$BASH_RUNNER_TEMP/version-smoke"
           suffix=""
           if [[ "$TARGET" == *-windows-* ]]; then
             suffix=".exe"
@@ -369,7 +379,7 @@ jobs:
           dist="dist/release-bundles/${VERSION}"
           root="loctree-${VERSION}-${TARGET}${ARTIFACT_SUFFIX}"
           bundle="${dist}/${root}.tar.gz"
-          work="$RUNNER_TEMP/lsp-asset"
+          work="$BASH_RUNNER_TEMP/lsp-asset"
           rm -rf "$work"
           mkdir -p "$work"
           suffix=""
@@ -401,7 +411,7 @@ jobs:
           set -euo pipefail
           bundle="dist/release-bundles/${VERSION}/loctree-${VERSION}-${TARGET}${ARTIFACT_SUFFIX}.tar.gz"
           root="loctree-${VERSION}-${TARGET}${ARTIFACT_SUFFIX}"
-          extract_dir="$RUNNER_TEMP/linux-glibc-smoke"
+          extract_dir="$BASH_RUNNER_TEMP/linux-glibc-smoke"
           rm -rf "$extract_dir"
           mkdir -p "$extract_dir"
           tar -xzf "$bundle" -C "$extract_dir"
@@ -421,8 +431,8 @@ jobs:
           }
           bundle="dist/release-bundles/${VERSION}/loctree-${VERSION}-${TARGET}${ARTIFACT_SUFFIX}.tar.gz"
           root="loctree-${VERSION}-${TARGET}${ARTIFACT_SUFFIX}"
-          extract_dir="$RUNNER_TEMP/linux-musl-smoke"
-          fixture_dir="$RUNNER_TEMP/linux-musl-fixture"
+          extract_dir="$BASH_RUNNER_TEMP/linux-musl-smoke"
+          fixture_dir="$BASH_RUNNER_TEMP/linux-musl-fixture"
           rm -rf "$extract_dir" "$fixture_dir"
           mkdir -p "$extract_dir" "$fixture_dir"
           printf 'fn main() { println!("debian musl smoke"); }\n' > "$fixture_dir/main.rs"
@@ -434,8 +444,8 @@ jobs:
             commit -qm fixture
           tar -xzf "$bundle" -C "$extract_dir"
           file "$extract_dir/$root/bin/loct"
-          { ldd "$extract_dir/$root/bin/loct" 2>&1 || true; } | tee "$RUNNER_TEMP/linux-musl-ldd.txt"
-          if ! grep -E 'not a dynamic executable|statically linked' "$RUNNER_TEMP/linux-musl-ldd.txt" >/dev/null; then
+          { ldd "$extract_dir/$root/bin/loct" 2>&1 || true; } | tee "$BASH_RUNNER_TEMP/linux-musl-ldd.txt"
+          if ! grep -E 'not a dynamic executable|statically linked' "$BASH_RUNNER_TEMP/linux-musl-ldd.txt" >/dev/null; then
             echo "loct is not reported as static by ldd" >&2
             exit 1
           fi
@@ -455,7 +465,7 @@ jobs:
           set -euo pipefail
           bundle="dist/release-bundles/${VERSION}/loctree-${VERSION}-${TARGET}${ARTIFACT_SUFFIX}.tar.gz"
           root="loctree-${VERSION}-${TARGET}${ARTIFACT_SUFFIX}"
-          extract_dir="$RUNNER_TEMP/macos-dylib-smoke"
+          extract_dir="$BASH_RUNNER_TEMP/macos-dylib-smoke"
           rm -rf "$extract_dir"
           mkdir -p "$extract_dir"
           tar -xzf "$bundle" -C "$extract_dir"
