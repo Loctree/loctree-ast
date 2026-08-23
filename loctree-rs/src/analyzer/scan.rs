@@ -282,7 +282,7 @@ fn is_scan_only_resource_extension(ext: &str) -> bool {
 /// faithful to the parser strategy promise (opt-in, parity not yet 100%).
 ///
 /// The parity contract is documented in
-/// `internal-artifacts/reports/lsp/19-cross-lang-stage-1.md`.
+/// `.vibecrafted/reports/lsp/19-cross-lang-stage-1.md`.
 pub fn ts_dispatch_js(content: &str, path: &Path, relative: String) -> FileAnalysis {
     use crate::types::{
         ExportSymbol as LExport, ImportEntry as LImport, ImportKind, ImportResolutionKind,
@@ -301,27 +301,30 @@ pub fn ts_dispatch_js(content: &str, path: &Path, relative: String) -> FileAnaly
     };
 
     // Pick the right extractor by language tag, mirroring the registry.
-    let extracted_exports;
-    let extracted_imports;
-    let extracted_calls;
-    match tree.lang {
+    let (extracted_exports, extracted_imports, extracted_calls) = match tree.lang {
         "typescript" => {
             let ext = loctree_ast::TsExtractor;
-            extracted_exports = ext.extract_exports(&tree);
-            extracted_imports = ext.extract_imports(&tree);
-            extracted_calls = ext.extract_calls(&tree);
+            (
+                ext.extract_exports(&tree),
+                ext.extract_imports(&tree),
+                ext.extract_calls(&tree),
+            )
         }
         "tsx" => {
             let ext = loctree_ast::extractors::ts::TsxExtractor;
-            extracted_exports = ext.extract_exports(&tree);
-            extracted_imports = ext.extract_imports(&tree);
-            extracted_calls = ext.extract_calls(&tree);
+            (
+                ext.extract_exports(&tree),
+                ext.extract_imports(&tree),
+                ext.extract_calls(&tree),
+            )
         }
         "javascript" => {
             let ext = loctree_ast::JsExtractor;
-            extracted_exports = ext.extract_exports(&tree);
-            extracted_imports = ext.extract_imports(&tree);
-            extracted_calls = ext.extract_calls(&tree);
+            (
+                ext.extract_exports(&tree),
+                ext.extract_imports(&tree),
+                ext.extract_calls(&tree),
+            )
         }
         _ => {
             return FileAnalysis {
@@ -329,7 +332,7 @@ pub fn ts_dispatch_js(content: &str, path: &Path, relative: String) -> FileAnaly
                 ..FileAnalysis::default()
             };
         }
-    }
+    };
 
     let exports: Vec<LExport> = extracted_exports
         .into_iter()

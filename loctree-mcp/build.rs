@@ -7,14 +7,14 @@
 //! otherwise indistinguishable, so an agent talking to a STALE MCP server reads
 //! the same `serverInfo.version` as a fresh one and never notices the binary
 //! lags source HEAD. Stamping the commit into the `initialize` handshake makes
-//! that gap loud — see `loctree-feedback.md` ("live binary predates the committed
+//! that gap loud — see `loctree-fail.md` ("live binary predates the committed
 //! fix").
 //!
 //! Robustness: every git call is best-effort. Outside a git checkout (crates.io
 //! tarball, vendored source) the stamp degrades to the plain crate version with
 //! commit `unknown` — the build never fails for lack of git.
 //!
-//! Vibecrafted with AI Agents by VetCoders (c)2024-2026 LibraxisAI
+//! Vibecrafted with AI Agents by Vetcoders (c)2024-2026 LibraxisAI
 
 use std::process::Command;
 
@@ -34,19 +34,27 @@ fn git(args: &[&str]) -> Option<String> {
     }
 }
 
+/// Emit the four `cargo:rustc-env` identity variables the server reads at
+/// runtime, plus the `rerun-if-changed` keys that re-stamp the binary when HEAD
+/// moves. Degrades to the plain crate version outside a git checkout.
 fn main() {
     // Always re-run when the build script itself changes.
     println!("cargo:rerun-if-changed=build.rs");
     // Allow packaged / reproducible builds to pin the stamp explicitly.
     println!("cargo:rerun-if-env-changed=LOCTREE_MCP_GIT_COMMIT");
+    println!("cargo:rerun-if-env-changed=LOCTREE_MCP_GIT_DIRTY");
     println!("cargo:rerun-if-env-changed=LOCTREE_MCP_BUILD_VERSION");
 
     // Re-stamp when HEAD moves so the binary tracks the checkout it was built
     // from. Resolve the git dir (workspace member builds run from a subdir).
-    if let Some(git_dir) = git(&["rev-parse", "--git-dir"]) {
+    if let Some(git_dir) = git(&["rev-parse", "--absolute-git-dir"]) {
         println!("cargo:rerun-if-changed={git_dir}/HEAD");
-        if let Some(head_ref) = git(&["rev-parse", "--symbolic-full-name", "HEAD"]) {
-            println!("cargo:rerun-if-changed={git_dir}/{head_ref}");
+        println!("cargo:rerun-if-changed={git_dir}/index");
+    }
+    if let Some(common_dir) = git(&["rev-parse", "--path-format=absolute", "--git-common-dir"]) {
+        println!("cargo:rerun-if-changed={common_dir}/packed-refs");
+        if let Some(head_ref) = git(&["symbolic-ref", "-q", "HEAD"]) {
+            println!("cargo:rerun-if-changed={common_dir}/{head_ref}");
         }
     }
 
@@ -60,9 +68,14 @@ fn main() {
         .unwrap_or_else(|| "unknown".to_string());
 
     // Uncommitted changes mean the binary does not correspond to any commit.
-    let dirty = git(&["status", "--porcelain"])
-        .map(|s| !s.is_empty())
-        .unwrap_or(false);
+    let dirty = std::env::var("LOCTREE_MCP_GIT_DIRTY")
+        .ok()
+        .map(|value| matches!(value.trim(), "1" | "true" | "yes" | "dirty"))
+        .unwrap_or_else(|| {
+            git(&["status", "--porcelain"])
+                .map(|s| !s.is_empty())
+                .unwrap_or(false)
+        });
 
     // Richer human-facing stamp: tag + distance + short sha (+ `-dirty`).
     let describe = git(&["describe", "--always", "--dirty", "--tags"]).unwrap_or_else(|| {
@@ -77,12 +90,12 @@ fn main() {
 
     // Semver build metadata (`+...`) is valid and is exactly where an agent
     // already looks for a version: `0.13.0+g<sha>` or `0.13.0+g<sha>.dirty`.
-    let build_version = if std::env::var("LOCTREE_MCP_BUILD_VERSION")
+    let version_override = std::env::var("LOCTREE_MCP_BUILD_VERSION")
         .ok()
-        .filter(|s| !s.trim().is_empty())
-        .is_some()
-    {
-        std::env::var("LOCTREE_MCP_BUILD_VERSION").unwrap()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty());
+    let build_version = if let Some(version_override) = version_override {
+        version_override
     } else if commit == "unknown" {
         pkg_version.clone()
     } else if dirty {

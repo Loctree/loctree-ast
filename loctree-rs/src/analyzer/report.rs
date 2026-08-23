@@ -314,6 +314,10 @@ pub struct ContextAtlasCardInfo {
     pub path: String,
     pub lines: usize,
     pub why: String,
+    /// Full card markdown, embedded so the static report can open the card
+    /// in-page — a `file://` page cannot read arbitrary paths at view time.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
 }
 
 /// Twins analysis data for the HTML report
@@ -329,7 +333,7 @@ pub struct TwinsData {
 
 // ============================================================================
 // Refactor Plan Report Types
-// 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents ⓒ 2025-2026 Loctree Team
+// 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI
 // ============================================================================
 
 /// A single file move formatted for the HTML report.

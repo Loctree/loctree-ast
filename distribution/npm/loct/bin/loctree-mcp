@@ -1,0 +1,4 @@
+#!/usr/bin/env node
+
+// Public package-runner entrypoint for MCP clients and Glama-style npm hosts.
+require('../index.js').runBinary('loctree-mcp', process.argv.slice(2));

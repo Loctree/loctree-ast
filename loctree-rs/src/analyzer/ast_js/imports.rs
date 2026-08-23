@@ -9,7 +9,7 @@
 //!
 //! Also handles namespace member access tracking for accurate symbol usage.
 //!
-//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents ⓒ 2025-2026 Loctree Team
+//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI
 
 use oxc_ast::ast::*;
 

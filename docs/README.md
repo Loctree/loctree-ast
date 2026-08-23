@@ -1,0 +1,347 @@
+# loctree Documentation
+
+AI-oriented codebase analyzer for detecting dead code, circular imports, and generating dependency graphs.
+
+**Current line:** 0.13.0
+**Primary CLI:** `loct` (legacy `loctree` long-name binary still ships and works)
+
+---
+
+## Quick Links
+
+- [Installation](installation.md)
+- [Getting Started](getting-started.md)
+- [CLI Commands](cli/commands.md)
+- [CLI Options](cli/options.md)
+- [Perception over Memory](../PERCEPTION.md)
+- [Perception ADR](perception/adr.md)
+- [Agent Context KPIs](perception/kpis.md)
+- [Perception Research](perception/research.md)
+- [Loctree Map + Vision](research/loctree-codebase-map-and-perception-first-vision-2026-02-17.md)
+- [IDE Integration](#ide-integration)
+- [AI Agent Integration](#ai-agent-integration)
+- [CI/CD Integration](integrations/ci-cd.md)
+- [Use Cases](use-cases/README.md)
+- [Advanced Topics](#advanced)
+
+---
+
+## Getting Started
+
+### Installation
+
+End users install prebuilt binaries — see [installation.md](installation.md) for the full menu.
+
+```bash
+# Signed bundle (loct + loctree + loctree-mcp + loctree-lsp + aicx + aicx-mcp)
+curl -fsSL https://loct.io/install.sh | bash
+
+# npm runtime package (includes sibling MCP/LSP binaries)
+npm install -g @loctree/loctree
+
+# AICX publishes separately
+npm install -g @loctree/aicx
+
+# Source builds are contributor fallback only.
+# See dev/01_installation.md.
+```
+
+> **Bundle contents (0.13.0):** full target bundles ship six signed binaries — `loct`, `loctree`, `loctree-mcp`, `loctree-lsp`, `aicx`, `aicx-mcp`; the `x86_64-unknown-linux-musl-core` bundle is Loctree-only and marks AICX as an optional runtime dependency.
+
+For contributors building from source, see [dev/01_installation.md](dev/01_installation.md).
+
+### First Scan
+
+```bash
+cd your-project
+loct                          # Auto-detects stack, writes cached artifacts (see LOCT_CACHE_DIR)
+loct report --serve           # Interactive HTML report
+loct --for-ai                 # AI-optimized hierarchical output
+```
+
+### Essential Commands
+
+```bash
+loct slice <file>             # Extract context for AI (deps + consumers)
+loct health                   # Quick summary: cycles + dead + twins
+loct dead --confidence high   # Find unused exports
+loct cycles                   # Detect circular imports
+loct twins                    # Semantic duplicates analysis
+loct dist --src src --source-map dist/app.js.map  # Verify tree-shaking
+```
+
+---
+
+## Core Concepts
+
+### Snapshot-Based Analysis
+
+loctree operates on snapshots stored in the artifacts dir (cache dir by default; override via `LOCT_CACHE_DIR`):
+
+- **snapshot.json** - Complete graph data (imports, exports, LOC per file)
+- **findings.json** - All detected issues (dead code, cycles, duplicates)
+- **agent.json** - AI-optimized context bundle
+- **manifest.json** - Index for tooling and AI agents
+
+Scan once with `loct`, then query multiple times without re-parsing.
+
+### Findings Categories
+
+| Finding          | Description                      | Command       |
+|------------------|----------------------------------|---------------|
+| **Dead Parrots** | Exports with 0 imports           | `loct dead`   |
+| **Cycles**       | Circular import chains           | `loct cycles` |
+| **Twins**        | Semantic duplicates              | `loct twins`  |
+| **Orphans**      | Files with no imports/exports    | `loct audit`  |
+| **Shadows**      | Duplicate symbol definitions     | `loct audit`  |
+| **Crowds**       | Files with excessive connections | `loct audit`  |
+
+### Artifacts
+
+All outputs are stored as artifacts in the artifacts dir (cache dir by default; override via `LOCT_CACHE_DIR`):
+
+```bash
+loct                          # Creates snapshot + findings
+loct report                   # Generates report.html
+loct jq '.metadata'           # Query snapshot.json directly
+```
+
+---
+
+## IDE Integration
+
+`loctree-lsp` is a Language Server Protocol server. Real-time dead code detection, cycle warnings, codelens importer
+counts, and code navigation are surfaced through any LSP-capable editor.
+
+```bash
+npm install -g @loctree/loctree
+loctree-lsp --version
+```
+
+| Editor         | Documentation                              | Status |
+|----------------|--------------------------------------------|--------|
+| VSCode         | [ide/vscode.md](ide/vscode.md)             | Ready  |
+| Neovim         | [ide/neovim.md](ide/neovim.md)             | Ready  |
+| Any LSP client | [ide/lsp-protocol.md](ide/lsp-protocol.md) | Ready  |
+
+### Features
+
+- **Diagnostics** - Dead exports, cycles, twins as warnings
+- **Hover** - Import counts, consumer files
+- **Go to Definition** - Resolve re-export chains
+- **References** - Find all importers
+- **Code Actions** - Quick fixes for dead code
+
+---
+
+## AI Agent Integration
+
+### Context Architecture (Default)
+
+For agentic workflows in this repo, the default strategy is **context-over-memory**:
+
+- [Perception over Memory](../PERCEPTION.md)
+- [ADR](perception/adr.md)
+- [KPI definitions](perception/kpis.md)
+- [Research synthesis](perception/research.md)
+
+Guardrail sequence before non-trivial edits:
+`context -> repo-view -> focus -> slice -> impact -> find -> follow`
+
+### MCP Server
+
+loctree provides an MCP (Model Context Protocol) server for AI agents.
+
+**Full documentation:** [integrations/mcp-server.md](integrations/mcp-server.md)
+
+**Location:** `loctree-mcp/`
+**Status:** Production-ready
+
+#### Setup
+
+Add to your MCP config (e.g., Claude Desktop):
+
+```json
+{
+  "mcpServers": {
+    "loctree": {
+      "command": "loctree-mcp",
+      "args": []
+    }
+  }
+}
+```
+
+#### Available Tools
+
+- `context` - Complete Agent Context Pack with structure, runtime, risk, action, authority, and optional AICX memory
+- `repo-view` - Repository overview: files, LOC, languages, health, top hubs
+- `slice` - File context: dependencies + consumers in one call
+- `find` - Symbol search with regex and multi-query support
+- `impact` - Blast radius: direct + transitive consumers
+- `focus` - Module deep-dive: files, internal edges, external deps
+- `tree` - Directory structure with LOC counts
+- `follow` - Pursue signals: dead exports, cycles, twins, hotspots
+- `suppressions` - Source-side silencer inventory
+- `prism` - Conceptual smear score for task framings
+
+#### Use Cases
+
+- **Context extraction** - Get relevant code for AI conversations
+- **Duplicate detection** - Find existing components before creating new ones
+- **Impact analysis** - Understand downstream effects of changes
+- **Handler tracing** - Follow Tauri command pipelines
+
+### AI-Optimized Output
+
+```bash
+loct --for-ai                 # Hierarchical JSON with quick wins
+loct slice <file> --json      # Context bundle for AI agents
+```
+
+Output includes:
+
+- Health score
+- Quick wins (prioritized actions)
+- Hub files (high-connectivity nodes)
+- Dependency chains
+
+---
+
+## Advanced
+
+### Architecture
+
+**Core components (this repo):**
+
+- `loctree-rs/` — main analyzer (Rust); ships `loct` and `loctree` binaries
+- `loctree-mcp/` — MCP server crate; ships `loctree-mcp`
+- `loctree-lsp/` — LSP server crate; ships `loctree-lsp`
+- `loctree-ast/` — tree-sitter AST extractor surface
+- `reports/` — HTML report renderer (Leptos SSR)
+
+**Analysis flow:**
+
+1. Auto-detect stack (Rust/TS/Python/Dart)
+2. Parse imports/exports (language-specific)
+3. Build dependency graph
+4. Run detectors (dead code, cycles, twins)
+5. Generate artifacts (snapshot, findings, reports)
+
+### Multi-Language Support
+
+| Language              | Support     | Parser      |
+|-----------------------|-------------|-------------|
+| Rust                  | Exceptional | Tree-sitter |
+| TypeScript/JavaScript | Full        | OXC         |
+| Python                | Full        | Custom      |
+| Go                    | Perfect     | Tree-sitter |
+| Dart/Flutter          | Full        | Tree-sitter |
+| Svelte/Vue            | Full        | SFC + OXC   |
+
+### Query Mode
+
+jq-compatible queries on snapshot data:
+
+```bash
+loct '.metadata'                              # Extract metadata
+loct '.files | length'                        # Count files
+loct '.edges[] | select(.from | contains("api"))' # Filter edges
+loct '.summary.health_score' -r --artifact agent  # Raw output (no quotes)
+loct '.dead_parrots' -c --artifact findings       # Compact JSON
+```
+
+**Options:**
+
+- `-r, --raw` - Raw output (no JSON quotes)
+- `-c, --compact` - Compact one-line JSON
+- `-e, --exit-status` - Exit 1 if result is false/null
+- `--arg <name> <value>` - Bind string variable
+- `--argjson <name> <json>` - Bind JSON variable
+
+### Tauri Integration
+
+Full command pipeline validation:
+
+```bash
+loct commands                 # Missing/unregistered/unused handlers
+loct trace <handler>          # Follow FE invoke → BE handler
+loct coverage --handlers      # Test coverage for handlers
+```
+
+**Detects:**
+
+- Missing handlers (frontend invokes non-existent backend)
+- Unregistered handlers (`#[tauri::command]` not in `generate_handler![]`)
+- Unused handlers (backend defined but never called)
+- React.lazy() dynamic imports
+
+### Library Mode
+
+For libraries/frameworks with public APIs:
+
+```bash
+loct --library-mode
+```
+
+**Features:**
+
+- Auto-detects npm `exports` field
+- Respects Python `__all__` declarations
+- Ignores example/demo directories
+- Excludes public APIs from dead code detection
+
+**Customization:**
+
+```toml
+# .loctree/config.toml
+library_mode = true
+library_example_globs = ["examples/*", "demos/*", "playground/*"]
+```
+
+### CI Integration
+
+Full documentation: [integrations/ci-cd.md](integrations/ci-cd.md)
+
+```bash
+# Fail build on critical issues
+loct lint --fail
+
+# SARIF output for GitHub/GitLab
+loct lint --sarif > results.sarif
+
+# JSON output for custom processing
+loct health --json
+loct coverage --json
+```
+
+Supports: GitHub Actions, GitLab CI, CircleCI, pre-commit hooks.
+
+### Watch Mode
+
+```bash
+loct watch                    # Auto-refresh on file changes
+loct watch --serve            # Live reload HTML report
+```
+
+### Contributing
+
+See [CONTRIBUTING.md](../CONTRIBUTING.md) for:
+
+- Development setup
+- Testing guidelines
+- Adding language support
+- Release process
+
+---
+
+## Additional Resources
+
+- **Changelog:** [CHANGELOG.md](../CHANGELOG.md)
+- **Main README:** [../README.md](../README.md)
+- **Crates.io:** [loctree](https://crates.io/crates/loctree)
+- **Repository:** [github.com/Loctree/loctree-suite](https://github.com/Loctree/loctree-suite)
+
+---
+
+𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI

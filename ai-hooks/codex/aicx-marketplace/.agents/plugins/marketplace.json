@@ -1,0 +1,20 @@
+{
+  "name": "personal",
+  "interface": {
+    "displayName": "VetCoders Personal Runtime"
+  },
+  "plugins": [
+    {
+      "name": "aicx-compact-recall",
+      "source": {
+        "source": "local",
+        "path": "./aicx-compact-recall"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

@@ -28,7 +28,7 @@
 //! against the same types it already knows. `since_marker` carries an
 //! opaque label the caller can pass back as `since` to resume.
 //!
-//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by VetCoders ⓒ 2025-2026 VetCoders
+//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders ⓒ 2025-2026 Vetcoders
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;

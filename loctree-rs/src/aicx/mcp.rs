@@ -401,18 +401,18 @@ mod tests {
     #[test]
     fn mcp_call_timeout_honors_aicx_timeout_env() {
         let old_value = std::env::var(shell::AICX_TIMEOUT_ENV).ok();
-        unsafe {
-            std::env::set_var(shell::AICX_TIMEOUT_ENV, "60");
+        {
+            crate::test_env::set_var(shell::AICX_TIMEOUT_ENV, "60");
         }
         assert_eq!(mcp_call_timeout(), Duration::from_secs(60));
 
         match old_value {
-            Some(value) => unsafe {
-                std::env::set_var(shell::AICX_TIMEOUT_ENV, value);
-            },
-            None => unsafe {
-                std::env::remove_var(shell::AICX_TIMEOUT_ENV);
-            },
+            Some(value) => {
+                crate::test_env::set_var(shell::AICX_TIMEOUT_ENV, value);
+            }
+            None => {
+                crate::test_env::remove_var(shell::AICX_TIMEOUT_ENV);
+            }
         }
     }
 }

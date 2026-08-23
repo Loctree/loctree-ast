@@ -1,12 +1,13 @@
 //! HTTP transport surface for loctree-mcp.
 //!
 //! Hosts `rmcp::transport::streamable_http_server::StreamableHttpService`
-//! at `/mcp` on the configured bind address. Sits behind an axum router
-//! so future middleware (bearer auth, OIDC, rate limit, paging endpoints)
-//! can be layered without touching the MCP service itself.
+//! at `/mcp` on the configured bind address, plus the paginated
+//! `/context_pack` endpoint. Both sit behind an axum router carrying the
+//! bearer-auth layer from [`auth`].
 //!
-//! Vibecrafted with AI Agents by VetCoders (c)2024-2026 LibraxisAI
+//! Vibecrafted with AI Agents by Vetcoders (c)2024-2026 LibraxisAI
 
+pub mod auth;
 pub mod context_pack;
 
 use anyhow::{Context, Result};
@@ -14,6 +15,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::info;
 
 use crate::LoctreeServer;
+use auth::{AuthSettings, HttpAuth};
 
 /// Build and run the streamable-http axum server.
 ///
@@ -21,17 +23,31 @@ use crate::LoctreeServer;
 /// are managed by `LocalSessionManager` (in-memory, default). On Ctrl-C the
 /// `CancellationToken` returns from the watch loop and `axum::serve` shuts
 /// down gracefully.
-pub async fn serve_http(bind: &str) -> Result<()> {
+///
+/// The auth posture is resolved *here*, before the listener is bound, rather
+/// than being handed in by the caller. That keeps the fail-safe property
+/// structural: there is no way to reach the router — and no way to open a
+/// socket — without having gone through [`auth::resolve`], which refuses a
+/// non-loopback bind that has neither configured tokens nor an explicit
+/// `--allow-unauthenticated`.
+pub async fn serve_http(
+    bind: &str,
+    snapshot_cache_capacity: usize,
+    auth_settings: &AuthSettings,
+) -> Result<()> {
     use rmcp::transport::streamable_http_server::{
         StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
     };
+
+    // Security gate first: refuse before any socket exists.
+    let posture = auth::resolve(bind, auth_settings).await?;
 
     let cancel = CancellationToken::new();
     let config = StreamableHttpServerConfig::default().with_cancellation_token(cancel.clone());
 
     let service: StreamableHttpService<LoctreeServer, LocalSessionManager> =
         StreamableHttpService::new(
-            || Ok(LoctreeServer::new()),
+            move || Ok(LoctreeServer::with_cache_capacity(snapshot_cache_capacity)),
             std::sync::Arc::new(LocalSessionManager::default()),
             config,
         );
@@ -42,6 +58,18 @@ pub async fn serve_http(bind: &str) -> Result<()> {
             axum::routing::get(context_pack::context_pack_handler),
         )
         .nest_service("/mcp", service);
+
+    // `Router::layer` wraps every route registered so far, so this single call
+    // covers both `/mcp` and `/context_pack`. `/context_pack` matters just as
+    // much: it takes a project directory off the query string and reads it.
+    let router = match &posture {
+        HttpAuth::Enforced(manager) => router.layer(axum::middleware::from_fn_with_state(
+            manager.clone(),
+            auth::bearer_guard,
+        )),
+        HttpAuth::LoopbackOpen | HttpAuth::ExplicitlyUnauthenticated => router,
+    };
+
     let listener = tokio::net::TcpListener::bind(bind)
         .await
         .with_context(|| format!("could not bind streamable-http server on {bind}"))?;
@@ -61,10 +89,11 @@ pub async fn serve_http(bind: &str) -> Result<()> {
         let _ = stdout.flush();
     }
     info!(
-        "Server ready. Streamable-http MCP at http://{}/mcp",
+        "Server ready. Streamable-http MCP at http://{}/mcp — {}",
         local
             .map(|a| a.to_string())
-            .unwrap_or_else(|| bind.to_string())
+            .unwrap_or_else(|| bind.to_string()),
+        posture.describe()
     );
 
     // Graceful shutdown on Ctrl-C / SIGTERM. `axum::serve` honors the

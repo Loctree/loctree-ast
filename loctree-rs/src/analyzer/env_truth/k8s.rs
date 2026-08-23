@@ -6,7 +6,7 @@
 //! supported. Sealed/encrypted payloads are NEVER decoded — only their
 //! presence and age surface.
 //!
-//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents ⓒ 2025-2026 Loctree Team
+//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI
 
 use std::collections::BTreeMap;
 use std::path::Path;

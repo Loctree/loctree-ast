@@ -19,15 +19,16 @@ use super::helpers::{
     should_treat_unknown_as_subcommand,
 };
 use super::misc_commands::{
-    parse_audit_command, parse_cache_command, parse_crowd_command, parse_dist_command,
-    parse_doctor_command, parse_env_truth_command, parse_health_command, parse_help_command,
-    parse_layoutmap_command, parse_plan_command, parse_prism_command,
-    parse_prune_old_artifacts_command, parse_suppress_command, parse_tagmap_command,
+    parse_atlas_command, parse_audit_command, parse_cache_command, parse_crowd_command,
+    parse_dist_command, parse_doctor_command, parse_env_truth_command, parse_health_command,
+    parse_help_command, parse_inventory_command, parse_layoutmap_command, parse_plan_command,
+    parse_prism_command, parse_prune_old_artifacts_command, parse_snapshot_path_command,
+    parse_suppress_command, parse_tagmap_command,
 };
 use super::output_commands::{
-    parse_diff_command, parse_findings_command, parse_info_command, parse_insights_command,
-    parse_jq_query_command, parse_lint_command, parse_manifests_command, parse_pipelines_command,
-    parse_report_command, parse_suppressions_command,
+    parse_anchors_command, parse_diff_command, parse_findings_command, parse_info_command,
+    parse_insights_command, parse_jq_query_command, parse_lint_command, parse_manifests_command,
+    parse_pipelines_command, parse_report_command, parse_suppressions_command,
 };
 use super::scan_commands::{
     parse_auto_command, parse_scan_command, parse_tree_command, parse_watch_command,
@@ -54,6 +55,8 @@ pub fn uses_new_syntax(args: &[String]) -> bool {
             || arg == "--no-scan"
             || arg == "--fail-stale"
             || arg == "--include-ignored"
+            || arg == "--force-non-git"
+            || arg == "--force-non-git-repository-snapshot"
             || arg == "--for-ai"
             || arg == "--findings"
             || arg == "--summary"
@@ -89,6 +92,12 @@ pub fn uses_new_syntax(args: &[String]) -> bool {
             || arg == "-V"
         {
             return true;
+        }
+        // jq-only value flag: skip the pair so the filter behind it is still
+        // reached by the positional check below.
+        if arg == "--artifact" {
+            i += 2;
+            continue;
         }
         // If we hit a flag, it's likely legacy syntax
         if arg.starts_with('-') {
@@ -130,6 +139,16 @@ pub fn parse_command(args: &[String]) -> Result<Option<ParsedCommand>, String> {
     let mut legacy_findings_alias = false;
     let mut legacy_summary_only = false;
     let mut unknown_subcommand: Option<String> = None;
+
+    // `loct --artifact findings '.dead_parrots'` reads naturally with the flag
+    // in front, but every other jq option is parsed after the filter. Rotate
+    // that one pair to the back here instead of teaching the global option
+    // loop about a jq-only flag.
+    if args.len() >= 3 && args[0] == "--artifact" && is_jq_filter(&args[2]) {
+        let mut rotated = vec![args[2].clone(), args[0].clone(), args[1].clone()];
+        rotated.extend(args[3..].iter().cloned());
+        return parse_jq_query_command(&rotated, &global).map(Some);
+    }
 
     // Check for jq-style query before extracting global options
     // This allows: loct '.metadata' to work without conflicts
@@ -200,6 +219,10 @@ pub fn parse_command(args: &[String]) -> Result<Option<ParsedCommand>, String> {
             }
             "--include-ignored" => {
                 global.include_ignored = true;
+                i += 1;
+            }
+            "--force-non-git" | "--force-non-git-repository-snapshot" => {
+                global.force_non_git = true;
                 i += 1;
             }
             "--findings" => match subcommand.as_deref() {
@@ -403,6 +426,7 @@ pub fn parse_command(args: &[String]) -> Result<Option<ParsedCommand>, String> {
         Some("manifests") => parse_manifests_command(&remaining_args)?,
         Some("routes") => parse_routes_command(&remaining_args)?,
         Some("info") => parse_info_command(&remaining_args)?,
+        Some("anchors") => parse_anchors_command(&remaining_args)?,
         Some("lint") => parse_lint_command(&remaining_args)?,
         Some("report") => parse_report_command(&remaining_args)?,
         Some("prism") => parse_prism_command(&remaining_args)?,
@@ -439,6 +463,9 @@ pub fn parse_command(args: &[String]) -> Result<Option<ParsedCommand>, String> {
         Some("plan") | Some("p") => parse_plan_command(&remaining_args)?,
         Some("cache") => parse_cache_command(&remaining_args)?,
         Some("prune-old-artifacts") => parse_prune_old_artifacts_command(&remaining_args)?,
+        Some("snapshot-path") => parse_snapshot_path_command(&remaining_args)?,
+        Some("inventory") => parse_inventory_command(&remaining_args)?,
+        Some("atlas") => parse_atlas_command(&remaining_args)?,
         Some(unknown) => return Err(format_unknown_subcommand_error(unknown)),
     };
 
@@ -706,7 +733,7 @@ mod tests {
 
     #[test]
     fn test_version_after_subcommand_is_literal_query_not_version() {
-        // Regression for 2026-06-20 loctree-feedback: `loct find --literal --version`
+        // Regression for 2026-06-20 loctree-fail: `loct find --literal --version`
         // printed loct's OWN version instead of searching for the literal string
         // "--version". `--version` is global only BEFORE a subcommand.
         let args = vec!["find".into(), "--literal".into(), "--version".into()];
@@ -726,7 +753,7 @@ mod tests {
 
     #[test]
     fn test_double_dash_terminator_carries_flaglike_literal() {
-        // The POSIX `--` workaround documented in loctree-feedback must actually work
+        // The POSIX `--` workaround documented in loctree-fail must actually work
         // end-to-end through the global parser: `loct find --literal -- --version`.
         let args = vec![
             "find".into(),

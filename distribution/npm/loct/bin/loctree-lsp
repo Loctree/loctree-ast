@@ -1,0 +1,5 @@
+#!/usr/bin/env node
+
+// Public entrypoint for editors and LSP clients that want the language server
+// on PATH without going through `loct watch --lsp`.
+require('../index.js').runBinary('loctree-lsp', process.argv.slice(2));

@@ -843,7 +843,11 @@ impl HolographicSlice {
 /// Snapshot creation is a thin call into the freshness authority
 /// (`crate::snapshot::acquire_snapshot`): missing snapshots are created with
 /// the same unified file universe as `loct`.
-fn ensure_snapshot(root: &Path, _parsed: &ParsedArgs) -> io::Result<bool> {
+fn ensure_snapshot(root: &Path, parsed: &ParsedArgs) -> io::Result<bool> {
+    // Refuse before any scan: no git checkout ⇒ no snapshot creation
+    // (unless --force-non-git-repository-snapshot).
+    crate::snapshot::require_git_scan_root_with(root, parsed.force_non_git)?;
+
     let snapshot_path = crate::snapshot::Snapshot::snapshot_path(root);
     let create = |print_summary: bool| -> io::Result<()> {
         crate::snapshot::acquire_snapshot(
@@ -851,6 +855,8 @@ fn ensure_snapshot(root: &Path, _parsed: &ParsedArgs) -> io::Result<bool> {
             crate::snapshot::SnapshotReusePolicy::TrustExisting,
             &crate::snapshot::AcquireOptions {
                 print_scan_summary: print_summary,
+                force_non_git: parsed.force_non_git,
+                include_ignored: parsed.include_ignored,
                 ..Default::default()
             },
         )
@@ -858,7 +864,8 @@ fn ensure_snapshot(root: &Path, _parsed: &ParsedArgs) -> io::Result<bool> {
     };
 
     if !std::io::stdin().is_terminal() {
-        // Non-interactive: auto-create snapshot silently
+        // Non-interactive: auto-create snapshot only inside a git checkout
+        // (guarded above). Still never for bare `/` or non-git folders.
         create(false)?;
         eprintln!();
         return Ok(true);
@@ -890,14 +897,41 @@ pub fn run_slice(
     json_output: bool,
     parsed: &ParsedArgs,
 ) -> io::Result<()> {
-    // Search upward for .loctree/ directory (like git finds .git/)
-    let effective_root = Snapshot::find_loctree_root(root)
-        .or_else(|| {
-            std::env::current_dir()
-                .ok()
-                .and_then(|cwd| Snapshot::find_loctree_root(&cwd))
-        })
-        .unwrap_or_else(|| root.to_path_buf());
+    // Anchor on the provided root only — never fall back to process cwd when
+    // an explicit `--root` was given (cwd pollution used to re-home agent
+    // slices onto a different project). Resolution order:
+    //   1) intentional loctree project under `root`
+    //   2) git checkout containing `root` (walk up for `.git`)
+    // No git ⇒ hard refuse (never auto-scan bare folders or `/`).
+    let effective_root = match Snapshot::find_loctree_root(root) {
+        Some(r) => {
+            // Still require the loctree root to sit in a git checkout (unless
+            // --force-non-git / LOCT_ALLOW_NON_GIT_ROOT).
+            crate::snapshot::require_git_scan_root_with(&r, parsed.force_non_git)?;
+            r
+        }
+        None => crate::snapshot::require_git_scan_root_with(root, parsed.force_non_git)?,
+    };
+
+    // Host-safety: never auto-scan just because a relative target is missing
+    // outside a snapshot. Missing target + no snapshot ⇒ refuse before scan.
+    if !Snapshot::exists(&effective_root) {
+        // `join` keeps an absolute target as-is and anchors a relative one at
+        // the root; `SanitizedPath::within` then requires it to exist AND to
+        // canonicalize underneath the root — which is exactly what the error
+        // below promises ("under <root>").
+        let candidate = effective_root.join(target);
+        if crate::fs_utils::SanitizedPath::within(&effective_root, &candidate).is_err() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!(
+                    "refused: slice target '{}' does not exist under '{}' and no snapshot is cached — refusing auto-scan",
+                    target,
+                    effective_root.display()
+                ),
+            ));
+        }
+    }
 
     // Force rescan if --rescan flag is set (for uncommitted files)
     if parsed.slice_rescan {
@@ -911,6 +945,8 @@ pub fn run_slice(
                 fresh: true,
                 quiet: true,
                 print_scan_summary: true,
+                force_non_git: parsed.force_non_git,
+                include_ignored: parsed.include_ignored,
                 ..Default::default()
             },
         )?;
@@ -931,6 +967,7 @@ pub fn run_slice(
         crate::snapshot::SnapshotReusePolicy::Strict,
         &crate::snapshot::AcquireOptions {
             include_ignored: parsed.include_ignored,
+            force_non_git: parsed.force_non_git,
             ..Default::default()
         },
     )?;
@@ -1248,7 +1285,7 @@ mod tests {
     fn test_slice_empty_target_is_absent_not_ambiguous() {
         // An empty / whitespace target must resolve to None WITHOUT tripping the
         // "Ambiguous slice target" branch. Regression for the 2026-06-26
-        // loctree-feedback report: `loct context --full --markdown` composed an empty
+        // loctree-fail report: `loct context --full --markdown` composed an empty
         // default target, `path.ends_with("")` matched every file, and the slicer
         // spammed the whole repo list as an ambiguity warning.
         let snapshot = create_test_snapshot();

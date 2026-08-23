@@ -3,7 +3,7 @@
 //! This module handles extraction of script and template content from
 //! Svelte (.svelte), Vue (.vue), and Astro (.astro) Single File Components.
 //!
-//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents ⓒ 2025-2026 Loctree Team
+//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI
 
 use regex::Regex;
 

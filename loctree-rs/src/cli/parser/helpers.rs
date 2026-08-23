@@ -38,6 +38,7 @@ pub(crate) const SUBCOMMANDS: &[&str] = &[
     "insights",
     "manifests",
     "info",
+    "anchors",
     "lint",
     "report",
     "prism",
@@ -71,6 +72,9 @@ pub(crate) const SUBCOMMANDS: &[&str] = &[
     "p", // alias for plan
     "cache",
     "prune-old-artifacts",
+    "snapshot-path",
+    "inventory",
+    "atlas",
 ];
 
 const LEGACY_POSITIONAL_COMMANDS: &[&str] = &["tauri", "styles", "init", "search", "git", "for-ai"];

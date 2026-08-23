@@ -2,7 +2,11 @@
 //!
 //! Provides IDE integration for dead code detection, cycles, and navigation.
 //!
-//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by VetCoders ⓒ 2025-2026 VetCoders
+//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders ⓒ 2025-2026 Vetcoders
+
+pub const BUILD_VERSION: &str = env!("LOCTREE_LSP_BUILD_VERSION");
+pub const GIT_COMMIT: &str = env!("LOCTREE_LSP_GIT_COMMIT");
+pub const GIT_DIRTY: bool = env!("LOCTREE_LSP_GIT_DIRTY").as_bytes()[0] == b'1';
 
 use tower::ServiceBuilder;
 use tower_lsp::jsonrpc::Request;
@@ -26,6 +30,7 @@ pub mod health;
 mod hover;
 pub mod impact;
 pub mod live_ast;
+mod memory;
 mod navigation;
 pub mod protocol;
 pub mod semantic;
@@ -76,8 +81,11 @@ pub use watcher::{
 };
 pub use workspaces::{
     DEFAULT_MAX_DEPTH as WORKSPACES_DEFAULT_MAX_DEPTH,
-    MAX_DEPTH_CEILING as WORKSPACES_MAX_DEPTH_CEILING, WorkspaceInfo, WorkspacesParams,
-    WorkspacesResponse, discover_loctree_dirs, max_depth_from_options,
+    DEFAULT_MAX_RESIDENT_WORKSPACES as WORKSPACES_DEFAULT_MAX_RESIDENT,
+    DEFAULT_MEMORY_BUDGET_MB as WORKSPACES_DEFAULT_MEMORY_BUDGET_MB,
+    MAX_DEPTH_CEILING as WORKSPACES_MAX_DEPTH_CEILING, WorkspaceInfo, WorkspaceMode,
+    WorkspaceResidencyConfig, WorkspacesParams, WorkspacesResponse, classify_workspace,
+    discover_loctree_dirs, max_depth_from_options, residency_config_from_options,
 };
 
 /// Run the LSP server over stdio.

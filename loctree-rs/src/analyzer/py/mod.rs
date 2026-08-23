@@ -8,7 +8,7 @@
 //! - Dynamic code generation detection (exec/eval/compile)
 //! - Package metadata (typed packages, namespace packages)
 //!
-//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents ⓒ 2025-2026 Loctree Team
+//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI
 
 mod concurrency;
 mod decorators;
@@ -264,7 +264,7 @@ struct FromImportContext<'a> {
 /// that `resolve_python_relative` counts. A naive `trim_end_matches('.')`
 /// reduced a pure-dots module (`.`, `..`) to "" and dropped the whole import
 /// edge, so `from . import (CONST, ...)` recorded nothing and intra-package
-/// symbols looked dead (loctree-feedback.md, 2026-06-16). Only a stray trailing dot
+/// symbols looked dead (loctree-fail.md, 2026-06-16). Only a stray trailing dot
 /// on the NON-dot remainder is trimmed (e.g. `pkg.` → `pkg`).
 fn normalize_relative_import_module(raw: &str) -> &str {
     let raw = raw.trim();
@@ -1185,7 +1185,7 @@ import sys
 
     #[test]
     fn python_module_level_const_assignments_are_local_symbols() {
-        // Hak (loctree-feedback.md, 2026-06-15): `loct body FRAMEWORK_LAUNCHER_MARKERS`
+        // Hak (loctree-fail.md, 2026-06-15): `loct body FRAMEWORK_LAUNCHER_MARKERS`
         // returned "(no source body found)" because module-level tuple/const
         // assignments were never recorded as symbols, so where-symbol/body found
         // nothing. They must land in local_symbols (NOT exports, to avoid new
@@ -1302,7 +1302,7 @@ import sys
 
     #[test]
     fn tracks_bare_dot_relative_import_edge() {
-        // loctree-feedback.md (2026-06-16): `from . import (CONST, ...)` (bare-dot
+        // loctree-fail.md (2026-06-16): `from . import (CONST, ...)` (bare-dot
         // relative import of package __init__ symbols) recorded NO import edge,
         // so intra-package consts were false dead. Root cause was
         // trim_end_matches('.') reducing module "." to "" → early return.

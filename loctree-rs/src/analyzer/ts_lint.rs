@@ -18,7 +18,7 @@
 //! const value = response as UserResponse;
 //! ```
 //!
-//! Developed by The Loctree Team ⓒ 2025-2026
+//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI
 
 use super::is_test_file;
 use regex::Regex;

@@ -607,7 +607,7 @@ pub fn handle_twins_command(opts: &TwinsOptions, global: &GlobalOptions) -> Disp
     }
 
     // Run barrel chaos analysis (unless dead_only)
-    let barrel_analysis = if !opts.dead_only {
+    let mut barrel_analysis = if !opts.dead_only {
         Some(analyze_barrel_chaos(&snapshot))
     } else {
         None
@@ -616,35 +616,92 @@ pub fn handle_twins_command(opts: &TwinsOptions, global: &GlobalOptions) -> Disp
     // Detect route-level twins — runtime contract drift surface.
     // Source hak: 2026-05-18 Screenscribe HAK 6 (two FastAPI handlers
     // registered `POST /api/stt`, twin detector reported 0 groups).
-    let route_twins = if !opts.dead_only {
+    let mut route_twins = if !opts.dead_only {
         detect_route_twins(&snapshot.files)
     } else {
         Vec::new()
     };
 
+    let dead_count = dead_result.dead_parrots.len();
+    let twin_count = twins.len();
+    let route_twin_count = route_twins.len();
+    let same_language_count = twins
+        .iter()
+        .filter(|twin| matches!(categorize_twin(twin), TwinCategory::SameLanguage(_)))
+        .count();
+    let cross_language_count = twins
+        .iter()
+        .filter(|twin| matches!(categorize_twin(twin), TwinCategory::CrossLanguage))
+        .count();
+    let high_similarity_count = twins
+        .iter()
+        .filter(|twin| {
+            twin.signature_similarity
+                .map(|score| score >= 0.8)
+                .unwrap_or(false)
+        })
+        .count();
+    let barrel_count = barrel_analysis.as_ref().map_or(0, |analysis| {
+        analysis.missing_barrels.len()
+            + analysis.deep_chains.len()
+            + analysis.inconsistent_paths.len()
+    });
+    let total_findings = dead_count + twin_count + route_twin_count + barrel_count;
+
+    let mut nested_findings_truncated = false;
+    if let Some(limit) = opts.limit {
+        let mut remaining = limit;
+        dead_result.dead_parrots.truncate(remaining);
+        remaining = remaining.saturating_sub(dead_result.dead_parrots.len());
+        twins.truncate(remaining);
+        remaining = remaining.saturating_sub(twins.len());
+        route_twins.truncate(remaining);
+        remaining = remaining.saturating_sub(route_twins.len());
+        if let Some(analysis) = barrel_analysis.as_mut() {
+            analysis.missing_barrels.truncate(remaining);
+            remaining = remaining.saturating_sub(analysis.missing_barrels.len());
+            analysis.deep_chains.truncate(remaining);
+            remaining = remaining.saturating_sub(analysis.deep_chains.len());
+            analysis.inconsistent_paths.truncate(remaining);
+        }
+        for twin in &mut twins {
+            nested_findings_truncated |= twin.locations.len() > limit;
+            twin.locations.truncate(limit);
+        }
+        for twin in &mut route_twins {
+            nested_findings_truncated |= twin.locations.len() > limit;
+            twin.locations.truncate(limit);
+        }
+        if let Some(analysis) = barrel_analysis.as_mut() {
+            for chain in &mut analysis.deep_chains {
+                nested_findings_truncated |= chain.chain.len() > limit;
+                chain.chain.truncate(limit);
+            }
+            for import in &mut analysis.inconsistent_paths {
+                nested_findings_truncated |= import.alternative_paths.len() > limit;
+                import.alternative_paths.truncate(limit);
+            }
+        }
+    }
+    let returned_findings = dead_result.dead_parrots.len()
+        + twins.len()
+        + route_twins.len()
+        + barrel_analysis.as_ref().map_or(0, |analysis| {
+            analysis.missing_barrels.len()
+                + analysis.deep_chains.len()
+                + analysis.inconsistent_paths.len()
+        });
+
     // Finish spinner before printing results
     if let Some(s) = spinner {
         s.finish_success(&format!(
             "Found {} dead parrot(s), {} twin group(s), {} route twin(s)",
-            dead_result.dead_parrots.len(),
-            twins.len(),
-            route_twins.len(),
+            dead_count, twin_count, route_twin_count,
         ));
     }
 
     // JSON mode: emit single combined JSON object
     if global.json {
-        // Categorize twins
-        let (same_lang, cross_lang): (Vec<_>, Vec<_>) = twins
-            .iter()
-            .partition(|twin| matches!(categorize_twin(twin), TwinCategory::SameLanguage(_)));
-
-        // Count twins with high signature similarity
-        let high_similarity_count = twins
-            .iter()
-            .filter(|t| t.signature_similarity.map(|s| s >= 0.8).unwrap_or(false))
-            .count();
-
         let twin_to_json = |twin: &crate::analyzer::twins::ExactTwin| {
             let category = categorize_twin(twin);
             let mut json = serde_json::json!({
@@ -655,6 +712,9 @@ pub fn handle_twins_command(opts: &TwinsOptions, global: &GlobalOptions) -> Disp
                     TwinCategory::Namesake => "namesake".to_string(),
                 },
                 "class": twin.class,
+                "shape_match": twin.shape_match,
+                "single_module_target": twin.single_module_target,
+                "exclude_from_score": twin.exclude_from_score,
                 "action": crate::analyzer::twins::twin_action(twin),
                 "locations": twin.locations.iter().map(|loc| {
                     let mut loc_json = serde_json::json!({
@@ -693,7 +753,7 @@ pub fn handle_twins_command(opts: &TwinsOptions, global: &GlobalOptions) -> Disp
         });
 
         // Combined output
-        let output = serde_json::json!({
+        let mut output = serde_json::json!({
             "dead_parrots": dead_result.dead_parrots.iter().map(|e| {
                 serde_json::json!({
                     "name": e.name,
@@ -709,14 +769,26 @@ pub fn handle_twins_command(opts: &TwinsOptions, global: &GlobalOptions) -> Disp
             "summary": {
                 "total_symbols": dead_result.total_symbols,
                 "total_files": dead_result.total_files,
-                "dead_parrots": dead_result.dead_parrots.len(),
-                "twin_groups": twins.len(),
-                "route_twin_groups": route_twins.len(),
-                "same_language_groups": same_lang.len(),
-                "cross_language_groups": cross_lang.len(),
+                "dead_parrots": dead_count,
+                "twin_groups": twin_count,
+                "route_twin_groups": route_twin_count,
+                "barrel_findings": barrel_count,
+                "same_language_groups": same_language_count,
+                "cross_language_groups": cross_language_count,
                 "high_similarity_groups": high_similarity_count,
             }
         });
+        if let Some(limit) = opts.limit {
+            output["page"] = serde_json::json!({
+                "semantics": "global",
+                "limit": limit,
+                "returned": returned_findings,
+                "total": total_findings,
+                "has_more": returned_findings < total_findings,
+                "nested_item_limit": limit,
+                "nested_truncated": nested_findings_truncated,
+            });
+        }
 
         println!("{}", serde_json::to_string_pretty(&output).unwrap());
     } else {
@@ -740,6 +812,15 @@ pub fn handle_twins_command(opts: &TwinsOptions, global: &GlobalOptions) -> Disp
             if has_issues {
                 println!("{}", format_barrel_analysis(ba));
             }
+        }
+        if opts.limit.is_some() && returned_findings < total_findings {
+            println!(
+                "{} additional finding(s) omitted by the global --limit",
+                total_findings - returned_findings
+            );
+        }
+        if nested_findings_truncated {
+            println!("Nested finding locations were also capped by --limit");
         }
     }
 

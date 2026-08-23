@@ -1,0 +1,20 @@
+{
+  "name": "aicx-compact-recall",
+  "version": "0.2.0+codex.20260713",
+  "description": "Preserve and restore AICX conversation context across compaction.",
+  "author": {
+    "name": "VetCoders"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Aicx Compact Recall",
+    "shortDescription": "AICX extract before compact and recall after compact.",
+    "longDescription": "Runs the operator-owned AICX precompact and postcompact hooks without injecting session-start bootstrap context.",
+    "developerName": "VetCoders",
+    "category": "Productivity",
+    "capabilities": [
+      "Hooks"
+    ],
+    "defaultPrompt": "Preserve this session across compaction."
+  }
+}

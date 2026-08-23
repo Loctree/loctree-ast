@@ -2,7 +2,7 @@
 //!
 //! Loads `.loctree/snapshot.json` and watches for changes.
 //!
-//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by VetCoders ⓒ 2025-2026 VetCoders
+//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders ⓒ 2025-2026 Vetcoders
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -45,6 +45,21 @@ impl SnapshotState {
     /// The synchronous `Snapshot::load()` call runs on a blocking thread via
     /// `spawn_blocking` to avoid stalling the async LSP event loop.
     pub async fn load(&self, workspace_root: &Path) -> Result<(), SnapshotError> {
+        self.load_with_reclaimer(
+            workspace_root,
+            crate::memory::release_unused_allocator_memory,
+        )
+        .await
+    }
+
+    async fn load_with_reclaimer<F>(
+        &self,
+        workspace_root: &Path,
+        reclaimer: F,
+    ) -> Result<(), SnapshotError>
+    where
+        F: FnOnce() -> usize,
+    {
         let root = workspace_root.to_path_buf();
         let snapshot = tokio::task::spawn_blocking({
             let root = root.clone();
@@ -65,8 +80,21 @@ impl SnapshotState {
             workspace_root: root,
         };
 
-        let mut guard = self.inner.write().await;
-        *guard = Some(loaded);
+        {
+            let mut guard = self.inner.write().await;
+            *guard = Some(loaded);
+        }
+
+        // The previous snapshot and all deserialization temporaries have been
+        // dropped by this point. Reclaim only the allocator pages they left
+        // empty, after the new live snapshot is safely installed.
+        let released = reclaimer();
+        if released > 0 {
+            tracing::debug!(
+                allocator_bytes_released = released,
+                "released unused allocator pages after snapshot load"
+            );
+        }
 
         Ok(())
     }
@@ -570,6 +598,7 @@ mod tests {
     use super::*;
     use loctree::snapshot::{GraphEdge, Snapshot, project_cache_dir};
     use loctree::types::{ExportSymbol, FileAnalysis, ImportEntry, ImportKind};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
 
     fn build_export(name: &str, line: usize) -> ExportSymbol {
@@ -620,6 +649,27 @@ mod tests {
         write_snapshot(root, &snapshot);
         state.reload().await.expect("reload snapshot");
 
+        cleanup_cache(root);
+    }
+
+    #[tokio::test]
+    async fn snapshot_load_releases_unused_allocator_pages_after_swap() {
+        static RECLAIMS: AtomicUsize = AtomicUsize::new(0);
+
+        let temp = TempDir::new().expect("tempdir");
+        let root = temp.path();
+        let snapshot = Snapshot::new(vec![root.display().to_string()]);
+        write_snapshot(root, &snapshot);
+
+        RECLAIMS.store(0, Ordering::SeqCst);
+        let state = SnapshotState::new();
+        state
+            .load_with_reclaimer(root, || RECLAIMS.fetch_add(1, Ordering::SeqCst))
+            .await
+            .expect("load snapshot");
+
+        assert!(state.is_loaded().await);
+        assert_eq!(RECLAIMS.load(Ordering::SeqCst), 1);
         cleanup_cache(root);
     }
 

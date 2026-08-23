@@ -22,7 +22,7 @@
 //!   5. 100-edit benchmark — total wall time gate (<100ms) plus a parse
 //!      duration histogram so reports can carry p50/p99.
 //!
-//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by VetCoders ⓒ 2025-2026 VetCoders
+//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders ⓒ 2025-2026 Vetcoders
 
 use std::path::Path;
 use std::time::Instant;

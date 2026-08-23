@@ -24,9 +24,16 @@ use loctree::atlas::{
 };
 use loctree::snapshot::Snapshot;
 
+/// Leading segment of every emitted cursor; a cursor minted under a different
+/// version is rejected outright rather than reinterpreted.
 const CURSOR_VERSION: &str = "v1";
+/// How long a pagination cursor stays usable before the client is told to
+/// restart the walk from card zero.
 const CURSOR_TTL_SECS: i64 = 60 * 60;
 
+/// Per-process HMAC key for cursor signatures. Derived from a fresh UUID, the
+/// pid, and the boot instant, so cursors never survive a restart and cannot be
+/// forged by a client that has seen an earlier one.
 static CURSOR_SECRET: LazyLock<[u8; 32]> = LazyLock::new(|| {
     let mut hasher = Sha256::new();
     hasher.update(Uuid::new_v4().as_bytes());
@@ -37,6 +44,8 @@ static CURSOR_SECRET: LazyLock<[u8; 32]> = LazyLock::new(|| {
     hasher.finalize().into()
 });
 
+/// Query string accepted by `GET /context_pack`: the project to read, an
+/// optional signed cursor, and an optional comma-separated card allow-list.
 #[derive(Debug, Deserialize)]
 pub(crate) struct ContextPackQuery {
     project: String,
@@ -46,6 +55,7 @@ pub(crate) struct ContextPackQuery {
     cards: Option<String>,
 }
 
+/// One atlas card plus the cursor metadata needed to fetch the next one.
 #[derive(Debug, Serialize)]
 pub(crate) struct ContextPackResponse {
     pub section: usize,
@@ -56,6 +66,9 @@ pub(crate) struct ContextPackResponse {
     pub next_cursor: Option<String>,
 }
 
+/// Payload carried inside a signed cursor: which project and atlas revision the
+/// walk started against, the card order it was pinned to, the next index, and
+/// the expiry stamp.
 #[derive(Debug, Serialize, Deserialize)]
 struct CursorState {
     project: String,
@@ -65,6 +78,8 @@ struct CursorState {
     expires_at: i64,
 }
 
+/// A manifest card resolved into the id, title, and on-disk name the handler
+/// needs to serve it.
 #[derive(Debug, Clone)]
 struct SelectedCard {
     id: String,
@@ -72,6 +87,8 @@ struct SelectedCard {
     path: String,
 }
 
+/// Failure modes of `/context_pack`, each mapped onto an HTTP status by the
+/// [`IntoResponse`] impl below.
 #[derive(Debug)]
 pub(crate) enum ContextPackError {
     BadRequest(String),
@@ -92,6 +109,11 @@ impl IntoResponse for ContextPackError {
     }
 }
 
+/// Serve one atlas card per request, materializing the atlas on first use.
+///
+/// A cursor is honored only when its project, atlas fingerprint, and expiry all
+/// still match; any mismatch returns `410 Gone` so a client never stitches cards
+/// from two different atlas revisions into one context.
 pub(crate) async fn context_pack_handler(
     Query(query): Query<ContextPackQuery>,
 ) -> Result<Json<ContextPackResponse>, ContextPackError> {
@@ -124,6 +146,8 @@ pub(crate) async fn context_pack_handler(
     render_section(&project, &fingerprint, selected_cards, 0)
 }
 
+/// Read the card at `section`, then mint the next cursor when more cards remain.
+/// Pins the whole card list into the cursor so ordering cannot drift mid-walk.
 fn render_section(
     project: &Path,
     fingerprint: &str,
@@ -168,6 +192,8 @@ fn render_section(
     }))
 }
 
+/// Reject empty, NUL-bearing, and `..`-bearing project strings before any
+/// filesystem touch, then canonicalize and confirm the result is a directory.
 fn validate_project_path(input: &str) -> Result<PathBuf, ContextPackError> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
@@ -211,6 +237,8 @@ fn validate_project_path(input: &str) -> Result<PathBuf, ContextPackError> {
     Ok(canonical)
 }
 
+/// Return the project's atlas manifest, generating the atlas first when no
+/// manifest exists yet.
 fn load_or_materialize_manifest(project: &Path) -> Result<ContextAtlasManifest, ContextPackError> {
     let atlas_dir = atlas_dir_for_project(project);
     let manifest_path = atlas_dir.join("manifest.json");
@@ -220,6 +248,8 @@ fn load_or_materialize_manifest(project: &Path) -> Result<ContextAtlasManifest, 
     load_manifest(&manifest_path)
 }
 
+/// Scan the project, compose a full ContextPack, and write the atlas cards to
+/// disk so subsequent requests only read files.
 fn materialize_atlas(project: &Path) -> Result<(), ContextPackError> {
     let snapshot = load_or_scan_snapshot(project)?;
     let opts = ContextOptions {
@@ -252,6 +282,8 @@ fn load_or_scan_snapshot(project: &Path) -> Result<Snapshot, ContextPackError> {
     .map_err(|err| ContextPackError::Internal(format!("context atlas snapshot failed: {err}")))
 }
 
+/// Read and deserialize `manifest.json`, distinguishing a missing manifest
+/// (404) from an unreadable or malformed one (500).
 fn load_manifest(path: &Path) -> Result<ContextAtlasManifest, ContextPackError> {
     let content = fs::read_to_string(path).map_err(|err| match err.kind() {
         io::ErrorKind::NotFound => ContextPackError::NotFound(format!(
@@ -271,6 +303,9 @@ fn load_manifest(path: &Path) -> Result<ContextAtlasManifest, ContextPackError> 
     })
 }
 
+/// Resolve the requested card ids against the manifest, preserving caller order.
+/// An empty request selects every card in manifest order; an unknown id is a
+/// `400` rather than a silently shorter walk.
 fn select_cards(
     manifest: &ContextAtlasManifest,
     cards: Option<String>,
@@ -369,6 +404,9 @@ fn read_card(atlas_dir: &Path, card_name: &str) -> Result<String, ContextPackErr
     })
 }
 
+/// Digest the manifest's identity and every card's id/path/size, so a
+/// regenerated atlas produces a different fingerprint and invalidates any
+/// cursor still pointing at the old card set.
 fn atlas_fingerprint(manifest: &ContextAtlasManifest) -> Result<String, ContextPackError> {
     let mut hasher = Sha256::new();
     hasher.update(manifest.protocol.as_bytes());
@@ -390,6 +428,7 @@ fn atlas_fingerprint(manifest: &ContextAtlasManifest) -> Result<String, ContextP
     Ok(hex_encode(&hasher.finalize()))
 }
 
+/// Serialize the walk state to `v1.<hex payload>.<hmac>`.
 fn encode_cursor(state: &CursorState) -> Result<String, ContextPackError> {
     let payload = serde_json::to_vec(state)
         .map_err(|err| ContextPackError::Internal(format!("failed to encode cursor: {err}")))?;
@@ -398,6 +437,8 @@ fn encode_cursor(state: &CursorState) -> Result<String, ContextPackError> {
     Ok(format!("{CURSOR_VERSION}.{payload_hex}.{signature}"))
 }
 
+/// Verify a cursor's version and HMAC in constant time before deserializing it,
+/// so a tampered payload is never parsed.
 fn decode_cursor(cursor: &str) -> Result<CursorState, ContextPackError> {
     let mut parts = cursor.split('.');
     let version = parts.next();
@@ -423,6 +464,8 @@ fn decode_cursor(cursor: &str) -> Result<CursorState, ContextPackError> {
         .map_err(|err| ContextPackError::BadRequest(format!("invalid cursor payload: {err}")))
 }
 
+/// Hand-rolled HMAC-SHA256 over the cursor payload — keeps cursor signing to
+/// the `sha2` dependency already present, with no extra crate.
 fn hmac_sha256_hex(key: &[u8], message: &[u8]) -> String {
     const BLOCK: usize = 64;
     let mut normalized = [0_u8; BLOCK];
@@ -451,10 +494,13 @@ fn hmac_sha256_hex(key: &[u8], message: &[u8]) -> String {
     hex_encode(&outer.finalize())
 }
 
+/// Lowercase hex rendering used for cursor payloads and signatures.
 fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+/// Parse a hex cursor payload back to bytes, rejecting odd lengths and
+/// non-hex digits as a bad request.
 fn hex_decode(input: &str) -> Result<Vec<u8>, ContextPackError> {
     if !input.len().is_multiple_of(2) {
         return Err(ContextPackError::BadRequest(
@@ -462,7 +508,7 @@ fn hex_decode(input: &str) -> Result<Vec<u8>, ContextPackError> {
         ));
     }
     let mut out = Vec::with_capacity(input.len() / 2);
-    for chunk in input.as_bytes().chunks_exact(2) {
+    for chunk in input.as_bytes().as_chunks::<2>().0 {
         let text = std::str::from_utf8(chunk).map_err(|_| {
             ContextPackError::BadRequest("cursor payload is not valid UTF-8".to_string())
         })?;
@@ -474,6 +520,8 @@ fn hex_decode(input: &str) -> Result<Vec<u8>, ContextPackError> {
     Ok(out)
 }
 
+/// Compare two byte slices without an early exit, so cursor signature checks
+/// leak no timing information about where they diverged.
 fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
     if left.len() != right.len() {
         return false;
@@ -484,6 +532,7 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
         == 0
 }
 
+/// Current Unix seconds, the clock cursor expiry is measured against.
 fn now_timestamp() -> i64 {
     chrono::Utc::now().timestamp()
 }

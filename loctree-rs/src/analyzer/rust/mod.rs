@@ -385,6 +385,117 @@ fn collect_rust_local_symbols(content: &str, exported_names: &HashSet<String>) -
     locals
 }
 
+fn collect_rust_enum_variants(content: &str) -> Vec<LocalSymbol> {
+    static ENUM_HEAD: OnceLock<Regex> = OnceLock::new();
+    let enum_head = ENUM_HEAD.get_or_init(|| {
+        Regex::new(r#"(?m)^\s*(?:pub\s*(?:\([^)]*\)\s*)?)?enum\s+([A-Za-z_][A-Za-z0-9_]*)[^;{]*\{"#)
+            .expect("valid rust enum head regex")
+    });
+    let stripped = strip_comments(content);
+    let bytes = stripped.as_bytes();
+    let mut variants = Vec::new();
+
+    for captures in enum_head.captures_iter(&stripped) {
+        let Some(owner) = captures.get(1) else {
+            continue;
+        };
+        let Some(head) = captures.get(0) else {
+            continue;
+        };
+        let body_start = head.end();
+        let mut brace_depth = 1i32;
+        let mut body_end = stripped.len();
+        for (offset, byte) in bytes.iter().enumerate().skip(body_start) {
+            match byte {
+                b'{' => brace_depth += 1,
+                b'}' => {
+                    brace_depth -= 1;
+                    if brace_depth == 0 {
+                        body_end = offset;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let body = &stripped[body_start..body_end];
+        let mut segment_start = 0usize;
+        let mut paren_depth = 0i32;
+        let mut bracket_depth = 0i32;
+        let mut nested_brace_depth = 0i32;
+        for (offset, byte) in body
+            .bytes()
+            .enumerate()
+            .chain(std::iter::once((body.len(), b',')))
+        {
+            match byte {
+                b'(' => paren_depth += 1,
+                b')' => paren_depth = paren_depth.saturating_sub(1),
+                b'[' => bracket_depth += 1,
+                b']' => bracket_depth = bracket_depth.saturating_sub(1),
+                b'{' => nested_brace_depth += 1,
+                b'}' => nested_brace_depth = nested_brace_depth.saturating_sub(1),
+                b',' if paren_depth == 0 && bracket_depth == 0 && nested_brace_depth == 0 => {
+                    if let Some((name, relative_offset)) =
+                        rust_enum_variant_name(&body[segment_start..offset])
+                    {
+                        let absolute_offset = body_start + segment_start + relative_offset;
+                        let line = offset_to_line(&stripped, absolute_offset);
+                        variants.push(LocalSymbol {
+                            name: name.to_string(),
+                            kind: "enum_variant".to_string(),
+                            line: Some(line),
+                            context: format!("enum variant {}::{}", owner.as_str(), name),
+                            is_exported: false,
+                        });
+                    }
+                    segment_start = offset.saturating_add(1);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    variants
+}
+
+fn rust_enum_variant_name(segment: &str) -> Option<(&str, usize)> {
+    let mut offset = 0usize;
+    loop {
+        offset += segment[offset..]
+            .find(|ch: char| !ch.is_whitespace())
+            .unwrap_or(segment.len().saturating_sub(offset));
+        let rest = segment.get(offset..)?;
+        if rest.is_empty() {
+            return None;
+        }
+        if let Some(attribute) = rest.strip_prefix("#[") {
+            let close = find_balanced_bracket(attribute);
+            if close == 0 && !attribute.starts_with(']') {
+                return None;
+            }
+            offset += 2 + close + 1;
+            continue;
+        }
+        break;
+    }
+
+    let rest = segment.get(offset..)?;
+    let ident_len = rest
+        .char_indices()
+        .take_while(|(index, ch)| {
+            if *index == 0 {
+                ch.is_ascii_alphabetic() || *ch == '_'
+            } else {
+                ch.is_ascii_alphanumeric() || *ch == '_'
+            }
+        })
+        .map(|(index, ch)| index + ch.len_utf8())
+        .last()?;
+    Some((&rest[..ident_len], offset))
+}
+
 fn collect_symbol_usages_from_lines(
     lines: &[&str],
     names: &HashSet<String>,
@@ -606,7 +717,7 @@ pub(crate) fn analyze_rust_file(
     // CrateModuleMap resolution + our strip pass-through, this emits the true
     // consumer edges so impact/slice/who-imports report the real importer set
     // (e.g. the CLI handler for watch.rs). Dupe guard prevents double-count.
-    // See loctree-feedback.md:2900,3144 and AGENTS "fix the ENGINE".
+    // See loctree-fail.md:2900,3144 and AGENTS "fix the ENGINE".
     for caps in regex_rust_use().captures_iter(content) {
         let source = caps
             .get(1)
@@ -641,6 +752,10 @@ pub(crate) fn analyze_rust_file(
     // This creates a dependency edge from the declaring file to the module file
     for caps in regex_rust_mod_decl().captures_iter(&production_content) {
         if let Some(mod_name) = caps.get(2) {
+            // Anchor the declaration on its own line: `where-symbol` answers
+            // module names with this site (a `mod x;` IS where `x` is defined
+            // in Rust's namespace), and a site without a line is not an answer.
+            let decl_line = offset_to_line(&production_content, mod_name.start());
             let mod_name = mod_name.as_str();
 
             // Check for #[path = "..."] attribute (group 1)
@@ -657,6 +772,7 @@ pub(crate) fn analyze_rust_file(
 
             let mut imp = ImportEntry::new(source.clone(), ImportKind::Static);
             imp.raw_path = source;
+            imp.line = Some(decl_line);
             imp.is_crate_relative = false;
             imp.is_super_relative = false;
             imp.is_self_relative = false;
@@ -716,7 +832,10 @@ pub(crate) fn analyze_rust_file(
     }
 
     let exported_names: HashSet<String> = analysis.exports.iter().map(|e| e.name.clone()).collect();
-    let locals = collect_rust_local_symbols(content, &exported_names);
+    let mut locals = collect_rust_local_symbols(content, &exported_names);
+    locals.extend(collect_rust_enum_variants(content));
+    locals.sort_by(|a, b| a.line.cmp(&b.line).then_with(|| a.name.cmp(&b.name)));
+    locals.dedup_by(|a, b| a.line == b.line && a.name == b.name);
     if !locals.is_empty() {
         analysis.local_symbols = locals;
     }
@@ -1202,6 +1321,37 @@ fn call_local() {
             analysis.symbol_usages.iter().any(|u| u.name == "helper"),
             "helper should appear in symbol_usages"
         );
+    }
+
+    #[test]
+    fn rust_enum_variants_are_indexed_with_honest_kind_and_owner() {
+        let content = r#"
+#[derive(clap::Subcommand)]
+pub enum Commands {
+    #[command(alias = "conv")]
+    Conversations,
+    Extract { path: String },
+    Claims(u8),
+    Results = 7,
+}
+"#;
+
+        let analysis = analyze_rust_file(content, "src/main.rs".to_string(), &[]);
+        for (name, line) in [
+            ("Conversations", 5),
+            ("Extract", 6),
+            ("Claims", 7),
+            ("Results", 8),
+        ] {
+            let variant = analysis
+                .local_symbols
+                .iter()
+                .find(|symbol| symbol.name == name)
+                .unwrap_or_else(|| panic!("{name} should be indexed as an enum variant"));
+            assert_eq!(variant.kind, "enum_variant");
+            assert_eq!(variant.line, Some(line));
+            assert_eq!(variant.context, format!("enum variant Commands::{name}"));
+        }
     }
 
     #[test]

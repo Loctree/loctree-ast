@@ -1,0 +1,205 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/Loctree/loctree-suite/blob/main/schemas/loctree.prism.v1.schema.json",
+  "title": "loctree.prism.v1",
+  "description": "Canonical wire shape emitted by `loct prism --json` and the `loctree-mcp` `prism` tool. Consumed by `vc-polarize` runner (vibecrafted/skills/vc-agents/shell/vetcoders.sh) and `vc-operator` (src/polarize.rs) for band-action gating (0..4 abort / 5..8 memo / 9..12 pass / 13..15 doctrine). Schema bumps require a new version string and a refreshed golden fixture under `loctree-rs/tests/fixtures/`.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "project_root",
+    "tasks",
+    "total_score",
+    "band",
+    "axes",
+    "task_summaries",
+    "overlap",
+    "recommendation"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "loctree.prism.v1",
+      "description": "Pinned schema identifier. Consumers MUST fail closed on unknown values."
+    },
+    "project_root": {
+      "type": "string",
+      "description": "Canonical (canonicalized when possible) absolute path to the project the prism scoring was computed against."
+    },
+    "tasks": {
+      "type": "array",
+      "description": "Task framings supplied to prism. At least two entries are required for overlap scoring.",
+      "minItems": 2,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "total_score": {
+      "type": "integer",
+      "description": "Sum of the five axis scores. Drives band-action mapping in downstream consumers.",
+      "minimum": 0,
+      "maximum": 15
+    },
+    "band": {
+      "type": "string",
+      "description": "Human-readable band label (English). Authoritative numeric thresholds: 0..4, 5..8, 9..12, 13..15. Action keywords (abort/memo/pass/doctrine) are derived from the score by consumers; this string is the operator-facing summary."
+    },
+    "axes": {
+      "type": "array",
+      "description": "Per-axis score breakdown. Five axes always present in a fixed order: spread, runtime_centrality, authority_diversity, drift_risk, closure_evidence.",
+      "minItems": 5,
+      "maxItems": 5,
+      "items": { "$ref": "#/definitions/AxisScore" }
+    },
+    "task_summaries": {
+      "type": "array",
+      "description": "One summary per task framing. Order matches `tasks`.",
+      "items": { "$ref": "#/definitions/TaskSummary" }
+    },
+    "overlap": { "$ref": "#/definitions/Overlap" },
+    "recommendation": {
+      "type": "string",
+      "description": "Human-readable English recommendation from loctree. NOT the action keyword consumed by gating logic — that is derived from `total_score`."
+    }
+  },
+  "definitions": {
+    "AxisScore": {
+      "type": "object",
+      "required": ["axis", "score", "evidence"],
+      "additionalProperties": false,
+      "properties": {
+        "axis": {
+          "type": "string",
+          "enum": [
+            "spread",
+            "runtime_centrality",
+            "authority_diversity",
+            "drift_risk",
+            "closure_evidence"
+          ],
+          "description": "Canonical axis identifier."
+        },
+        "score": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3,
+          "description": "Per-axis score. Sum of the five axes equals `total_score`."
+        },
+        "evidence": {
+          "type": "array",
+          "description": "Free-form evidence strings supporting the score. Stable order, language-tagged where applicable.",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "TaskSummary": {
+      "type": "object",
+      "required": [
+        "task",
+        "file_count",
+        "runtime_signal_count",
+        "memory_entry_count",
+        "low_lexical_memory_count",
+        "surface_kinds",
+        "authority_labels",
+        "top_files",
+        "verification_gates",
+        "likely_tests",
+        "cache_scope",
+        "stale_snapshot",
+        "dirty_worktree"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "task": {
+          "type": "string",
+          "description": "Task framing string as supplied to prism."
+        },
+        "file_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "runtime_signal_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "memory_entry_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Aicx memory entries linked to this task framing (0 if aicx disabled or unreachable)."
+        },
+        "low_lexical_memory_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Memory entries flagged as low-lexical (drift risk signal)."
+        },
+        "surface_kinds": {
+          "type": "array",
+          "description": "Surface taxonomy union for this task: code / runtime / tests / docs / etc.",
+          "items": { "type": "string" }
+        },
+        "authority_labels": {
+          "type": "array",
+          "description": "Distinct authority labels observed (`repo_verified`, `loctree_derived`, `aicx_operator`, `aicx_failure`, `semantic_guess`).",
+          "items": { "type": "string" }
+        },
+        "top_files": {
+          "type": "array",
+          "description": "Files most central to this task framing, sorted by relevance.",
+          "items": { "type": "string" }
+        },
+        "verification_gates": {
+          "type": "array",
+          "description": "Verification gate strings touching this task surface (e.g. `cargo test`, `pnpm vitest`).",
+          "items": { "type": "string" }
+        },
+        "likely_tests": {
+          "type": "array",
+          "description": "Test files likely covering this task framing, by static heuristic.",
+          "items": { "type": "string" }
+        },
+        "cache_scope": {
+          "type": "string",
+          "enum": ["clean", "stale", "dirty", "missing"],
+          "description": "Snapshot/index cache scope for this task at scoring time."
+        },
+        "stale_snapshot": {
+          "type": "boolean",
+          "description": "True if loctree snapshot used for this task summary is older than the working tree's last edit."
+        },
+        "dirty_worktree": {
+          "type": "boolean",
+          "description": "True if the working tree had uncommitted changes affecting files in `top_files` at scoring time."
+        }
+      }
+    },
+    "Overlap": {
+      "type": "object",
+      "required": [
+        "union_files",
+        "shared_files_all_tasks",
+        "average_pairwise_jaccard"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "union_files": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Cardinality of the union of `top_files` across all task summaries."
+        },
+        "shared_files_all_tasks": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Cardinality of the intersection of `top_files` across all task summaries."
+        },
+        "average_pairwise_jaccard": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "description": "Average pairwise Jaccard similarity over `top_files` sets; 1.0 means identical task framings, 0.0 means fully disjoint surfaces."
+        }
+      }
+    }
+  }
+}

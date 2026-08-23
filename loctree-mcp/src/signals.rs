@@ -9,7 +9,7 @@
 //! `EPIPE` errors that the surrounding code can handle, instead of being
 //! killed by the kernel.
 //!
-//! Vibecrafted with AI Agents by VetCoders (c)2024-2026 LibraxisAI
+//! Vibecrafted with AI Agents by Vetcoders (c)2024-2026 LibraxisAI
 
 use std::io::Write as _;
 use std::panic;
@@ -62,11 +62,14 @@ pub(crate) fn install_panic_hook() {
 /// surrounding code can handle the disconnect gracefully.
 #[cfg(unix)]
 pub(crate) fn ignore_sigpipe() {
+    // SAFETY: installing SIG_IGN for SIGPIPE is async-signal-safe, takes no
+    // handler pointer, and runs once at startup before any thread exists.
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_IGN);
     }
 }
 
+/// No-op on platforms without SIGPIPE, so callers stay unconditional.
 #[cfg(not(unix))]
 pub(crate) fn ignore_sigpipe() {
     // No-op on non-Unix platforms.

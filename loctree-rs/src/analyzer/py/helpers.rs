@@ -1,6 +1,6 @@
 //! Byte manipulation helper functions for Python parsing.
 //!
-//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents ⓒ 2025-2026 Loctree Team
+//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI
 
 /// True when `name` is a valid Python identifier (`[A-Za-z_][A-Za-z0-9_]*`).
 ///

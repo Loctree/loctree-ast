@@ -36,7 +36,7 @@
 //! through `loctree-ast` reparsing the on-disk file stays as the safety net
 //! for closed documents and unsupported languages.
 //!
-//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by VetCoders ⓒ 2025-2026 VetCoders
+//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders ⓒ 2025-2026 Vetcoders
 
 use std::collections::HashMap;
 use std::path::Path;

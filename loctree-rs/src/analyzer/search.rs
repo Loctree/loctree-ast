@@ -9,6 +9,7 @@ use crate::analyzer::dead_parrots::{
     DeadFilterConfig, SimilarityCandidate, SymbolMatchKind, SymbolSearchResult, find_dead_exports,
     find_similar, search_symbol,
 };
+use crate::analyzer::occurrences::IndexedUniverse;
 use crate::colors::Painter;
 use crate::types::{ColorMode, FileAnalysis, OutputMode};
 use serde::Serialize;
@@ -38,6 +39,8 @@ pub struct SuppressionMatch {
 #[derive(Debug, Serialize)]
 pub struct SearchResults {
     pub query: String,
+    /// Explicit indexed universe behind this discovery result.
+    pub universe: IndexedUniverse,
     pub symbol_matches: SymbolSearchResult,
     pub param_matches: Vec<ParamMatch>,
     pub semantic_matches: Vec<SimilarityCandidate>,
@@ -48,6 +51,41 @@ pub struct SearchResults {
     /// Files containing 2+ different query terms (multi-query cross-match)
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub cross_matches: Vec<CrossMatchFile>,
+}
+
+impl SearchResults {
+    /// Number of emitted discovery findings across every result category.
+    pub fn finding_count(&self) -> usize {
+        self.finding_count_for(false, false, false)
+    }
+
+    /// Number of findings visible through one public discovery projection.
+    pub fn finding_count_for(
+        &self,
+        symbol_only: bool,
+        dead_only: bool,
+        semantic_only: bool,
+    ) -> usize {
+        let mut count = 0;
+        if !dead_only && !semantic_only {
+            count += self
+                .symbol_matches
+                .files
+                .iter()
+                .map(|file| file.matches.len())
+                .sum::<usize>();
+            count += self.param_matches.len();
+            count += self.suppression_matches.len();
+            count += self.cross_matches.len();
+        }
+        if !dead_only && !symbol_only {
+            count += self.semantic_matches.len();
+        }
+        if !symbol_only && !semantic_only {
+            count += self.dead_status.dead_in_files.len();
+        }
+        count
+    }
 }
 
 /// A file that matches multiple query terms (cross-match)
@@ -407,6 +445,7 @@ pub fn run_search(query: &str, analyses: &[FileAnalysis]) -> SearchResults {
 
     SearchResults {
         query: query.to_string(),
+        universe: IndexedUniverse::from_analyses(analyses),
         symbol_matches,
         param_matches,
         semantic_matches,
@@ -878,25 +917,46 @@ fn print_search_json(
     dead_only: bool,
     semantic_only: bool,
 ) {
+    let emitted = results.finding_count_for(symbol_only, dead_only, semantic_only);
     let output = if symbol_only {
         json!({
             "query": results.query,
+            "universe": results.universe,
+            "total": emitted,
+            "emitted": emitted,
+            "offset": 0,
+            "truncated": false,
             "symbol_matches": results.symbol_matches,
             "param_matches": results.param_matches,
         })
     } else if dead_only {
         json!({
             "query": results.query,
+            "universe": results.universe,
+            "total": emitted,
+            "emitted": emitted,
+            "offset": 0,
+            "truncated": false,
             "dead_status": results.dead_status,
         })
     } else if semantic_only {
         json!({
             "query": results.query,
+            "universe": results.universe,
+            "total": emitted,
+            "emitted": emitted,
+            "offset": 0,
+            "truncated": false,
             "semantic_matches": results.semantic_matches,
         })
     } else {
         json!({
             "query": results.query,
+            "universe": results.universe,
+            "total": emitted,
+            "emitted": emitted,
+            "offset": 0,
+            "truncated": false,
             "symbol_matches": results.symbol_matches,
             "param_matches": results.param_matches,
             "semantic_matches": results.semantic_matches,

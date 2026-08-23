@@ -43,16 +43,22 @@ impl LangExtractor for PyExtractor {
     }
 }
 
+/// Tree-sitter pattern capturing every Python call node and its callee.
 const CALLS_QUERY: &str = r#"
 (call
   function: (_) @callee) @call
 "#;
 
+/// Compiles the Python calls query once per process and lends out the shared
+/// instance.
 fn py_query_calls() -> &'static Query {
     static Q: OnceLock<Query> = OnceLock::new();
     Q.get_or_init(|| Query::new(&tree_sitter_python::LANGUAGE.into(), CALLS_QUERY).unwrap())
 }
 
+/// Treats every module-level definition as an export: `def`, `class`, decorated
+/// definitions and top-level assignments, with `__all__` routed to its own form.
+/// Nested definitions are deliberately skipped — only the module surface counts.
 fn extract_exports(tree: &LoctreeTree) -> Vec<ExportSymbol> {
     let mut out = Vec::new();
     let root = tree.tree.root_node();
@@ -89,6 +95,8 @@ fn extract_exports(tree: &LoctreeTree) -> Vec<ExportSymbol> {
     out
 }
 
+/// Records a named `def` / `class` node as an export spanning the whole
+/// definition; silently skips nodes that carry no `name` field.
 fn push_definition_export(out: &mut Vec<ExportSymbol>, node: &Node, kind: &str, source: &[u8]) {
     let Some(name_node) = node.child_by_field_name("name") else {
         return;
@@ -103,6 +111,8 @@ fn push_definition_export(out: &mut Vec<ExportSymbol>, node: &Node, kind: &str, 
     });
 }
 
+/// Records module-level assignments as `const` exports, diverting a lone
+/// `__all__ = [...]` binding into the dunder-all listing instead.
 fn push_assignment_exports(out: &mut Vec<ExportSymbol>, assignment: &Node, source: &[u8]) {
     let Some(left) = assignment.child_by_field_name("left") else {
         return;
@@ -127,6 +137,8 @@ fn push_assignment_exports(out: &mut Vec<ExportSymbol>, assignment: &Node, sourc
     }
 }
 
+/// Expands `__all__ = [...]` / `(...)` into one export per listed string, tagged
+/// `kind = "all"` so consumers can tell a declared export from an inferred one.
 fn push_dunder_all_exports(out: &mut Vec<ExportSymbol>, assignment: &Node, source: &[u8]) {
     let Some(right) = assignment.child_by_field_name("right") else {
         return;
@@ -149,6 +161,8 @@ fn push_dunder_all_exports(out: &mut Vec<ExportSymbol>, assignment: &Node, sourc
     }
 }
 
+/// Collects the identifiers bound on an assignment's left-hand side, flattening
+/// tuple and list destructuring patterns into a flat name list.
 fn assigned_names(left: &Node, source: &[u8]) -> Vec<String> {
     match left.kind() {
         "identifier" => vec![node_text(left, source).to_string()],
@@ -163,6 +177,8 @@ fn assigned_names(left: &Node, source: &[u8]) -> Vec<String> {
     }
 }
 
+/// Recursively gathers every string literal under a node, unquoted — used to read
+/// the contents of an `__all__` sequence.
 fn collect_string_literals(node: &Node, source: &[u8], out: &mut Vec<String>) {
     if node.kind() == "string" {
         out.push(strip_python_string_quotes(node_text(node, source)).to_string());
@@ -175,6 +191,8 @@ fn collect_string_literals(node: &Node, source: &[u8], out: &mut Vec<String>) {
     }
 }
 
+/// Emits one `ImportEntry` per module-level import: `import ...`,
+/// `from ... import ...` and `from __future__ import ...`.
 fn extract_imports(tree: &LoctreeTree) -> Vec<ImportEntry> {
     let mut out = Vec::new();
     let root = tree.tree.root_node();
@@ -193,6 +211,8 @@ fn extract_imports(tree: &LoctreeTree) -> Vec<ImportEntry> {
     out
 }
 
+/// Handles plain `import a.b.c` and `import x as y`, one entry per module named
+/// in the statement.
 fn push_import_statement(out: &mut Vec<ImportEntry>, stmt: &Node, source: &[u8]) {
     let mut cursor = stmt.walk();
     for child in stmt.children(&mut cursor).filter(|child| child.is_named()) {
@@ -222,6 +242,8 @@ fn push_import_statement(out: &mut Vec<ImportEntry>, stmt: &Node, source: &[u8])
     }
 }
 
+/// Handles `from <module> import ...`, substituting `__future__` as the module
+/// name for future-import statements.
 fn push_import_from_statement(out: &mut Vec<ImportEntry>, stmt: &Node, source: &[u8]) {
     let source_name = if stmt.kind() == "future_import_statement" {
         "__future__".to_string()
@@ -234,6 +256,8 @@ fn push_import_from_statement(out: &mut Vec<ImportEntry>, stmt: &Node, source: &
     push_import_entry(out, stmt, source_name, symbols);
 }
 
+/// Collects the names a `from ... import` brings into scope, skipping the
+/// module-name node itself and mapping `import *` onto a wildcard binding.
 fn imported_symbols(stmt: &Node, source: &[u8]) -> Vec<ImportBinding> {
     let mut symbols = Vec::new();
     let mut cursor = stmt.walk();
@@ -265,6 +289,7 @@ fn imported_symbols(stmt: &Node, source: &[u8]) -> Vec<ImportBinding> {
     symbols
 }
 
+/// Appends an `ImportEntry` carrying the statement's line and byte range.
 fn push_import_entry(
     out: &mut Vec<ImportEntry>,
     stmt: &Node,
@@ -280,6 +305,8 @@ fn push_import_entry(
     });
 }
 
+/// Binds a dotted module import under its first segment — the name Python
+/// actually puts in scope — while keeping the full path as `imported`.
 fn module_binding(module: String) -> ImportBinding {
     let local = module.split('.').next().unwrap_or(&module).to_string();
     ImportBinding {
@@ -290,6 +317,8 @@ fn module_binding(module: String) -> ImportBinding {
     }
 }
 
+/// Binds an aliased module import under its alias, keeping the original module
+/// path as `imported`.
 fn alias_binding(local_name: String, imported: String) -> ImportBinding {
     ImportBinding {
         local_name,
@@ -299,6 +328,7 @@ fn alias_binding(local_name: String, imported: String) -> ImportBinding {
     }
 }
 
+/// Binds a single name pulled out of a module by `from ... import`.
 fn named_binding(local_name: String, imported: Option<String>) -> ImportBinding {
     ImportBinding {
         local_name,
@@ -308,6 +338,8 @@ fn named_binding(local_name: String, imported: Option<String>) -> ImportBinding 
     }
 }
 
+/// Emits a `CallEntry` for every call node in the tree, recording the full callee
+/// text alongside the identifier actually being invoked.
 fn extract_calls(tree: &LoctreeTree) -> Vec<CallEntry> {
     let query = py_query_calls();
     let capture_names = query.capture_names();
@@ -344,6 +376,8 @@ fn extract_calls(tree: &LoctreeTree) -> Vec<CallEntry> {
     out
 }
 
+/// Reduces a Python callee to the identifier actually called — the attribute for
+/// `obj.method`, the node itself for a bare name.
 fn trailing_identifier(callee: &Node, source: &[u8]) -> Option<String> {
     match callee.kind() {
         "identifier" => Some(node_text(callee, source).to_string()),
@@ -355,23 +389,30 @@ fn trailing_identifier(callee: &Node, source: &[u8]) -> Option<String> {
     }
 }
 
+/// Returns the first direct child with the given node kind.
 fn first_child_of_kind<'tree>(node: &Node<'tree>, kind: &str) -> Option<Node<'tree>> {
     let mut cursor = node.walk();
     node.children(&mut cursor)
         .find(|child| child.kind() == kind)
 }
 
+/// Tests whether `child` is exactly the node stored in `parent`'s named field —
+/// used to skip the module-name node while walking a `from ... import`.
 fn child_by_field_eq(parent: &Node, field: &str, child: &Node) -> bool {
     parent
         .child_by_field_name(field)
         .is_some_and(|field_child| field_child.id() == child.id())
 }
 
+/// Borrows a node's source text, yielding an empty string rather than panicking
+/// when the byte range is not valid UTF-8.
 fn node_text<'a>(node: &Node, source: &'a [u8]) -> &'a str {
     let range = node.byte_range();
     std::str::from_utf8(&source[range.start..range.end]).unwrap_or("")
 }
 
+/// Strips Python string quoting — triple quotes first, then a single matching
+/// pair — tolerating `r` / `b` / `f` prefixes before the opening quote.
 fn strip_python_string_quotes(raw: &str) -> &str {
     let trimmed = raw.trim();
     let bytes = trimmed.as_bytes();

@@ -1,0 +1,24 @@
+#!/bin/sh
+# Vibecrafted pre-commit hook — non-mutating checks only.
+# Verifies workspace Rust formatting when any .rs file is staged; everything
+# heavier (clippy, tests, cycles) is deferred to `make preflight`.
+set -e
+
+# Get repo root
+REPO_ROOT=$(git rev-parse --show-toplevel)
+cd "$REPO_ROOT"
+
+echo "=== Pre-commit (non-mutating checks) ==="
+
+# Check if any Rust files are staged
+STAGED_RS=$(git diff --cached --name-only --diff-filter=ACM | grep '\.rs$' || true)
+
+if [ -n "$STAGED_RS" ]; then
+  echo "Checking Rust formatting across the workspace..."
+  cargo fmt --all -- --check || {
+    echo "Rust formatting issues. Run: make fmt"
+    exit 1
+  }
+fi
+
+echo "Pre-commit checks passed. Run 'make preflight' before a PR or release."

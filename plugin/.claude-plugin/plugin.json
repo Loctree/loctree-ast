@@ -1,0 +1,14 @@
+{
+  "name": "loctree-deprecated-redirect",
+  "version": "0.0.0-deprecated",
+  "description": "DEPRECATED stub. Canonical Claude/Codex agent plugin is loctree-suite/loctree-plugin/. Do not install this path.",
+  "author": {
+    "name": "VetCoders",
+    "email": "agents@vetcoders.io",
+    "url": "https://vetcoders.io"
+  },
+  "homepage": "https://github.com/Loctree/loctree-suite/tree/main/loctree-plugin",
+  "repository": "https://github.com/Loctree/loctree-suite",
+  "license": "MIT",
+  "keywords": ["deprecated", "redirect", "loctree"]
+}

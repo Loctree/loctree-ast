@@ -211,6 +211,39 @@ fn jaq_key_to_string(key: &jaq_json::Val) -> String {
     }
 }
 
+/// Extract the top-level object key a filter opens with — but only when a miss
+/// on that key is a real miss.
+///
+/// Only the FIRST path segment is reported. Deeper nulls are legal jq: a filter
+/// that walks into optional data is *supposed* to answer `null`, and turning
+/// that into an error would break every compatible filter below the first hop.
+///
+/// Returns `None` when the user already said "silence is fine" *about the
+/// first segment*:
+/// - `.` / `. | keys` / `keys` — no leading key at all
+/// - `.foo?` — the `?` IS the request for a quiet miss
+/// - `.foo // x` — an explicit alternative is already supplied
+///
+/// The opt-out must sit directly on the first segment. In `.metadata.git_repo?`
+/// the `?` guards the *second* hop, so a missing `.metadata` is still a real
+/// miss and is still reported — otherwise a `?` five hops down would silently
+/// re-hide the very surface this is here to expose.
+pub fn leading_top_level_key(filter: &str) -> Option<String> {
+    let rest = filter.trim_start().strip_prefix('.')?;
+    let first = rest.chars().next()?;
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return None;
+    }
+    let end = rest
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .unwrap_or(rest.len());
+    let tail = rest[end..].trim_start();
+    if tail.starts_with('?') || tail.starts_with("//") {
+        return None;
+    }
+    Some(rest[..end].to_string())
+}
+
 /// Format output based on options
 pub fn format_output(val: &Value, raw: bool, compact: bool) -> String {
     if raw {
@@ -303,6 +336,48 @@ mod tests {
         let result = executor.execute("$name", &input, &vars, &[]).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0], json!("Alice"));
+    }
+
+    #[test]
+    fn leading_key_is_reported_for_a_plain_top_level_miss() {
+        assert_eq!(leading_top_level_key(".summary"), Some("summary".into()));
+        assert_eq!(
+            leading_top_level_key(".summary | {a: .b}"),
+            Some("summary".into())
+        );
+        assert_eq!(leading_top_level_key(".cycles[:2]"), Some("cycles".into()));
+        assert_eq!(
+            leading_top_level_key(" .files | length"),
+            Some("files".into())
+        );
+        assert_eq!(
+            leading_top_level_key(".metadata.languages"),
+            Some("metadata".into())
+        );
+        assert_eq!(
+            leading_top_level_key(".dead_parrots[]"),
+            Some("dead_parrots".into())
+        );
+        // The `?` here guards `.git_repo`, not `.metadata` — a missing
+        // `.metadata` stays a reportable miss.
+        assert_eq!(
+            leading_top_level_key(".metadata.git_repo?"),
+            Some("metadata".into())
+        );
+    }
+
+    /// The landmine: only the FIRST segment may be judged, and an explicit
+    /// silence request must stay silent.
+    #[test]
+    fn leading_key_declines_when_the_filter_already_handles_absence() {
+        assert_eq!(leading_top_level_key("."), None);
+        assert_eq!(leading_top_level_key(". | keys"), None);
+        assert_eq!(leading_top_level_key("keys"), None);
+        assert_eq!(leading_top_level_key(".[0]"), None);
+        assert_eq!(leading_top_level_key(".summary?"), None);
+        assert_eq!(leading_top_level_key(".summary // {}"), None);
+        assert_eq!(leading_top_level_key(".summary   //  .metadata"), None);
+        assert_eq!(leading_top_level_key("[1,2,3]"), None);
     }
 
     #[test]

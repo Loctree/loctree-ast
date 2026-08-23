@@ -13,7 +13,7 @@
 //! of the twin signal so route collisions are visible at the `loct twins`
 //! / `loct findings` surface, not buried in a separate `loct routes` flag.
 //!
-//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by VetCoders (c)2024-2026 LibraxisAI
+//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI
 
 use crate::types::{FileAnalysis, RouteInfo};
 use serde::Serialize;

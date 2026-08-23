@@ -257,14 +257,15 @@ SCOPES:
 
 OPTIONS:
     --handler <NAME>     Handler name for trace scope
-    --limit <N>          Limit results where the underlying scope supports it
+    --limit <N>          Global result bound across aggregate output families
     --help, -h           Show this help message
 
 EXAMPLES:
     loct follow
     loct follow dead
     loct follow cycles --limit 20
-    loct follow trace --handler my_command"
+    loct follow trace --handler my_command
+    loct follow path/to/file.rs   # file is a scope filter; scan stays at repo root"
             .to_string());
     }
 

@@ -1069,7 +1069,7 @@ fn resolve_rust_module_path(module: &str, base: &Path) -> Option<PathBuf> {
     // Trailing ::Item or ::{...} (the imported symbol(s)) must not prevent resolution
     // to the defining module file. This powers consumer edges for impact/slice/who-imports
     // on leaf modules and on module-directory facades (mod.rs).
-    // See loctree-feedback.md:2997 (facade), 3144 (cross-module use with item), 2900 (fn-body use).
+    // See loctree-fail.md:2997 (facade), 3144 (cross-module use with item), 2900 (fn-body use).
     let segments: Vec<&str> = module.split("::").collect();
     if segments.is_empty() {
         return None;

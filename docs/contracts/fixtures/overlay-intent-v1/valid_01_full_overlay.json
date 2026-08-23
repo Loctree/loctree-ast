@@ -1,0 +1,113 @@
+{
+  "schema": "loctree.overlay.intent.v1",
+  "repo_id": "Loctree/loctree-suite",
+  "snapshot_commit": "48a9526d",
+  "anchor_catalog_revision": "acr1:ab12cd34ab12cd34ab12cd34ab12cd34ab12cd34ab12cd34ab12cd34ab12cd34",
+  "store_revision": "sr1:5f0a5f0a5f0a5f0a5f0a5f0a5f0a5f0a5f0a5f0a5f0a5f0a5f0a5f0a5f0a5f0a",
+  "overlay_revision": "ov1:9e3b9e3b9e3b9e3b9e3b9e3b9e3b9e3b9e3b9e3b9e3b9e3b9e3b9e3b9e3b9e3b",
+  "producer_version": "0.12.0",
+  "entries": [
+    {
+      "intent_id": "int1:aaaa111122223333",
+      "content_hash": "ch1:11ee11ee11ee11ee11ee11ee11ee11ee11ee11ee11ee11ee11ee11ee11ee11ee",
+      "target": { "kind": "repo" },
+      "thesis": "Force-feed pełnej struktury na starcie; on-demand zakazany dla warstwy bazowej.",
+      "status": "current",
+      "authority": "operator_confirmed",
+      "verification_status": "verified",
+      "valid_from": "2026-07-12T18:30:00Z",
+      "refs": [
+        {
+          "evidence_event_id": "ev1:claude:c4d187f9-aaaa-bbbb-cccc-001122334455:000042:text:0123456789abcdef",
+          "ref": "session:c4d187f9#turn-42"
+        }
+      ]
+    },
+    {
+      "intent_id": "int1:bbbb444455556666",
+      "content_hash": "ch1:22ff22ff22ff22ff22ff22ff22ff22ff22ff22ff22ff22ff22ff22ff22ff22ff",
+      "target": {
+        "kind": "symbol",
+        "path": "loctree-rs/src/snapshot.rs",
+        "language": "rust",
+        "qualified_symbol": "loctree_rs::snapshot::Snapshot::write_cache",
+        "signature_hash": "sig1:0123456789abcdef",
+        "anchor_id": "anc1:feed0123abcd4567"
+      },
+      "thesis": "Single-flight lock na cache-bucket przy równoległych skanach zastępuje per-plik atomic write.",
+      "status": "current",
+      "authority": "agent_derived",
+      "verification_status": "unverified",
+      "valid_from": "2026-06-05T09:00:00Z",
+      "relations": [
+        {
+          "kind": "supersedes",
+          "intent_id": "int1:cccc777788889999",
+          "evidence_ref": "chunk:d9100591-0007",
+          "confidence": 0.92,
+          "observed_at": "2026-06-05T09:05:00Z"
+        }
+      ],
+      "attributions": [
+        {
+          "target_anchor": "anc1:feed0123abcd4567",
+          "relation": "implements",
+          "match_kind": "qualified_symbol",
+          "confidence": 0.95,
+          "evidence_ref": "ev1:codex:9f1d2b73-1111-2222-3333-445566778899:000117:function_call:89abcdef01234567"
+        }
+      ],
+      "refs": [
+        {
+          "evidence_event_id": "ev1:codex:9f1d2b73-1111-2222-3333-445566778899:000117:function_call:89abcdef01234567",
+          "ref": "chunk:d9100591-0007"
+        },
+        {
+          "evidence_event_id": "ev1:junie:8a7b6c5d-4444-5555-6666-778899aabbcc:step:s12:plan:block_snapshot:fedcba9876543210",
+          "ref": "session:8a7b6c5d#step-s12"
+        }
+      ]
+    },
+    {
+      "intent_id": "int1:cccc777788889999",
+      "content_hash": "ch1:33aa33aa33aa33aa33aa33aa33aa33aa33aa33aa33aa33aa33aa33aa33aa33aa",
+      "target": {
+        "kind": "path",
+        "path": "loctree-rs/src/snapshot.rs",
+        "language": "rust"
+      },
+      "thesis": "Per-plik atomic write uznany za wystarczający dla cache snapshotu.",
+      "status": "superseded",
+      "authority": "agent_derived",
+      "verification_status": "verified",
+      "valid_from": "2026-06-04T14:00:00Z",
+      "valid_to": "2026-06-05T09:05:00Z",
+      "relations": [
+        {
+          "kind": "superseded_by",
+          "intent_id": "int1:bbbb444455556666",
+          "evidence_ref": "chunk:d9100591-0007",
+          "confidence": 0.92,
+          "observed_at": "2026-06-05T09:05:00Z"
+        }
+      ],
+      "refs": [
+        {
+          "evidence_event_id": "ev1:claude:e0568e95-7777-8888-9999-aabbccddeeff:000009:tool_use:a1b2c3d4e5f60718",
+          "ref": "session:e0568e95#turn-9"
+        }
+      ]
+    }
+  ],
+  "unresolved_attributions": [
+    {
+      "intent_id": "int1:bbbb444455556666",
+      "target_anchor": "anc1:beef89ab01234567",
+      "relation": "constrains",
+      "match_kind": "lexical",
+      "confidence": 0.41,
+      "evidence_ref": "chunk:d9100591-0011",
+      "reason": "lexical-only match below delivery threshold; kept payload-only per Doctrine 7"
+    }
+  ]
+}

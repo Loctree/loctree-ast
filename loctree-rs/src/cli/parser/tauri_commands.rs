@@ -99,6 +99,7 @@ USAGE:
     loct events [OPTIONS] [PATHS...]
 
 OPTIONS:
+    --limit <N>  Maximum event groups across all output families
     --ghost(s)   Show only ghost events (emitted but never listened)
     --orphan(s)  Show only orphan listeners (listening but never emitted)
     --races      Show only potential race conditions (multiple emitters)
@@ -120,6 +121,13 @@ EXAMPLES:
     while i < args.len() {
         let arg = &args[i];
         match arg.as_str() {
+            "--limit" => {
+                let value = args
+                    .get(i + 1)
+                    .ok_or_else(|| "--limit requires a number".to_string())?;
+                opts.limit = Some(value.parse().map_err(|_| "--limit requires a number")?);
+                i += 2;
+            }
             "--ghost" | "--ghosts" => {
                 opts.ghost = true;
                 i += 1;
@@ -243,10 +251,11 @@ mod tests {
 
     #[test]
     fn test_parse_events_command() {
-        let args = vec!["--ghost".into()];
+        let args = vec!["--ghost".into(), "--limit".into(), "4".into()];
         let result = parse_events_command(&args).unwrap();
         if let Command::Events(opts) = result {
             assert!(opts.ghost);
+            assert_eq!(opts.limit, Some(4));
         } else {
             panic!("Expected Events command");
         }

@@ -594,6 +594,84 @@ pub struct ExactTwin {
     /// Shape-evidence class (additive JSON field, W2-b):
     /// EXACT / SHAPE_SIMILAR / NAME_COLLISION / IDIOM.
     pub class: TwinClass,
+    /// W1-03 / W2-01 contract: every location carries the same signature
+    /// fingerprint. Missing fingerprints or a mismatch is shapeless.
+    /// Body hashes are not on this snapshot path — signature only.
+    #[serde(default)]
+    pub shape_match: bool,
+    /// W1-03 / W2-01 contract: the project manifest declares exactly one
+    /// non-test module/target (Package.swift with one `.target` /
+    /// `.executableTarget`). Never inferred from language identity.
+    #[serde(default)]
+    pub single_module_target: bool,
+    /// W1-03 / W2-01 contract: shapeless collision inside a single-module
+    /// target must not feed health/score. The sensor still lists the group.
+    /// Equal to `!shape_match && single_module_target`.
+    #[serde(default)]
+    pub exclude_from_score: bool,
+}
+
+/// True when every location carries the same signature fingerprint.
+/// Missing fingerprints (typical for Swift stored properties and protocol
+/// witnesses) are shapeless — name equality is not shape evidence.
+pub fn locations_have_shape_match(locations: &[TwinLocation]) -> bool {
+    if locations.len() < 2 {
+        return false;
+    }
+    let Some(first) = locations[0].signature_fingerprint.as_deref() else {
+        return false;
+    };
+    locations[1..]
+        .iter()
+        .all(|loc| loc.signature_fingerprint.as_deref() == Some(first))
+}
+
+/// Count non-test SwiftPM product targets in a `Package.swift` body.
+/// `.testTarget(` is excluded. Literal token scan, not a Swift parser.
+pub fn count_swiftpm_product_targets(src: &str) -> usize {
+    let mut body = String::with_capacity(src.len());
+    for line in src.lines() {
+        let cut = line.find("//").unwrap_or(line.len());
+        body.push_str(&line[..cut]);
+        body.push('\n');
+    }
+    [
+        ".executableTarget(",
+        ".binaryTarget(",
+        ".macro(",
+        ".target(",
+    ]
+    .iter()
+    .map(|token| body.matches(token).count())
+    .sum()
+}
+
+/// W1-03 gate for `duplicate_groups`: a namesake (or shapeless single-module
+/// collision) stays on the sensor and must not increment the findings count.
+/// Reads the existing `classification: namesake` plus `exclude_from_score`.
+pub fn omit_from_duplicate_groups(twin: &ExactTwin) -> bool {
+    twin.exclude_from_score || matches!(twin.classification, TwinClassification::Namesake)
+}
+
+/// Manifest-derived: the project declares exactly one non-test SwiftPM target.
+/// No `Package.swift`, or more than one product target, is not single-module.
+/// Language identity is never consulted.
+pub fn project_is_single_module_target(analyses: &[FileAnalysis]) -> bool {
+    let mut saw_single = false;
+    for analysis in analyses {
+        let path = analysis.path.replace('\\', "/");
+        if !path.ends_with("Package.swift") {
+            continue;
+        }
+        let Ok(src) = std::fs::read_to_string(&analysis.path) else {
+            return false;
+        };
+        match count_swiftpm_product_targets(&src) {
+            1 => saw_single = true,
+            _ => return false,
+        }
+    }
+    saw_single
 }
 
 /// Language category for twin classification
@@ -1084,6 +1162,9 @@ pub fn detect_exact_twins_with_frameworks(
     // Get frameworks slice for filtering
     let fw_slice = frameworks.unwrap_or(&[]);
 
+    // Manifest-derived project fact — computed once, applied to every group.
+    let single_module_target = project_is_single_module_target(analyses);
+
     // Filter to only symbols exported from multiple files
     let mut twins: Vec<ExactTwin> = Vec::new();
 
@@ -1228,12 +1309,16 @@ pub fn detect_exact_twins_with_frameworks(
             }
         };
 
+        let shape_match = locations_have_shape_match(&locations);
         twins.push(ExactTwin {
             name,
             locations,
             signature_similarity,
             classification,
             class,
+            shape_match,
+            single_module_target,
+            exclude_from_score: !shape_match && single_module_target,
         });
     }
 
@@ -1348,6 +1433,9 @@ pub fn print_exact_twins_json(twins: &[ExactTwin]) {
             },
             "classification": twin.classification,
             "class": twin.class,
+            "shape_match": twin.shape_match,
+            "single_module_target": twin.single_module_target,
+            "exclude_from_score": twin.exclude_from_score,
             "action": twin_action(twin),
             "locations": twin.locations.iter().map(|loc| {
                 let mut loc_json = serde_json::json!({
@@ -1708,6 +1796,9 @@ mod tests {
             signature_similarity: Some(1.0),
             classification: TwinClassification::Duplicate,
             class: TwinClass::Exact,
+            shape_match: true,
+            single_module_target: false,
+            exclude_from_score: false,
         };
         assert_eq!(twin_action(&twin), "consolidate into single module");
     }
@@ -1720,6 +1811,9 @@ mod tests {
             signature_similarity: Some(0.0),
             classification: TwinClassification::Namesake,
             class: TwinClass::NameCollision,
+            shape_match: false,
+            single_module_target: false,
+            exclude_from_score: false,
         };
         let namesake = twin_action(&twin);
         assert!(namesake.contains("rename"));
@@ -1734,6 +1828,9 @@ mod tests {
             signature_similarity: None,
             classification: TwinClassification::Mirror,
             class: TwinClass::NameCollision,
+            shape_match: false,
+            single_module_target: false,
+            exclude_from_score: false,
         };
         let mirror = twin_action(&twin);
         assert!(mirror.contains("verify"));
@@ -1753,6 +1850,9 @@ mod tests {
                 signature_similarity: None,
                 classification: TwinClassification::Duplicate,
                 class,
+                shape_match: false,
+                single_module_target: false,
+                exclude_from_score: false,
             };
             assert!(
                 !twin_action(&twin).starts_with("consolidate"),
@@ -1878,5 +1978,176 @@ mod tests {
         assert_eq!(twins.len(), 1);
         assert_eq!(twins[0].classification, TwinClassification::Mirror);
         assert!(twin_action(&twins[0]).contains("do not consolidate"));
+    }
+
+    fn write_package_swift(dir: &std::path::Path, body: &str) -> FileAnalysis {
+        let path = dir.join("Package.swift");
+        std::fs::write(&path, body).expect("write Package.swift");
+        FileAnalysis {
+            path: path.to_string_lossy().into_owned(),
+            ..Default::default()
+        }
+    }
+
+    /// Shapeless name collisions carry `shape_match = false`.
+    #[test]
+    fn namesake_shapeless_groups_set_shape_match_false() {
+        let twins = detect_exact_twins(
+            &[
+                mock_file_with_exports("a.swift", vec![("text", "let")]),
+                mock_file_with_exports("b.swift", vec![("text", "let")]),
+            ],
+            false,
+        );
+        assert_eq!(twins.len(), 1);
+        assert!(!twins[0].shape_match);
+        assert!(!twins[0].single_module_target);
+        assert!(!twins[0].exclude_from_score);
+        assert_eq!(twins[0].classification, TwinClassification::Namesake);
+        assert!(
+            omit_from_duplicate_groups(&twins[0]),
+            "namesake classification is the findings skip, even without a one-target manifest"
+        );
+    }
+
+    /// One SwiftPM product target is a manifest fact, not a language assumption.
+    #[test]
+    fn namesake_single_module_package_swift_sets_exclude_from_score() {
+        // Unique, 0700, owned by this test and removed on drop — a predictable
+        // name under the shared temp dir is exactly what Semgrep's temp-dir rule
+        // flags, and `tempfile` is already a dependency.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
+        let manifest = write_package_swift(
+            &dir,
+            r#"
+import PackageDescription
+let package = Package(
+    name: "NamesakeApp",
+    targets: [.executableTarget(name: "UI", path: "Sources/UI")]
+)
+"#,
+        );
+        let twins = detect_exact_twins(
+            &[
+                manifest,
+                mock_file_with_exports("Sources/UI/A.swift", vec![("text", "let")]),
+                mock_file_with_exports("Sources/UI/B.swift", vec![("text", "let")]),
+            ],
+            false,
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(twins.len(), 1, "sensor must still list the group");
+        assert!(!twins[0].shape_match);
+        assert!(twins[0].single_module_target);
+        assert!(twins[0].exclude_from_score);
+    }
+
+    /// Two SwiftPM targets: suppression must not fire, even for shapeless namesakes.
+    #[test]
+    fn namesake_multi_target_package_swift_does_not_suppress() {
+        // Unique, 0700, owned by this test and removed on drop — a predictable
+        // name under the shared temp dir is exactly what Semgrep's temp-dir rule
+        // flags, and `tempfile` is already a dependency.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
+        let manifest = write_package_swift(
+            &dir,
+            r#"
+import PackageDescription
+let package = Package(
+    name: "NamesakeApp",
+    targets: [
+        .target(name: "App"),
+        .target(name: "Kit"),
+        .testTarget(name: "AppTests", dependencies: ["App"]),
+    ]
+)
+"#,
+        );
+        let twins = detect_exact_twins(
+            &[
+                manifest,
+                mock_file_with_exports("Sources/App/A.swift", vec![("text", "let")]),
+                mock_file_with_exports("Sources/Kit/B.swift", vec![("text", "let")]),
+            ],
+            false,
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(twins.len(), 1, "sensor must still list the group");
+        assert!(!twins[0].shape_match);
+        assert!(
+            !twins[0].single_module_target,
+            "two .target( declarations are not a single module"
+        );
+        assert!(
+            !twins[0].exclude_from_score,
+            "multi-target projects must not suppress shapeless namesakes"
+        );
+    }
+
+    /// `loct twins` keeps every group; only metadata changes.
+    #[test]
+    fn namesake_sensor_keeps_all_groups() {
+        let twins = detect_exact_twins(
+            &[
+                mock_file_with_exports(
+                    "A.swift",
+                    vec![("text", "let"), ("body", "var"), ("makeNSView", "func")],
+                ),
+                mock_file_with_exports(
+                    "B.swift",
+                    vec![("text", "let"), ("body", "var"), ("makeNSView", "func")],
+                ),
+            ],
+            false,
+        );
+        assert_eq!(twins.len(), 3);
+        assert!(twins.iter().all(|t| !t.shape_match));
+        assert!(twins.iter().all(|t| !t.exclude_from_score));
+    }
+
+    #[test]
+    fn namesake_matching_fingerprints_are_not_shapeless() {
+        let loc = |fp: &str| TwinLocation {
+            file_path: "x.rs".to_string(),
+            line: 1,
+            kind: "function".to_string(),
+            import_count: 0,
+            is_canonical: false,
+            signature_fingerprint: Some(fp.to_string()),
+        };
+        assert!(locations_have_shape_match(&[
+            loc("String|View"),
+            loc("String|View")
+        ]));
+        assert!(!locations_have_shape_match(&[
+            loc("String|View"),
+            loc("Int|View")
+        ]));
+        assert!(!locations_have_shape_match(&[
+            loc("String|View"),
+            TwinLocation {
+                file_path: "y.rs".to_string(),
+                line: 2,
+                kind: "function".to_string(),
+                import_count: 0,
+                is_canonical: false,
+                signature_fingerprint: None,
+            }
+        ]));
+    }
+
+    #[test]
+    fn namesake_test_target_does_not_count_as_product_module() {
+        let src = r#"
+            targets: [
+                .executableTarget(name: "App"),
+                .testTarget(name: "AppTests", dependencies: ["App"]),
+            ]
+        "#;
+        assert_eq!(count_swiftpm_product_targets(src), 1);
+        let commented = "// .target(name: \"Ghost\")\n.executableTarget(name: \"App\")\n";
+        assert_eq!(count_swiftpm_product_targets(commented), 1);
     }
 }

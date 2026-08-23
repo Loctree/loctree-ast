@@ -3,6 +3,9 @@
 //! Each test copies the fixture tree into a TempDir so that
 //! `Snapshot::find_loctree_root` doesn't walk up into the parent loctree
 //! repository's own snapshot. This mirrors `e2e_cli.rs::creates_snapshot`.
+//! The scan writes into a per-fixture `LOCT_CACHE_DIR` TempDir and the
+//! snapshot is deserialized straight from that cache, so no test touches
+//! the operator-global cache (`~/Library/Caches/loctree`).
 
 use assert_cmd::Command;
 use assert_cmd::cargo::cargo_bin_cmd;
@@ -16,7 +19,30 @@ fn fixtures_path() -> PathBuf {
 }
 
 fn loct() -> Command {
-    cargo_bin_cmd!("loct")
+    let mut cmd = cargo_bin_cmd!("loct");
+    // Fixtures live in TMPDIR, outside any git checkout; the scan guard
+    // (snapshot.rs) documents this env var as its test-side counterpart.
+    cmd.env(loctree::snapshot::LOCT_ALLOW_NON_GIT_ROOT_ENV, "1");
+    cmd
+}
+
+/// Find the `snapshot.json` a scan just wrote under an isolated cache dir.
+fn snapshot_json_in_cache(cache: &Path) -> Option<PathBuf> {
+    fn walk(dir: &Path) -> Option<PathBuf> {
+        for entry in std::fs::read_dir(dir).ok()?.flatten() {
+            let path = entry.path();
+            if path.file_name().is_some_and(|n| n == "snapshot.json") {
+                return Some(path);
+            }
+            if path.is_dir()
+                && let Some(found) = walk(&path)
+            {
+                return Some(found);
+            }
+        }
+        None
+    }
+    walk(&cache.join("projects"))
 }
 
 fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
@@ -34,13 +60,19 @@ fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Copy fixture to a tempdir, scan it via `loct`, and load the snapshot.
+/// Copy fixture to a tempdir, scan it via `loct` into an isolated cache,
+/// and load the snapshot from that cache.
 fn scan_fixture_in_tempdir(fixture_name: &str) -> (TempDir, Snapshot) {
     let temp = TempDir::new().expect("tempdir");
+    let cache = TempDir::new().expect("cache tempdir");
     let fixture = fixtures_path().join(fixture_name);
     copy_dir_all(&fixture, temp.path()).expect("copy fixture");
 
-    let output = loct().current_dir(temp.path()).output().expect("loct runs");
+    let output = loct()
+        .current_dir(temp.path())
+        .env("LOCT_CACHE_DIR", cache.path())
+        .output()
+        .expect("loct runs");
     assert!(
         output.status.success(),
         "loct failed in {}: stderr={}",
@@ -48,8 +80,10 @@ fn scan_fixture_in_tempdir(fixture_name: &str) -> (TempDir, Snapshot) {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let loctree_root = Snapshot::find_loctree_root(temp.path()).expect("loctree root after scan");
-    let snapshot = Snapshot::load(&loctree_root).expect("load snapshot");
+    let snapshot_path =
+        snapshot_json_in_cache(cache.path()).expect("snapshot.json in isolated cache after scan");
+    let content = std::fs::read_to_string(&snapshot_path).expect("read snapshot.json");
+    let snapshot: Snapshot = serde_json::from_str(&content).expect("deserialize snapshot");
     (temp, snapshot)
 }
 

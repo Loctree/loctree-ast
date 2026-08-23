@@ -15,12 +15,17 @@ use crate::snapshot::{
 };
 
 use super::super::DispatchResult;
+use super::resource_limits::{
+    CACHE_ENUM_TIME_CEILING, EnumerationBudget, MAX_SNAPSHOT_METADATA_PARSE_BYTES,
+    MAX_WALK_ENTRIES_PER_BUCKET, SnapshotMetadataRead, bounded_dir_size,
+    read_snapshot_metadata_bounded,
+};
 
 const CACHE_WARNING_THRESHOLD_BYTES: u64 = 5_000_000_000;
 
 /// Stable JSON output schema for `loct doctor`.
 ///
-/// Schema version: `"1.1"`.
+/// Schema version: `"1.2"`.
 ///
 /// Consumers (CI gates, agent context packs, external tooling) may rely on:
 /// - top-level fields: `schema_version`, `generated_at`, `entries`
@@ -29,14 +34,34 @@ const CACHE_WARNING_THRESHOLD_BYTES: u64 = 5_000_000_000;
 ///   `scope_state`, `fix_command`
 /// - `scope_state` discriminator: `"Fresh" | "StaleCommit" | "DirtyWorktree"
 ///   | "ScopeMismatch" | "Corrupt" | "NotFound"`
+/// - optional top-level `enumeration` (added in `"1.2"`, audit class H):
+///   `scope` (`"project-local" | "global"`), `complete`, `notes` — declares
+///   what was walked and whether any ceiling truncated the pass
 ///
 /// Schema bumps follow semver: bug fixes don't bump, additive fields are
-/// minor (`"1.1"`), breaking changes are major (`"2.0"`).
+/// minor (`"1.1"` → `"1.2"`), breaking changes are major (`"2.0"`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DoctorReport {
     pub schema_version: String,
     pub generated_at: String,
     pub entries: Vec<CacheEntry>,
+    /// Declared enumeration scope + truncation honesty (schema 1.2, audit
+    /// class H). `None` for modes that walk nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enumeration: Option<EnumerationInfo>,
+}
+
+/// What the doctor actually walked, and whether it finished. A truncated
+/// pass must say so — never a polished "complete" over a partial walk.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnumerationInfo {
+    /// `"project-local"` (default for `--cache`/`--scope`) or `"global"`
+    /// (explicit `--list` opt-in).
+    pub scope: String,
+    /// False when a time/entry/size ceiling stopped the walk early.
+    pub complete: bool,
+    /// Human-readable notes for every ceiling hit or unreadable snapshot.
+    pub notes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,10 +89,30 @@ pub enum ScopeState {
     NotFound,
 }
 
-#[derive(Debug, Deserialize)]
-struct SnapshotEnvelope {
-    #[serde(default)]
-    metadata: SnapshotMetadata,
+/// Truncation-honesty accumulator for one enumeration pass.
+#[derive(Debug, Default)]
+struct EnumerationStats {
+    incomplete: bool,
+    notes: Vec<String>,
+}
+
+impl EnumerationStats {
+    /// `complete` in report terms.
+    fn complete(&self) -> bool {
+        !self.incomplete
+    }
+
+    /// Informational note that does not invalidate completeness (e.g. one
+    /// unreadable snapshot inside an otherwise fully-walked cache).
+    fn note(&mut self, note: String) {
+        self.notes.push(note);
+    }
+
+    /// A ceiling stopped the walk: the pass is no longer complete.
+    fn note_truncation(&mut self, note: String) {
+        self.incomplete = true;
+        self.notes.push(note);
+    }
 }
 
 pub fn run(opts: &DoctorOptions, global: &GlobalOptions) -> DispatchResult {
@@ -95,15 +140,17 @@ pub fn run(opts: &DoctorOptions, global: &GlobalOptions) -> DispatchResult {
                 };
                 &default_storage
             }
-            DefaultMode::GlobalList { hint } => {
-                if let Some(message) = hint {
-                    eprintln!("{message}");
-                }
-                default_storage = DoctorOptions {
-                    list: true,
-                    ..opts.clone()
-                };
-                &default_storage
+            DefaultMode::NoProject { hint } => {
+                // Audit class H: no implicit global cache walk. The historical
+                // fallback (`--list` over every bucket) is exactly the
+                // enumeration that peaked at 20.8 GiB RSS; global inspection
+                // now requires the explicit `--list` opt-in.
+                eprintln!("{hint}");
+                println!(
+                    "No loctree project detected here; nothing was walked. \
+                     Global cache inspection requires opt-in: `loct doctor --list`."
+                );
+                return DispatchResult::Exit(0);
             }
         }
     } else {
@@ -201,10 +248,10 @@ enum DefaultMode {
     /// per-project scope diagnostic for it (the Living Tree fingerprint
     /// check that the `vc-init` skill assumes).
     PerProject(PathBuf),
-    /// No snapshot near the cwd; fall back to the historical global cache
-    /// listing so existing scripts still work. The hint, when present, is
-    /// emitted to stderr so the operator learns about the better invocations.
-    GlobalList { hint: Option<String> },
+    /// No snapshot near the cwd. Emit the hint and walk NOTHING — the
+    /// historical implicit fallback to the global `--list` violated the
+    /// no-global-walk-without-opt-in contract (audit class H).
+    NoProject { hint: String },
 }
 
 /// Decide whether the cwd looks like a scanned project (so we can default
@@ -216,24 +263,25 @@ fn infer_default_mode(_opts: &DoctorOptions) -> DefaultMode {
     let cwd = match std::env::current_dir() {
         Ok(path) => path,
         Err(err) => {
-            return DefaultMode::GlobalList {
-                hint: Some(format!(
-                    "[loct][doctor] could not resolve cwd ({err}); falling back to --list"
-                )),
+            return DefaultMode::NoProject {
+                hint: format!(
+                    "[loct][doctor] could not resolve cwd ({err}); \
+                     use `loct doctor --list` for the bounded global cache inventory."
+                ),
             };
         }
     };
 
     match Snapshot::find_loctree_root(&cwd) {
         Some(project_root) => DefaultMode::PerProject(project_root),
-        None => DefaultMode::GlobalList {
-            hint: Some(format!(
+        None => DefaultMode::NoProject {
+            hint: format!(
                 "[loct][doctor] no snapshot found near {}.\n\
                  [loct][doctor] hint: run `loct scan` to enable the per-project diagnostic, \
-                 or use `loct doctor --list` for the global cache, \
-                 `loct doctor --scope --project <PATH>` for an explicit project.",
+                 use `loct doctor --scope --project <PATH>` for an explicit project, \
+                 or opt in to the global cache inventory with `loct doctor --list`.",
                 cwd.display()
-            )),
+            ),
         },
     }
 }
@@ -242,12 +290,31 @@ fn build_report(opts: &DoctorOptions) -> Result<DoctorReport> {
     // Resolve --project upward to the actual snapshot root (matches scan's behavior).
     // Without this, a sub-directory PATH would hash to a project_id that doesn't
     // exist in the cache, even when the parent project is fully scanned.
-    let resolved_project: Option<PathBuf> = if opts.scope {
-        opts.project
-            .as_ref()
-            .map(|p| resolve_snapshot_root(std::slice::from_ref(p)))
+    //
+    // Audit class H (LCT-E01): `--cache`/`--scope` without `--project` used to
+    // enumerate the ENTIRE global cache — 20.8 GiB RSS on a temp clone. They
+    // are project-local by default now: the cwd project is resolved, and when
+    // none exists the command fails closed with a hint instead of silently
+    // walking every bucket. The global walk requires the explicit `--list`.
+    let resolved_project: Option<PathBuf> = if let Some(project) = &opts.project {
+        if opts.scope {
+            Some(resolve_snapshot_root(std::slice::from_ref(project)))
+        } else {
+            Some(project.clone())
+        }
+    } else if (opts.scope || opts.cache) && !opts.list {
+        let cwd = std::env::current_dir().context("resolve cwd for project-local doctor")?;
+        match Snapshot::find_loctree_root(&cwd) {
+            Some(root) => Some(root),
+            None => anyhow::bail!(
+                "--scope/--cache are project-local by default and no snapshot was found near {}.\n\
+                 Pass --project <root>, run `loct scan` first, or opt in to the bounded global \
+                 inventory with `loct doctor --list`.",
+                cwd.display()
+            ),
+        }
     } else {
-        opts.project.clone()
+        None
     };
 
     // `target_id` is the SHA-256-prefix project_id derived from `--project`.
@@ -256,10 +323,23 @@ fn build_report(opts: &DoctorOptions) -> Result<DoctorReport> {
     // equality against `entry.file_name()` of locally-iterated cache dirs.
     let target_id: Option<String> = resolved_project.as_deref().map(project_id_for);
 
-    let mut entries = if opts.list || opts.cache || opts.scope {
-        enumerate_cache_entries(target_id.as_deref())?
+    let (mut entries, enumeration) = if opts.list || opts.cache || opts.scope {
+        let (entries, stats) = enumerate_cache_entries(target_id.as_deref())?;
+        let scope = if target_id.is_some() {
+            "project-local"
+        } else {
+            "global"
+        };
+        (
+            entries,
+            Some(EnumerationInfo {
+                scope: scope.to_string(),
+                complete: stats.complete(),
+                notes: stats.notes,
+            }),
+        )
     } else {
-        Vec::new()
+        (Vec::new(), None)
     };
 
     if opts.scope {
@@ -267,9 +347,10 @@ fn build_report(opts: &DoctorOptions) -> Result<DoctorReport> {
     }
 
     Ok(DoctorReport {
-        schema_version: "1.1".to_string(),
+        schema_version: "1.2".to_string(),
         generated_at: now_iso8601(),
         entries,
+        enumeration,
     })
 }
 
@@ -506,14 +587,32 @@ fn purge_flat_fallback(entry: &CacheEntry) -> Result<()> {
 /// derived from `DirEntry::path()` (a value produced by the iteration
 /// itself, not a function parameter). This is what keeps the
 /// path-traversal taint analyzer satisfied without `nosemgrep` annotations.
-fn enumerate_cache_entries(target_id: Option<&str>) -> Result<Vec<CacheEntry>> {
+///
+/// Resource discipline (audit class H, LCT-E01): the whole pass carries a
+/// wall-clock budget, snapshot metadata is stream-parsed behind a size
+/// ceiling instead of whole-file `fs::read`, and per-bucket size walks are
+/// entry-capped. Every ceiling or filesystem error lands in
+/// [`EnumerationStats`] — a partial walk must never present itself as a
+/// complete inventory. An unreadable snapshot degrades that one entry (with a
+/// note) instead of aborting the whole diagnostic.
+fn size_walk_incomplete_note(project_id: &str) -> String {
+    format!(
+        "size walk for {project_id} incomplete: entry/time ceiling or \
+         filesystem/traversal/metadata error; cache_size_bytes is a lower bound"
+    )
+}
+
+fn enumerate_cache_entries(target_id: Option<&str>) -> Result<(Vec<CacheEntry>, EnumerationStats)> {
     let base = cache_base_dir();
     let projects_dir = base.join("projects");
+    let mut stats = EnumerationStats::default();
     if !projects_dir.exists() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), stats));
     }
 
+    let budget = EnumerationBudget::start(CACHE_ENUM_TIME_CEILING);
     let mut entries = Vec::new();
+    let mut skipped_time_ceiling: usize = 0;
     let projects = fs::read_dir(&projects_dir)
         .with_context(|| format!("read cache projects directory {}", projects_dir.display()))?;
 
@@ -538,6 +637,11 @@ fn enumerate_cache_entries(target_id: Option<&str>) -> Result<Vec<CacheEntry>> {
             continue;
         }
 
+        if budget.exceeded() {
+            skipped_time_ceiling += 1;
+            continue;
+        }
+
         // From here on every path is derived from the iterator's own
         // `DirEntry::path()` — i.e. a local-call source. No function
         // parameter touches filesystem APIs.
@@ -551,18 +655,9 @@ fn enumerate_cache_entries(target_id: Option<&str>) -> Result<Vec<CacheEntry>> {
         ] {
             if let Ok(metadata) = fs::metadata(&fixed_path)
                 && metadata.is_file()
+                && let Ok(modified) = metadata.modified()
             {
-                if let Ok(modified) = metadata.modified() {
-                    candidates.push((fixed_path, modified));
-                    continue;
-                }
-                return Err(anyhow::anyhow!(
-                    "read mtime for cache project {project_id} snapshot {}",
-                    candidates
-                        .last()
-                        .map(|(p, _)| p.display().to_string())
-                        .unwrap_or_default()
-                ));
+                candidates.push((fixed_path, modified));
             }
         }
 
@@ -603,27 +698,37 @@ fn enumerate_cache_entries(target_id: Option<&str>) -> Result<Vec<CacheEntry>> {
         // Pick the most recent snapshot (mtime, tie-break on path).
         candidates.sort_by(|left, right| left.1.cmp(&right.1).then_with(|| left.0.cmp(&right.0)));
 
-        // Inline metadata read — `path` here is a local-call-derived
+        // Bounded metadata read — `path` here is a local-call-derived
         // PathBuf (via `DirEntry::path()` + `Path::join`), not a parameter.
         let metadata = match candidates.last() {
             Some((path, _)) => {
-                let bytes = fs::read(path).with_context(|| {
-                    format!(
-                        "read cache project {project_id} snapshot {}",
-                        path.display()
-                    )
-                })?;
-                let envelope: SnapshotEnvelope =
-                    serde_json::from_slice(&bytes).with_context(|| {
-                        format!(
-                            "parse cache project {project_id} snapshot {}",
+                match read_snapshot_metadata_bounded(path, MAX_SNAPSHOT_METADATA_PARSE_BYTES) {
+                    SnapshotMetadataRead::Parsed(metadata) => Some(*metadata),
+                    SnapshotMetadataRead::OversizeSkipped { size_bytes } => {
+                        stats.note(format!(
+                            "snapshot metadata for {project_id} skipped: {} is {size_bytes} bytes, \
+                             above the {MAX_SNAPSHOT_METADATA_PARSE_BYTES}-byte parse ceiling",
                             path.display()
-                        )
-                    })?;
-                Some(envelope.metadata)
+                        ));
+                        None
+                    }
+                    SnapshotMetadataRead::Unreadable => {
+                        stats.note(format!(
+                            "snapshot metadata for {project_id} unreadable or unparseable: {}",
+                            path.display()
+                        ));
+                        None
+                    }
+                }
             }
             None => None,
         };
+
+        let size_sample =
+            bounded_dir_size(&project_dir, MAX_WALK_ENTRIES_PER_BUCKET, Some(&budget));
+        if size_sample.truncated {
+            stats.note_truncation(size_walk_incomplete_note(&project_id));
+        }
 
         entries.push(CacheEntry {
             project_id: project_id.clone(),
@@ -631,14 +736,22 @@ fn enumerate_cache_entries(target_id: Option<&str>) -> Result<Vec<CacheEntry>> {
             last_scan_branch: metadata.as_ref().and_then(|meta| meta.git_branch.clone()),
             last_scan_commit: metadata.as_ref().and_then(|meta| meta.git_commit.clone()),
             last_scan_mtime: candidates.last().map(|(_, ts)| format_system_time(*ts)),
-            cache_size_bytes: Some(dir_size_bytes(&project_dir)),
+            cache_size_bytes: Some(size_sample.bytes),
             scope_state: None,
             fix_command: None,
         });
     }
 
+    if skipped_time_ceiling > 0 {
+        stats.note_truncation(format!(
+            "enumeration stopped at the {}s time ceiling; {skipped_time_ceiling} bucket(s) \
+             not inspected — narrow with --project <root>",
+            budget.ceiling_secs()
+        ));
+    }
+
     entries.sort_by(|left, right| left.project_id.cmp(&right.project_id));
-    Ok(entries)
+    Ok((entries, stats))
 }
 
 fn first_root(metadata: &SnapshotMetadata) -> Option<String> {
@@ -713,7 +826,24 @@ fn render_human(report: &DoctorReport) {
     if let Some(warning) = cache_size_warning(report) {
         println!();
         println!("{warning}");
-        println!("hint:   run `loct cache list` or `loct cache clean --max-size 5GB --force`");
+        println!(
+            "hint:   run `loct cache list --all` or `loct cache clean --max-size 5GB --force`"
+        );
+    }
+    if let Some(info) = &report.enumeration {
+        println!();
+        println!(
+            "enumeration: {} ({})",
+            info.scope,
+            if info.complete {
+                "complete"
+            } else {
+                "truncated — partial inventory"
+            }
+        );
+        for note in &info.notes {
+            println!("  note: {note}");
+        }
     }
 }
 
@@ -729,16 +859,6 @@ fn cache_size_warning(report: &DoctorReport) -> Option<String> {
             format_bytes(total)
         )
     })
-}
-
-fn dir_size_bytes(path: &Path) -> u64 {
-    walkdir::WalkDir::new(path)
-        .into_iter()
-        .flatten()
-        .filter_map(|entry| entry.metadata().ok())
-        .filter(|metadata| metadata.is_file())
-        .map(|metadata| metadata.len())
-        .sum()
 }
 
 fn format_bytes(bytes: u64) -> String {
@@ -838,14 +958,14 @@ mod tests {
     }
 
     fn set_env_var<K: AsRef<std::ffi::OsStr>, V: AsRef<std::ffi::OsStr>>(key: K, value: V) {
-        unsafe {
-            std::env::set_var(key, value);
+        {
+            crate::test_env::set_var(key, value);
         }
     }
 
     fn remove_env_var<K: AsRef<std::ffi::OsStr>>(key: K) {
-        unsafe {
-            std::env::remove_var(key);
+        {
+            crate::test_env::remove_var(key);
         }
     }
 
@@ -854,9 +974,11 @@ mod tests {
     fn empty_cache_returns_empty_entries() {
         let cache = TempDir::new().expect("create temp cache");
         let _guard = EnvVarGuard::set_path(CACHE_ENV, cache.path());
-        let entries = enumerate_cache_entries(None).expect("enumerate cache");
+        let (entries, stats) = enumerate_cache_entries(None).expect("enumerate cache");
 
         assert!(entries.is_empty());
+        assert!(stats.complete(), "empty cache is a complete enumeration");
+        assert!(stats.notes.is_empty());
     }
 
     #[test]
@@ -1096,6 +1218,15 @@ mod tests {
     }
 
     #[test]
+    fn size_walk_incomplete_note_names_ceiling_and_filesystem_causes() {
+        let note = size_walk_incomplete_note("project-id");
+
+        assert!(note.contains("entry/time ceiling"));
+        assert!(note.contains("filesystem/traversal/metadata error"));
+        assert!(note.contains("cache_size_bytes is a lower bound"));
+    }
+
+    #[test]
     #[serial]
     fn annotate_scope_synthesizes_not_found_when_filter_misses() {
         let cache = TempDir::new().expect("create temp cache");
@@ -1118,6 +1249,38 @@ mod tests {
         let fix = synthesized.fix_command.as_deref().expect("fix command");
         assert!(fix.contains("loct scan"));
         assert!(fix.contains(&*canonical_root.display().to_string()));
+    }
+
+    /// Audit class H (LCT-E01): `--scope`/`--cache` without `--project`
+    /// outside a project must fail closed with a hint — never expand into
+    /// the global cache walk.
+    #[test]
+    #[serial]
+    fn build_report_scope_without_project_fails_closed_outside_repo() {
+        let cache = TempDir::new().expect("create temp cache");
+        let _guard = EnvVarGuard::set_path(CACHE_ENV, cache.path());
+
+        let scratch = TempDir::new().expect("create scratch dir");
+        let scratch_root = scratch
+            .path()
+            .canonicalize()
+            .expect("canonicalize scratch dir");
+
+        let original_cwd = std::env::current_dir().expect("current dir");
+        std::env::set_current_dir(&scratch_root).expect("cd into scratch dir");
+        let opts = DoctorOptions {
+            scope: true,
+            ..DoctorOptions::default()
+        };
+        let result = build_report(&opts);
+        std::env::set_current_dir(original_cwd).expect("restore cwd");
+
+        let err = result.expect_err("scope without a resolvable project must fail closed");
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("project-local") && message.contains("--list"),
+            "error must explain the project-local default and the --list opt-in; got: {message}"
+        );
     }
 
     #[test]
@@ -1157,12 +1320,17 @@ mod tests {
     #[test]
     fn json_schema_roundtrip_preserves_all_fields() {
         let report = DoctorReport {
-            schema_version: "1.1".to_string(),
+            schema_version: "1.2".to_string(),
             generated_at: "2026-04-25T12:00:00Z".to_string(),
+            enumeration: Some(EnumerationInfo {
+                scope: "project-local".to_string(),
+                complete: false,
+                notes: vec!["size walk truncated".to_string()],
+            }),
             entries: vec![
                 CacheEntry {
                     project_id: "abc123def4567890".to_string(),
-                    canonical_root: Some("/home/foo/bar".to_string()),
+                    canonical_root: Some("/Users/foo/bar".to_string()),
                     last_scan_branch: Some("develop".to_string()),
                     last_scan_commit: Some("9d563ff".to_string()),
                     last_scan_mtime: Some("2026-04-25T11:00:00Z".to_string()),
@@ -1172,16 +1340,16 @@ mod tests {
                 },
                 CacheEntry {
                     project_id: "ffff111122223333".to_string(),
-                    canonical_root: Some("/home/foo/baz".to_string()),
+                    canonical_root: Some("/Users/foo/baz".to_string()),
                     last_scan_branch: None,
                     last_scan_commit: None,
                     last_scan_mtime: None,
                     cache_size_bytes: Some(5_000_000_001),
                     scope_state: Some(ScopeState::ScopeMismatch {
-                        expected: vec!["/home/foo/baz".to_string()],
-                        actual: vec!["/home/foo/baz/sub".to_string()],
+                        expected: vec!["/Users/foo/baz".to_string()],
+                        actual: vec!["/Users/foo/baz/sub".to_string()],
                     }),
-                    fix_command: Some("loct doctor --fix --project /home/foo/baz".to_string()),
+                    fix_command: Some("loct doctor --fix --project /Users/foo/baz".to_string()),
                 },
             ],
         };
@@ -1189,31 +1357,36 @@ mod tests {
         let json = serde_json::to_string_pretty(&report).expect("serialize");
         let back: DoctorReport = serde_json::from_str(&json).expect("deserialize");
 
-        assert_eq!(back.schema_version, "1.1");
+        assert_eq!(back.schema_version, "1.2");
+        let enumeration = back.enumeration.as_ref().expect("enumeration roundtrips");
+        assert_eq!(enumeration.scope, "project-local");
+        assert!(!enumeration.complete);
+        assert_eq!(enumeration.notes, vec!["size walk truncated".to_string()]);
         assert_eq!(back.entries.len(), 2);
         assert_eq!(back.entries[0].cache_size_bytes, Some(1_024));
         assert_eq!(back.entries[0].scope_state, Some(ScopeState::Fresh));
         match &back.entries[1].scope_state {
             Some(ScopeState::ScopeMismatch { expected, actual }) => {
-                assert_eq!(expected, &vec!["/home/foo/baz".to_string()]);
-                assert_eq!(actual, &vec!["/home/foo/baz/sub".to_string()]);
+                assert_eq!(expected, &vec!["/Users/foo/baz".to_string()]);
+                assert_eq!(actual, &vec!["/Users/foo/baz/sub".to_string()]);
             }
             other => panic!("expected ScopeMismatch, got {other:?}"),
         }
         assert_eq!(
             back.entries[1].fix_command.as_deref(),
-            Some("loct doctor --fix --project /home/foo/baz")
+            Some("loct doctor --fix --project /Users/foo/baz")
         );
     }
 
     #[test]
     fn cache_size_warning_triggers_above_threshold_only() {
         let mut report = DoctorReport {
-            schema_version: "1.1".to_string(),
+            schema_version: "1.2".to_string(),
             generated_at: "2026-04-25T12:00:00Z".to_string(),
+            enumeration: None,
             entries: vec![CacheEntry {
                 project_id: "abc123def4567890".to_string(),
-                canonical_root: Some("/home/foo/bar".to_string()),
+                canonical_root: Some("/Users/foo/bar".to_string()),
                 last_scan_branch: None,
                 last_scan_commit: None,
                 last_scan_mtime: None,
@@ -1250,6 +1423,7 @@ mod tests {
         let report = DoctorReport {
             schema_version: "1.0".to_string(),
             generated_at: "now".to_string(),
+            enumeration: None,
             entries: vec![entry_with_state(
                 &project_id,
                 &canonical_root,
@@ -1292,6 +1466,7 @@ mod tests {
         let report = DoctorReport {
             schema_version: "1.0".to_string(),
             generated_at: "now".to_string(),
+            enumeration: None,
             entries: vec![entry_with_state(
                 &project_id,
                 &canonical_root,
@@ -1331,6 +1506,7 @@ mod tests {
         let report = DoctorReport {
             schema_version: "1.0".to_string(),
             generated_at: "now".to_string(),
+            enumeration: None,
             entries: vec![entry_with_state(
                 &project_id,
                 &canonical_root,
@@ -1363,6 +1539,7 @@ mod tests {
         let report = DoctorReport {
             schema_version: "1.0".to_string(),
             generated_at: "now".to_string(),
+            enumeration: None,
             entries: Vec::new(),
         };
         let opts = DoctorOptions {
@@ -1485,15 +1662,17 @@ mod tests {
                     "PerProject root must point at the snapshot-owning directory"
                 );
             }
-            DefaultMode::GlobalList { hint } => panic!(
-                "expected PerProject for a directory with .loctree; got GlobalList(hint={hint:?})"
+            DefaultMode::NoProject { hint } => panic!(
+                "expected PerProject for a directory with .loctree; got NoProject(hint={hint:?})"
             ),
         }
     }
 
+    /// Audit class H: bare `loct doctor` outside a project must NOT fall
+    /// back to a global cache walk — it hints and walks nothing.
     #[test]
     #[serial]
-    fn infer_default_mode_global_list_when_no_snapshot_nearby() {
+    fn infer_default_mode_hints_without_walking_when_no_snapshot_nearby() {
         let scratch = TempDir::new().expect("create scratch dir");
         let scratch_root = scratch
             .path()
@@ -1506,15 +1685,14 @@ mod tests {
         std::env::set_current_dir(original_cwd).expect("restore cwd");
 
         match result {
-            DefaultMode::GlobalList { hint } => {
-                let hint = hint.expect("GlobalList without snapshot should emit a hint");
+            DefaultMode::NoProject { hint } => {
                 assert!(
                     hint.contains("loct scan") && hint.contains("--list"),
                     "hint should mention both remediations; got: {hint}"
                 );
             }
             DefaultMode::PerProject(root) => panic!(
-                "expected GlobalList in a directory without .loctree; got PerProject({})",
+                "expected NoProject in a directory without .loctree; got PerProject({})",
                 root.display()
             ),
         }

@@ -5,15 +5,16 @@
 //! - Navigate via slice references
 //! - Get actionable quick wins
 //!
-//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents ⓒ 2025-2026 Loctree Team
+//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI
 
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 
 use super::barrels::analyze_barrel_chaos;
 use super::classify::is_semantic_code_language;
-use super::dead_parrots::{DeadFilterConfig, find_dead_exports};
+use super::dead_parrots::{DeadExport, DeadFilterConfig, find_dead_exports};
 use super::dist::DistResult;
+use super::health_inputs::structural_defects;
 use super::health_score::{HealthIssue, HealthMetrics, calculate_health_score};
 use super::memory_lint::lint_memory_file;
 use super::occurrences::SuggestedNext;
@@ -89,7 +90,7 @@ pub struct ForAiSummary {
     /// the parsed subset and is NOT a verdict on the repo.
     ///
     /// See [`is_semantic_code_language`](super::classify::is_semantic_code_language)
-    /// and the 2026-05-22 loctree-feedback hak about `markdown-editor-mac-objc`
+    /// and the 2026-05-22 loctree-fail hak about `markdown-editor-mac-objc`
     /// returning `health_score: 100` while loctree could not parse a
     /// single `.h`/`.m` file.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -464,10 +465,13 @@ fn compute_summary(
     // Canonical dead pipeline — same source as `loct dead`, `loct twins` and
     // `loct findings`, so the repo-view/for-ai surface never reports a forked
     // count. Fallback (no snapshot): raw detector with the default config.
-    let dead_exports: usize = match snapshot {
-        Some(snap) => super::dead_parrots::compute_dead_truth(snap).dead.len(),
-        None => find_dead_exports(analyses, false, None, DeadFilterConfig::default()).len(),
+    // Keep the candidate list, not just its length: the health vector needs the
+    // per-candidate confidence/entrypoint fields to apply the defect gate.
+    let dead_candidates: Vec<DeadExport> = match snapshot {
+        Some(snap) => super::dead_parrots::compute_dead_truth(snap).dead,
+        None => find_dead_exports(analyses, false, None, DeadFilterConfig::default()),
     };
+    let dead_exports: usize = dead_candidates.len();
     let duplicate_exports: usize = sections.iter().map(|s| s.ranked_dups.len()).sum();
     let missing_handlers: usize = sections.iter().map(|s| s.missing_handlers.len()).sum();
     let unregistered_handlers: usize = sections.iter().map(|s| s.unregistered_handlers.len()).sum();
@@ -584,27 +588,46 @@ fn compute_summary(
     // NOTE: missing_handlers/unregistered_handlers are excluded from health score
     // to match findings.rs which doesn't have access to command gap data.
     // These are still reported in the summary for visibility.
-    let health_metrics = HealthMetrics {
-        // CERTAIN (missing_handlers excluded - not available in findings.rs).
-        // breaking = bidirectional import cycles (section.circular_imports).
-        breaking_cycles: circular_imports,
-        // HIGH
-        unused_high_confidence,
-        dead_exports,
-        twins_dead_parrots,
-        // SMELL
-        twins_same_language,
-        barrel_chaos_count,
-        // structural = cycles broken by lazy/dynamic imports (section.lazy_circular_imports).
-        // Matches output.rs::health_score so the for-ai surface does not silently
-        // drop lazy cycles to zero.
-        structural_cycles: lazy_circular_imports,
-        cascade_imports,
-        duplicate_exports,
-        // Context
-        files: files_analyzed,
-        loc: total_loc,
-        ..Default::default()
+    // One health vector, one number. This surface used to build its own
+    // `HealthMetrics` from the raw section counters, which is how it drifted
+    // 13 points below `loct findings --summary` on the same snapshot: it
+    // scored every strict cycle as breaking (16 vs 5 classified), scored lazy
+    // cycles as structural, and counted namesake duplicate groups and idiom
+    // twins that the defect gates had already rejected on the other surface.
+    //
+    // The vector is built by `health_inputs::structural_defects` now, from the
+    // snapshot, with the same gates. Without a snapshot (unit tests and the
+    // sectionless fallback path) there is nothing canonical to read, so the
+    // section counters remain — flagged as such, not silently equivalent.
+    let health_metrics = match snapshot {
+        Some(snap) => {
+            let raw_duplicate_symbols: Vec<String> = sections
+                .iter()
+                .flat_map(|s| s.ranked_dups.iter())
+                .map(|dup| dup.name.clone())
+                .collect();
+            structural_defects(
+                snap,
+                &dead_candidates,
+                &raw_duplicate_symbols,
+                cascade_imports,
+            )
+            .metrics()
+        }
+        None => HealthMetrics {
+            breaking_cycles: circular_imports,
+            unused_high_confidence,
+            dead_exports,
+            twins_dead_parrots,
+            twins_same_language,
+            barrel_chaos_count,
+            structural_cycles: lazy_circular_imports,
+            cascade_imports,
+            duplicate_exports,
+            files: files_analyzed,
+            loc: total_loc,
+            ..Default::default()
+        },
     };
 
     let mut health = calculate_health_score(&health_metrics);
@@ -615,7 +638,7 @@ fn compute_summary(
     // subset, not the repo. Cap health at 50 and emit a loud warning so
     // agents do not propagate a false "HEALTHY" verdict.
     //
-    // See loctree-feedback.md 2026-05-22 — `markdown-editor-mac-objc`
+    // See loctree-fail.md 2026-05-22 — `markdown-editor-mac-objc`
     // returned `health_score: 100` while loctree could not parse a
     // single `.h`/`.m` file (36 ObjC files invisible). The repo had
     // command injection in PandocConverter that loctree never surfaced.
@@ -993,7 +1016,7 @@ fn severity_label(severity: DupSeverity) -> &'static str {
 
 /// Heuristic: detect whether the analyzed project ships a Tauri backend.
 ///
-/// loctree-feedback hak 2026-05-18 Screenscribe HAK 2 (`Tauri-pattern false
+/// loctree-fail hak 2026-05-18 Screenscribe HAK 2 (`Tauri-pattern false
 /// positive na non-Tauri repo`): `loct insights` was emitting
 /// `[HIGH] Missing Tauri Handlers` on Screenscribe — a pure
 /// Python+JS app with no `tauri.conf.json`, no `src-tauri/`, and no
@@ -1602,7 +1625,7 @@ mod tests {
     /// `missing_handlers` / `unregistered_handlers` quick-win path must
     /// supply this in their `analyses` slice, otherwise the post-2026-05-25
     /// non-Tauri gate filters those wins out (see
-    /// `loctree-feedback.md` hak 2026-05-18 Screenscribe HAK 2).
+    /// `loctree-fail.md` hak 2026-05-18 Screenscribe HAK 2).
     fn tauri_stack_marker() -> FileAnalysis {
         FileAnalysis {
             path: "src-tauri/tauri.conf.json".to_string(),
@@ -2034,7 +2057,7 @@ mod tests {
         assert!(wins[0].location.contains("src/app.ts:42"));
     }
 
-    /// loctree-feedback hak 2026-05-18 Screenscribe HAK 2 regression: on a
+    /// loctree-fail hak 2026-05-18 Screenscribe HAK 2 regression: on a
     /// non-Tauri repo the `missing_handlers` and `unregistered_handlers`
     /// quick-wins must be suppressed entirely — they are almost always
     /// false positives caused by custom JS events (`addEventListener` /
@@ -2485,6 +2508,9 @@ mod tests {
                 name: "UserType".to_string(),
                 classification: crate::analyzer::twins::TwinClassification::Duplicate,
                 class: crate::analyzer::twins::TwinClass::NameCollision,
+                shape_match: false,
+                single_module_target: false,
+                exclude_from_score: false,
                 locations: vec![
                     TwinLocation {
                         file_path: "src/types/user.ts".to_string(),
@@ -2549,6 +2575,9 @@ mod tests {
                 name: "Message".to_string(),
                 classification: crate::analyzer::twins::TwinClassification::Duplicate,
                 class: crate::analyzer::twins::TwinClass::NameCollision,
+                shape_match: false,
+                single_module_target: false,
+                exclude_from_score: false,
                 locations: vec![
                     TwinLocation {
                         file_path: "src/types/message.ts".to_string(),

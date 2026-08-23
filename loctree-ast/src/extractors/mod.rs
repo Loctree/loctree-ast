@@ -12,8 +12,11 @@
 
 use crate::{LangParser, LoctreeTree};
 
+/// JavaScript extractor, bound to the `tree-sitter-javascript` grammar.
 pub mod js;
+/// Python extractor, bound to the `tree-sitter-python` grammar.
 pub mod py;
+/// TypeScript and TSX extractors, bound to `tree-sitter-typescript`.
 pub mod ts;
 
 pub use js::JsExtractor;

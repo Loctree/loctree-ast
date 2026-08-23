@@ -17,7 +17,7 @@
 //!   that triggers specifically when the stale source is a SealedSecret/SOPS
 //!   and the fresh source is a plain dotenv/configmap.
 //!
-//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents ⓒ 2025-2026 Loctree Team
+//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI
 
 use super::types::{EnvDeclaration, EnvSource, EnvSourceKind, EnvWarning, ValuePresence};
 

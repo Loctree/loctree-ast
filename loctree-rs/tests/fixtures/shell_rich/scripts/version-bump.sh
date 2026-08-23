@@ -42,7 +42,7 @@
 #   ./scripts/version-bump.sh --set 1.0.0 --all --tag
 #   ./scripts/version-bump.sh --show-deps
 #
-# Created by M&K ⓒ 2025-2026 The Loctree Team
+# 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI
 
 set -euo pipefail
 
@@ -779,7 +779,7 @@ git -C "$ROOT_DIR" commit -m "chore(release): bump versions
 
 $commit_parts
 
-Created by M&K ⓒ 2025-2026 The Loctree Team"
+𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI"
 
 log_success "Committed version bump"
 

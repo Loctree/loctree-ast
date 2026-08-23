@@ -43,6 +43,10 @@ pub const SNAPSHOT_FILE: &str = "snapshot.json";
 
 /// Environment variable to override the cache base directory.
 const LOCT_CACHE_DIR_ENV: &str = "LOCT_CACHE_DIR";
+/// Escape hatch for tests / deliberate non-git fixtures. Production agent
+/// hosts must never set this — auto-scan without a git boundary is a host
+/// safety hazard (full-filesystem scan when cwd=`/`).
+pub const LOCT_ALLOW_NON_GIT_ROOT_ENV: &str = "LOCT_ALLOW_NON_GIT_ROOT";
 const LEGACY_MIGRATION_MARKER: &str = ".snapshot-migrated-to-cache";
 const REUSE_FENCE_FILE: &str = "snapshot.reuse-fence";
 const REUSE_FENCE_ALGORITHM: &str = "sha256:loctree-reuse-fence-v1";
@@ -60,11 +64,35 @@ pub fn cache_base_dir() -> PathBuf {
             return PathBuf::from(custom);
         }
     }
+    default_cache_base_dir()
+}
+
+/// Env-independent platform default resolution — the production behaviour
+/// behind `cache_base_dir()` when `LOCT_CACHE_DIR` is unset.
+fn platform_cache_base_dir() -> PathBuf {
     if let Some(cache_dir) = dirs::cache_dir() {
         return cache_dir.join("loctree");
     }
     // Last resort: CWD-local .loctree/ (backward compat for envs without $HOME)
     PathBuf::from(SNAPSHOT_DIR)
+}
+
+#[cfg(not(test))]
+fn default_cache_base_dir() -> PathBuf {
+    platform_cache_base_dir()
+}
+
+/// Unit-test builds NEVER fall back to the operator-global cache: any write
+/// that reaches default resolution — including from detached refresh threads
+/// that outlive a per-test `EnvVarGuard` — lands in one process-global
+/// TempDir instead of `~/Library/Caches/loctree`. Production binaries and
+/// integration-test-linked builds compile the platform path above.
+#[cfg(test)]
+fn default_cache_base_dir() -> PathBuf {
+    static TEST_CACHE: std::sync::LazyLock<tempfile::TempDir> = std::sync::LazyLock::new(|| {
+        tempfile::TempDir::new().expect("process-global test cache dir")
+    });
+    TEST_CACHE.path().to_path_buf()
 }
 
 /// Returns the cache directory for a specific project.
@@ -156,12 +184,70 @@ fn project_cache_id(root: &Path) -> String {
 }
 
 fn project_cache_lock_path(root: &Path) -> PathBuf {
-    cache_base_dir()
-        .join("locks")
-        .join(format!("{}.lock", project_cache_id(root)))
+    project_cache_lock_path_for_bucket_id(&project_cache_id(root))
 }
 
-struct SnapshotCacheLock {
+fn project_cache_lock_path_for_bucket_id(bucket_id: &str) -> PathBuf {
+    cache_base_dir()
+        .join("locks")
+        .join(format!("{bucket_id}.lock"))
+}
+
+/// Validate a global-cache bucket directory name before using it as a lock key.
+///
+/// Production project ids are the first 16 hex digits of a SHA-256, but the
+/// on-disk `projects/` tree may also hold operator/test buckets with other
+/// single-component names. Reject only values that are unsafe as a lock-file
+/// path component (empty, `.`/`..`, separators, control characters).
+pub(crate) fn is_valid_global_cache_bucket_id(bucket_id: &str) -> bool {
+    if bucket_id.is_empty() || bucket_id == "." || bucket_id == ".." || bucket_id.len() > 255 {
+        return false;
+    }
+    !bucket_id
+        .chars()
+        .any(|c| c == '/' || c == '\\' || c == '\0' || c.is_control())
+}
+
+/// Error returned by non-blocking snapshot-cache lock acquisition.
+#[derive(Debug)]
+pub(crate) enum SnapshotCacheLockError {
+    /// Another process already holds the exclusive lock for this bucket.
+    Contended,
+    /// Bucket id failed validation (not a safe global-cache directory name).
+    InvalidBucketId,
+    /// Filesystem or lock-file open error.
+    Io(io::Error),
+}
+
+impl std::fmt::Display for SnapshotCacheLockError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Contended => write!(
+                f,
+                "snapshot cache lock is held by another process (retry after the writer finishes)"
+            ),
+            Self::InvalidBucketId => write!(f, "invalid global cache bucket id"),
+            Self::Io(err) => write!(f, "{err}"),
+        }
+    }
+}
+
+impl std::error::Error for SnapshotCacheLockError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(err) => Some(err),
+            Self::Contended | Self::InvalidBucketId => None,
+        }
+    }
+}
+
+/// Exclusive process-held lock for one project snapshot-cache bucket.
+///
+/// Unlocks automatically on drop. Used by `Snapshot::save` / `Snapshot::load`
+/// (blocking) and by `loct cache clean` (non-blocking) so writers and
+/// destructive cleanup cannot race on the same bucket.
+#[derive(Debug)]
+pub(crate) struct SnapshotCacheLock {
     file: File,
 }
 
@@ -171,19 +257,57 @@ impl Drop for SnapshotCacheLock {
     }
 }
 
-fn acquire_snapshot_cache_lock(root: &Path) -> io::Result<SnapshotCacheLock> {
-    let lock_path = project_cache_lock_path(root);
+fn open_snapshot_cache_lock_file(lock_path: &Path) -> io::Result<File> {
     if let Some(dir) = lock_path.parent() {
         fs::create_dir_all(dir)?;
     }
-    let file = OpenOptions::new()
+    OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .truncate(false)
-        .open(&lock_path)?;
+        .open(lock_path)
+}
+
+/// Blocking exclusive lock used by snapshot save/load. Preserves historical
+/// wait-for-writer behavior so a concurrent scan can finish before load.
+pub(crate) fn acquire_snapshot_cache_lock(root: &Path) -> io::Result<SnapshotCacheLock> {
+    let lock_path = project_cache_lock_path(root);
+    let file = open_snapshot_cache_lock_file(&lock_path)?;
     FileExt::lock_exclusive(&file)?;
     Ok(SnapshotCacheLock { file })
+}
+
+fn try_acquire_snapshot_cache_lock_at(
+    lock_path: &Path,
+) -> Result<SnapshotCacheLock, SnapshotCacheLockError> {
+    let file = open_snapshot_cache_lock_file(lock_path).map_err(SnapshotCacheLockError::Io)?;
+    match FileExt::try_lock_exclusive(&file) {
+        Ok(true) => Ok(SnapshotCacheLock { file }),
+        Ok(false) => Err(SnapshotCacheLockError::Contended),
+        Err(err) => Err(SnapshotCacheLockError::Io(err)),
+    }
+}
+
+/// Non-blocking exclusive lock for a project root's cache bucket.
+///
+/// Cleanup paths use this so an active writer yields a clear fail-closed
+/// retry error instead of an indefinite wait.
+pub(crate) fn try_acquire_snapshot_cache_lock(
+    root: &Path,
+) -> Result<SnapshotCacheLock, SnapshotCacheLockError> {
+    try_acquire_snapshot_cache_lock_at(&project_cache_lock_path(root))
+}
+
+/// Non-blocking exclusive lock keyed by a validated global-cache bucket id
+/// (directory name under `<cache>/projects/`).
+pub(crate) fn try_acquire_snapshot_cache_lock_for_bucket_id(
+    bucket_id: &str,
+) -> Result<SnapshotCacheLock, SnapshotCacheLockError> {
+    if !is_valid_global_cache_bucket_id(bucket_id) {
+        return Err(SnapshotCacheLockError::InvalidBucketId);
+    }
+    try_acquire_snapshot_cache_lock_at(&project_cache_lock_path_for_bucket_id(bucket_id))
 }
 
 fn sha256_hex(bytes: impl AsRef<[u8]>) -> String {
@@ -432,7 +556,13 @@ fn read_text_under_cache_root(root: &Path, path: &Path) -> io::Result<String> {
 }
 
 fn find_git_root(start: &Path) -> Option<PathBuf> {
-    let mut current = start.canonicalize().ok()?;
+    // Walk *up* toward the filesystem root (git convention). We deliberately
+    // do not crawl *down* — from cwd=`/` that would walk the entire disk just
+    // looking for a .git, which is itself a denial-of-service.
+    let mut current = start
+        .canonicalize()
+        .ok()
+        .unwrap_or_else(|| start.to_path_buf());
     loop {
         let git_dir = current.join(".git");
         if git_dir.is_dir() || git_dir.is_file() {
@@ -452,6 +582,126 @@ fn normalize_root_dir(root: &Path) -> PathBuf {
         root.to_path_buf()
     };
     base.canonicalize().unwrap_or(base)
+}
+
+fn non_git_scan_allowed() -> bool {
+    match std::env::var(LOCT_ALLOW_NON_GIT_ROOT_ENV) {
+        Ok(v) => {
+            let v = v.trim();
+            v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes")
+        }
+        Err(_) => false,
+    }
+}
+
+fn is_filesystem_root(path: &Path) -> bool {
+    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    if canonical.parent().is_none() {
+        return true;
+    }
+    // Unix `/` and Windows drive roots after canonicalize.
+    canonical.components().all(|c| {
+        matches!(
+            c,
+            std::path::Component::RootDir | std::path::Component::Prefix(_)
+        )
+    })
+}
+
+fn is_home_directory(path: &Path) -> bool {
+    let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) else {
+        return false;
+    };
+    let home = PathBuf::from(home);
+    let home = home.canonicalize().unwrap_or(home);
+    let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    path == home
+}
+
+/// Refuse scan roots that are not inside a git checkout (or are `/` / `$HOME`).
+///
+/// This is the host-safety fence for agent tool-calls that inherit `cwd=/` and
+/// then auto-scan an implicit root (incident class: multi-GB parallel scans of
+/// the whole filesystem). Walks **up** from each root for `.git`; if none is
+/// found, scanning is refused unless `allow_non_git` /
+/// `LOCT_ALLOW_NON_GIT_ROOT` is set. Filesystem root `/` is always refused.
+pub fn require_git_scan_root(path: &Path) -> io::Result<PathBuf> {
+    require_git_scan_root_with(path, false)
+}
+
+/// Same as [`require_git_scan_root`], with an explicit opt-in for non-git roots
+/// (CLI `--force-non-git-repository-snapshot` / `--force-non-git`).
+pub fn require_git_scan_root_with(path: &Path, allow_non_git: bool) -> io::Result<PathBuf> {
+    let start = normalize_root_dir(path);
+    let allow = allow_non_git || non_git_scan_allowed();
+
+    // `/` is never a valid project root — even forced.
+    if is_filesystem_root(&start) {
+        return Err(io::Error::other(format!(
+            "refused: refusing to scan filesystem root '{}' — this usually means an agent tool-call inherited cwd=/ without a project workdir. cd into a git checkout or pass an explicit path inside one.{}",
+            start.display(),
+            if allow {
+                " (--force-non-git does not override this)"
+            } else {
+                ""
+            }
+        )));
+    }
+
+    if allow {
+        if is_home_directory(&start) {
+            return Err(io::Error::other(format!(
+                "refused: refusing to scan the home directory '{}' as a project root even with --force-non-git",
+                start.display()
+            )));
+        }
+        return Ok(start);
+    }
+
+    let Some(git_root) = find_git_root(&start) else {
+        return Err(io::Error::other(format!(
+            "refused: no git repository at '{}' (or any parent). Loctree only scans git checkouts by default. \
+cd into a repo, run `git init`, or pass `--force-non-git-repository-snapshot` for a deliberate non-git snapshot.",
+            start.display()
+        )));
+    };
+
+    if is_filesystem_root(&git_root) {
+        return Err(io::Error::other(
+            "refused: refusing to scan a git repository rooted at filesystem root '/'",
+        ));
+    }
+
+    if is_home_directory(&git_root) {
+        return Err(io::Error::other(format!(
+            "refused: refusing to scan the home directory '{}' as a project root (git at $HOME is not a safe implicit scan target). Use an explicit subproject path.",
+            git_root.display()
+        )));
+    }
+
+    Ok(git_root)
+}
+
+/// Validate every scan root is inside a safe git checkout.
+pub fn assert_scan_roots_are_git_repos(roots: &[PathBuf]) -> io::Result<()> {
+    assert_scan_roots_are_git_repos_with(roots, false)
+}
+
+/// Validate scan roots; `allow_non_git` maps to CLI `--force-non-git`.
+pub fn assert_scan_roots_are_git_repos_with(
+    roots: &[PathBuf],
+    allow_non_git: bool,
+) -> io::Result<()> {
+    if roots.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "No root directory specified",
+        ));
+    }
+    for root in roots {
+        require_git_scan_root_with(root, allow_non_git)?;
+    }
+    Ok(())
 }
 
 fn has_project_marker(root: &Path) -> bool {
@@ -509,19 +759,32 @@ pub fn resolve_snapshot_root_with_strategy(
             .collect()
     };
 
-    // If the given root itself looks like a project (has tsconfig.json, package.json, etc.),
-    // use it directly — don't walk upward past an explicit project boundary.
-    if roots.len() == 1 && has_project_marker(&roots[0]) {
+    // An explicit project marker (`package.json`, `pyproject.toml`, …) is the
+    // narrowest boundary the caller can state, so it wins over the enclosing git
+    // root: a monorepo subpackage must not be re-homed onto the whole repo.
+    //
+    // Host safety still applies, and it belongs on *this* branch's conditions —
+    // not on branch ordering. A marker only counts when the path sits inside a
+    // git checkout (or the operator opted out via `LOCT_ALLOW_NON_GIT_ROOT`),
+    // and never when it *is* `/` or `$HOME`; a stray `package.json` there must
+    // not turn the whole filesystem or home dir into a project.
+    if roots.len() == 1
+        && has_project_marker(&roots[0])
+        && (find_git_root(&roots[0]).is_some() || non_git_scan_allowed())
+        && !is_filesystem_root(&roots[0])
+        && !is_home_directory(&roots[0])
+    {
         return roots[0].clone();
     }
 
-    // Prefer git root — the most reliable project boundary. Checked before
-    // find_loctree_root to avoid walking past .git into unrelated parent caches
-    // (e.g. a stale cache entry at "/" would trap all non-marker projects).
+    // Otherwise the git root is the most reliable boundary — with the same
+    // host guards, so a bare cwd of `/` or `$HOME` is never treated as a project.
     if let Some(first_git) = roots.first().and_then(|root| find_git_root(root))
         && roots
             .iter()
             .all(|root| find_git_root(root).as_ref() == Some(&first_git))
+        && !is_filesystem_root(&first_git)
+        && !is_home_directory(&first_git)
     {
         return first_git;
     }
@@ -532,11 +795,32 @@ pub fn resolve_snapshot_root_with_strategy(
         .collect();
     if let Some(first) = loctree_roots.pop()
         && loctree_roots.iter().all(|root| root == &first)
+        && (find_git_root(&first).is_some() || non_git_scan_allowed())
     {
         return first;
     }
 
-    find_git_root(&cwd).unwrap_or(cwd)
+    // Requested roots that all live *inside* cwd are subtrees of the project the
+    // operator is standing in, so cwd is their common root — that is what makes
+    // `loct plan src other` (targets relative to cwd) scan the whole project
+    // instead of collapsing onto `src` and losing every sibling directory.
+    let cwd_canon = cwd.canonicalize().unwrap_or_else(|_| cwd.clone());
+    if !roots.is_empty()
+        && roots.iter().all(|root| root.starts_with(&cwd_canon))
+        && !is_filesystem_root(&cwd_canon)
+        && !is_home_directory(&cwd_canon)
+    {
+        return cwd_canon;
+    }
+
+    // Otherwise prefer the first requested root as-is. Do **not** re-home an
+    // explicit *outside* path onto the shell cwd's git checkout (that used to
+    // steal `loct scan /tmp/foo --force-non-git` into the operator's monorepo).
+    // Scan safety is enforced separately by `assert_scan_roots_are_git_repos*`.
+    if let Some(first) = roots.first() {
+        return first.clone();
+    }
+    cwd
 }
 
 pub fn resolve_snapshot_root(root_list: &[PathBuf]) -> PathBuf {
@@ -1143,6 +1427,18 @@ impl EntrypointDriftSummary {
     }
 }
 
+/// Edge label for Swift-style implicit (module-scope) symbol coupling.
+///
+/// Languages without per-symbol imports (Swift files inside one module see
+/// each other without `import`) get heuristic `implicit_symbol` edges from a
+/// bare-name usage to the file exporting that type name. These edges are a
+/// weaker signal than an explicit import: they carry no line, no symbol, and
+/// are vulnerable to name collisions. They MUST NOT be weighted like import
+/// edges in fan-in / hub ranking (see `metrics::incoming_import_metrics`) and
+/// `who-imports` must verify a real symbol reference before reporting one
+/// (see `query::query_who_imports`).
+pub const IMPLICIT_SYMBOL_EDGE_LABEL: &str = "implicit_symbol";
+
 /// Graph edge representing an import relationship
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GraphEdge {
@@ -1152,6 +1448,14 @@ pub struct GraphEdge {
     pub to: String,
     /// Edge label (import type, symbol name, etc.)
     pub label: String,
+}
+
+impl GraphEdge {
+    /// True when this edge is a heuristic module-scope coupling, not an
+    /// explicit import (see [`IMPLICIT_SYMBOL_EDGE_LABEL`]).
+    pub fn is_implicit_symbol(&self) -> bool {
+        self.label == IMPLICIT_SYMBOL_EDGE_LABEL
+    }
 }
 
 /// Command bridge mapping (FE invoke -> BE handler)
@@ -2083,18 +2387,27 @@ impl Snapshot {
 
     /// Walk upward from `start` looking for a loctree project root.
     ///
-    /// A directory is considered a root if it has a `.loctree/` config dir
-    /// (user-editable files like config.toml, suppressions.toml) OR if its
-    /// global cache directory contains at least one snapshot.
+    /// A directory is considered a root if it has a **real** `.loctree/` project
+    /// marker (config/suppressions/top-level snapshot or a non-legacy branch
+    /// snapshot) OR if its global cache directory contains at least one snapshot.
     ///
-    /// Stops at git boundaries: once we pass a `.git` directory without finding
-    /// a loctree root, we don't continue into unrelated parent directories.
+    /// Nested `subdir/.loctree/legacy@…` plants (foreign env leftovers) are **not**
+    /// treated as project roots — walking continues to the monorepo/git root.
+    /// That is the Monika/0.9.3 scope-drift class: `loct context --file sub/…`
+    /// must not collapse Project Identity onto a stale sub-`.loctree/`.
+    ///
+    /// Git is a hard project boundary. Once we reach a directory that has
+    /// `.git` (directory *or* worktree file) we stop — even if no cache exists
+    /// yet. Walking further would pick up a parent monorepo's snapshot
+    /// (loctree-fail 2026-08-10/11: linked Codescribe worktrees nested under
+    /// `~/.vibecrafted` were served the parent atlas while the identity header
+    /// still named the worktree).
     pub fn find_loctree_root(start: &Path) -> Option<PathBuf> {
         let mut current = start.canonicalize().ok()?;
-        let mut passed_git = false;
         loop {
-            // Check for .loctree config dir (config.toml, suppressions.toml, .loctreeignore)
-            if current.join(SNAPSHOT_DIR).exists() {
+            let loctree_dir = current.join(SNAPSHOT_DIR);
+            // Only stop for intentional loctree roots — not legacy@* trash alone.
+            if loctree_dir.is_dir() && Self::loctree_dir_marks_project_root(&loctree_dir) {
                 return Some(current);
             }
             // Check global cache — require an actual snapshot, not just an empty dir
@@ -2102,19 +2415,54 @@ impl Snapshot {
             if cache.is_dir() && Self::cache_has_snapshot(&cache) {
                 return Some(current);
             }
-            // Track git boundaries — don't walk past a .git into unrelated parents
+            // Hard stop at the nearest git root (worktree `.git` file counts).
+            // Do not climb into a parent repository that may hold foreign cache.
             if current.join(".git").exists() {
-                if passed_git {
-                    // Already passed one git root, don't walk into another project
-                    return None;
-                }
-                passed_git = true;
+                return Some(current);
             }
             match current.parent() {
                 Some(parent) if parent != current => current = parent.to_path_buf(),
                 _ => return None,
             }
         }
+    }
+
+    /// True when `.loctree/` is an intentional project marker, not merely a
+    /// container for `legacy@*` foreign snapshots left by another env.
+    ///
+    /// Empty `.loctree/` still counts (user created the dir). A directory
+    /// whose **only** non-dot payload is `legacy@*` does **not** count.
+    fn loctree_dir_marks_project_root(loctree_dir: &Path) -> bool {
+        if loctree_dir.join("config.toml").is_file()
+            || loctree_dir.join("suppressions.toml").is_file()
+            || loctree_dir.join(SNAPSHOT_FILE).is_file()
+            || loctree_dir.join(".loctreeignore").is_file()
+            || loctree_dir.join("loctignore").is_file()
+        {
+            return true;
+        }
+        let Ok(entries) = fs::read_dir(loctree_dir) else {
+            // Unreadable but present — treat as marker (fail open for root).
+            return true;
+        };
+        let mut saw_non_dot = false;
+        let mut saw_non_legacy = false;
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name == LEGACY_MIGRATION_MARKER || name.starts_with('.') {
+                continue;
+            }
+            saw_non_dot = true;
+            if name.starts_with("legacy@") {
+                continue;
+            }
+            saw_non_legacy = true;
+            break;
+        }
+        // Empty (or only markers/dots) → intentional shell.
+        // Only legacy@* plants → not a project root.
+        !saw_non_dot || saw_non_legacy
     }
 
     /// Returns true if a cache directory contains at least one snapshot.json.
@@ -2141,8 +2489,8 @@ impl Snapshot {
     ///
     /// # Examples
     /// ```ignore
-    /// // Given snapshot with root "/home/foo/project"
-    /// snapshot.normalize_path("/home/foo/project/src/main.rs") // => "src/main.rs"
+    /// // Given snapshot with root "/Users/foo/project"
+    /// snapshot.normalize_path("/Users/foo/project/src/main.rs") // => "src/main.rs"
     /// snapshot.normalize_path("./src/main.rs") // => "src/main.rs"
     /// snapshot.normalize_path("src\\main.rs") // => "src/main.rs"
     /// ```
@@ -2714,6 +3062,9 @@ pub struct AcquireOptions {
     /// project snapshot and every default command are left untouched. Does not
     /// override `.gitignore` or heavy-directory presets.
     pub include_ignored: bool,
+    /// Explicit opt-in to scan a non-git directory (`--force-non-git` /
+    /// `--force-non-git-repository-snapshot`). Filesystem root `/` is still refused.
+    pub force_non_git: bool,
 }
 
 impl Default for AcquireOptions {
@@ -2730,6 +3081,7 @@ impl Default for AcquireOptions {
             full_scan: false,
             strategy: SnapshotRootStrategy::Project,
             include_ignored: false,
+            force_non_git: false,
         }
     }
 }
@@ -2847,6 +3199,7 @@ pub fn acquire_snapshot(
     // project snapshot is intentionally never read or written here, so default
     // commands keep seeing the clean universe regardless of this override read.
     if opts.include_ignored {
+        assert_scan_roots_are_git_repos_with(roots, opts.force_non_git)?;
         let scan_roots = canonical_roots_for_scan_metadata(roots);
         let universe_root = scan_roots
             .first()
@@ -2854,6 +3207,7 @@ pub fn acquire_snapshot(
             .unwrap_or_else(|| snapshot_root.clone());
         let mut parsed = unified_scan_args_with_ignore(&universe_root, opts.verbose, true);
         parsed.full_scan = true;
+        parsed.force_non_git = opts.force_non_git;
         parsed.output = if opts.json {
             OutputMode::Json
         } else {
@@ -2991,6 +3345,10 @@ pub fn acquire_snapshot(
         }
     }
 
+    // Host-safety fence before any rescan/auto-scan (covers non-interactive
+    // `loct slice` when cwd=`/` and similar agent failures).
+    assert_scan_roots_are_git_repos_with(roots, opts.force_non_git)?;
+
     // Rescan with the unified file universe (same set as the initial scan).
     let scan_roots = canonical_roots_for_scan_metadata(roots);
     let universe_root = scan_roots
@@ -2999,6 +3357,7 @@ pub fn acquire_snapshot(
         .unwrap_or_else(|| snapshot_root.clone());
     let mut parsed = unified_scan_args(&universe_root, opts.verbose);
     parsed.full_scan = opts.full_scan;
+    parsed.force_non_git = opts.force_non_git;
     parsed.output = if opts.json {
         OutputMode::Json
     } else {
@@ -3066,6 +3425,24 @@ pub(crate) fn build_snapshot_for_strategy(
     let start_time = Instant::now();
     let mut parsed = parsed.clone();
 
+    // Validate at least one root was specified
+    if root_list.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "No root directory specified",
+        ));
+    }
+
+    // Never scan outside a git checkout unless the operator opted in via
+    // `--force-non-git-repository-snapshot` / `LOCT_ALLOW_NON_GIT_ROOT`.
+    // This is the single choke-point for all scan paths.
+    if parsed.force_non_git && !quiet_summary {
+        eprintln!(
+            "[loct] warning: --force-non-git-repository-snapshot: scanning outside a git checkout"
+        );
+    }
+    assert_scan_roots_are_git_repos_with(root_list, parsed.force_non_git)?;
+
     // Snapshot root defaults to the first provided root (common UX: keep artifacts near target),
     // falling back to CWD if multiple roots are provided.
     let snapshot_root = resolve_snapshot_root_with_strategy(root_list, snapshot_strategy);
@@ -3076,14 +3453,6 @@ pub(crate) fn build_snapshot_for_strategy(
     // `.gitignore` participates in the same hidden-truth snapshot as future
     // drift rescans.
     let first_scan = !Snapshot::exists(&snapshot_root);
-
-    // Validate at least one root was specified
-    if root_list.is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "No root directory specified",
-        ));
-    }
 
     // Try to load existing snapshot for incremental scanning.
     // Only reuse cached analyses if the old snapshot is from the same git branch —
@@ -3144,7 +3513,14 @@ pub(crate) fn build_snapshot_for_strategy(
         "fresh (no existing snapshot)"
     };
 
-    let gitignore_entry_added = if first_scan && !quiet_summary && !gitignore_append_disabled() {
+    // Perception auto-scans (impact/slice/find/context) must not mutate the
+    // checkout. Only explicit write-scan verbs (`loct scan` / `auto` / `watch`)
+    // set `allow_gitignore_mutation` (see command_to_parsed_args).
+    let gitignore_entry_added = if first_scan
+        && !quiet_summary
+        && parsed.allow_gitignore_mutation
+        && !gitignore_append_disabled()
+    {
         match ensure_loctree_gitignore_entry(&snapshot_root) {
             Ok(added) => added,
             Err(err) => {
@@ -4163,6 +4539,8 @@ pub(crate) fn write_auto_artifacts(
         json: true,
         full: true,
         markdown: false,
+        memory_hours: None,
+        memory_limit: None,
     };
     // Materialize the Context Atlas first (report.html below points at it).
     // We capture the manifest summary here and announce it AFTER write_report
@@ -4270,6 +4648,105 @@ pub(crate) fn write_auto_artifacts(
     Ok(created)
 }
 
+/// Shared test-only environment plumbing for cache isolation.
+///
+/// Any test that triggers a snapshot save/load through the env-resolved
+/// `cache_base_dir()` MUST hold an `EnvVarGuard` pointing `LOCT_CACHE_DIR`
+/// at a `TempDir` (and be `#[serial]` — process env is global). Otherwise
+/// the test writes fixture snapshots into the operator-global cache
+/// (`~/Library/Caches/loctree`), shadowing the real project snapshot.
+#[cfg(test)]
+pub(crate) mod test_env {
+    use std::ffi::OsString;
+    use std::path::Path;
+
+    #[derive(Debug)]
+    pub(crate) struct EnvVarGuard {
+        key: &'static str,
+        original: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        pub(crate) fn set_path(key: &'static str, value: &Path) -> Self {
+            let guard = Self {
+                key,
+                original: std::env::var_os(key),
+            };
+            set_env_var(key, value.as_os_str());
+            guard
+        }
+
+        pub(crate) fn clear(key: &'static str) -> Self {
+            let guard = Self {
+                key,
+                original: std::env::var_os(key),
+            };
+            remove_env_var(key);
+            guard
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match &self.original {
+                Some(value) => set_env_var(self.key, value),
+                None => remove_env_var(self.key),
+            }
+        }
+    }
+
+    pub(crate) fn set_env_var<K: AsRef<std::ffi::OsStr>, V: AsRef<std::ffi::OsStr>>(
+        key: K,
+        value: V,
+    ) {
+        {
+            crate::test_env::set_var(key, value);
+        }
+    }
+
+    pub(crate) fn remove_env_var<K: AsRef<std::ffi::OsStr>>(key: K) {
+        {
+            crate::test_env::remove_var(key);
+        }
+    }
+
+    /// Holds env restores for isolated unit tests (cache dir + non-git allow).
+    #[derive(Debug)]
+    pub(crate) struct IsolatedCacheGuard {
+        _cache_dir: EnvVarGuard,
+        _allow_non_git: EnvVarGuard,
+    }
+
+    impl EnvVarGuard {
+        pub(crate) fn set_str(key: &'static str, value: &str) -> Self {
+            let guard = Self {
+                key,
+                original: std::env::var_os(key),
+            };
+            set_env_var(key, value);
+            guard
+        }
+    }
+
+    /// Temp cache dir + env guards: every snapshot write in the holding test
+    /// lands in the returned `TempDir` instead of the operator-global cache.
+    ///
+    /// Also enables `LOCT_ALLOW_NON_GIT_ROOT` so unit fixtures without `git init`
+    /// keep working; production and e2e refuse non-git roots by default.
+    pub(crate) fn isolated_cache() -> (tempfile::TempDir, IsolatedCacheGuard) {
+        let dir = tempfile::TempDir::new().expect("temp cache dir for test isolation");
+        let allow = EnvVarGuard::set_str(super::LOCT_ALLOW_NON_GIT_ROOT_ENV, "1");
+        let cache = EnvVarGuard::set_path(super::LOCT_CACHE_DIR_ENV, dir.path());
+        (
+            dir,
+            IsolatedCacheGuard {
+                _cache_dir: cache,
+                _allow_non_git: allow,
+            },
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4314,8 +4791,21 @@ mod tests {
         }
     }
 
+    /// Test-side git identity. A bare CI container has no `~/.gitconfig`, so
+    /// `git commit` there dies with "Author identity unknown" while the same
+    /// test passes on a developer machine that happens to have one. Injecting
+    /// the identity per-invocation makes every call site environment-independent
+    /// instead of relying on each fixture to remember `git config user.*`.
+    pub(crate) const GIT_TEST_IDENTITY: [&str; 4] = [
+        "-c",
+        "user.email=loctree-test@example.com",
+        "-c",
+        "user.name=Loctree Test",
+    ];
+
     fn run_git(root: &Path, args: &[&str]) {
         let output = Command::new("git")
+            .args(GIT_TEST_IDENTITY)
             .args(args)
             .current_dir(root)
             .output()
@@ -4428,7 +4918,66 @@ mod tests {
 
     #[test]
     #[serial]
+    fn perception_scan_does_not_mutate_gitignore() {
+        // loctree-fail 2026-07-26 / 2026-08-02: impact/slice first-touch used to
+        // append `.loctree/` to `.gitignore`. Perception auto-scan must leave
+        // the checkout alone; only explicit scan/auto/watch set the mutation bit.
+        let (_cache_dir, _cache_env) = test_env::isolated_cache();
+
+        let perception = TempDir::new().expect("temp dir");
+        let root = perception.path();
+        run_git(root, &["init"]);
+        std::fs::write(root.join("main.rs"), "fn main() {}").expect("seed file");
+        run_git(root, &["add", "main.rs"]);
+        run_git(root, &["commit", "-m", "init"]);
+
+        // Stays `mut`: the same fixture flips `allow_gitignore_mutation` back on
+        // further down to exercise the opposite branch.
+        let mut parsed = crate::args::ParsedArgs {
+            allow_gitignore_mutation: false,
+            full_scan: true,
+            ..Default::default()
+        };
+        build_snapshot_for_strategy(
+            &[root.to_path_buf()],
+            &parsed,
+            true,
+            SnapshotRootStrategy::Project,
+            true,
+        )
+        .expect("perception scan should succeed");
+        assert!(
+            !root.join(".gitignore").exists(),
+            "perception first-scan must not create .gitignore"
+        );
+
+        let write_scan = TempDir::new().expect("temp dir");
+        let write_root = write_scan.path();
+        run_git(write_root, &["init"]);
+        std::fs::write(write_root.join("main.rs"), "fn main() {}").expect("seed file");
+        run_git(write_root, &["add", "main.rs"]);
+        run_git(write_root, &["commit", "-m", "init"]);
+        parsed.allow_gitignore_mutation = true;
+        build_snapshot_for_strategy(
+            &[write_root.to_path_buf()],
+            &parsed,
+            false,
+            SnapshotRootStrategy::Project,
+            true,
+        )
+        .expect("write-scan should succeed");
+        let body =
+            std::fs::read_to_string(write_root.join(".gitignore")).expect("gitignore from scan");
+        assert!(
+            body.lines().any(|line| line.trim() == ".loctree/"),
+            "explicit write-scan may append .loctree/: {body:?}"
+        );
+    }
+
+    #[test]
+    #[serial]
     fn test_snapshot_save_load_roundtrip() {
+        let (_cache_dir, _cache_env) = test_env::isolated_cache();
         let tmp = TempDir::new().expect("failed to create temp dir for snapshot roundtrip test");
         let root = tmp.path();
 
@@ -4455,6 +5004,7 @@ mod tests {
     #[test]
     #[serial]
     fn indexes_extensionless_python_shebang_entrypoint_for_slice_and_counts() {
+        let (_cache_dir, _cache_env) = test_env::isolated_cache();
         let tmp = TempDir::new().expect("tmp dir");
         let root = tmp.path();
         let runner = root.join("run-tool");
@@ -4510,6 +5060,7 @@ mod tests {
     #[test]
     #[serial]
     fn test_reuse_fence_matches_until_indexed_content_changes() {
+        let (_cache_dir, _cache_env) = test_env::isolated_cache();
         let tmp = TempDir::new().expect("failed to create temp dir for reuse fence test");
         let root = tmp.path();
         let source_path = root.join("src/lib.rs");
@@ -4538,6 +5089,7 @@ mod tests {
     #[test]
     #[serial]
     fn strict_acquire_trusts_fresh_snapshot_of_preexisting_dirty_content() {
+        let (_cache_dir, _cache_env) = test_env::isolated_cache();
         let tmp = TempDir::new().expect("temp dir for dirty snapshot freshness test");
         let root = tmp.path();
         let source_path = root.join("src/lib.rs");
@@ -4605,6 +5157,7 @@ mod tests {
     #[test]
     #[serial]
     fn test_watch_fast_path_trusts_snapshot_without_rehash() {
+        let (_cache_dir, _cache_env) = test_env::isolated_cache();
         let tmp = TempDir::new().expect("temp dir for watch fast-path test");
         let root = tmp.path();
         let source_path = root.join("src/lib.rs");
@@ -4712,6 +5265,7 @@ mod tests {
     #[test]
     #[serial]
     fn test_snapshot_not_found() {
+        let (_cache_dir, _cache_env) = test_env::isolated_cache();
         let tmp = TempDir::new().expect("failed to create temp dir for not_found test");
         let result = Snapshot::load(tmp.path());
         assert!(result.is_err());
@@ -4791,6 +5345,7 @@ mod tests {
     #[test]
     #[serial]
     fn test_snapshot_exists_true() {
+        let (_cache_dir, _cache_env) = test_env::isolated_cache();
         let tmp = TempDir::new().expect("create temp dir");
         let snapshot = Snapshot::new(vec!["src".to_string()]);
         snapshot.save(tmp.path()).expect("save");
@@ -4809,10 +5364,192 @@ mod tests {
 
     #[test]
     #[serial]
+    fn require_git_scan_root_refuses_filesystem_root() {
+        let _clear = test_env::EnvVarGuard::clear(LOCT_ALLOW_NON_GIT_ROOT_ENV);
+        let err = require_git_scan_root(Path::new("/")).expect_err("must refuse /");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("refused") && (msg.contains("filesystem root") || msg.contains("'/'")),
+            "unexpected message: {msg}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn require_git_scan_root_refuses_non_git_folder() {
+        let _clear = test_env::EnvVarGuard::clear(LOCT_ALLOW_NON_GIT_ROOT_ENV);
+        let tmp = TempDir::new().expect("temp");
+        let err = require_git_scan_root(tmp.path()).expect_err("must refuse non-git");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("refused") && msg.contains("no git repository"),
+            "unexpected message: {msg}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn require_git_scan_root_accepts_git_checkout_and_walks_up() {
+        let _clear = test_env::EnvVarGuard::clear(LOCT_ALLOW_NON_GIT_ROOT_ENV);
+        let tmp = TempDir::new().expect("temp");
+        let root = tmp.path();
+        fs::create_dir_all(root.join(".git")).expect("git dir");
+        let nested = root.join("src/deep");
+        fs::create_dir_all(&nested).expect("nested");
+        let found = require_git_scan_root(&nested).expect("git root from nested");
+        assert_eq!(
+            found.canonicalize().unwrap(),
+            root.canonicalize().unwrap(),
+            "must walk up to the checkout containing .git"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn build_snapshot_refuses_non_git_without_escape_hatch() {
+        // Do not use isolated_cache() — it deliberately enables the non-git escape hatch.
+        let _deny_non_git = test_env::EnvVarGuard::clear(LOCT_ALLOW_NON_GIT_ROOT_ENV);
+        let cache_dir = TempDir::new().expect("cache");
+        let _cache_env = test_env::EnvVarGuard::set_path(LOCT_CACHE_DIR_ENV, cache_dir.path());
+        let tmp = TempDir::new().expect("temp");
+        fs::write(tmp.path().join("main.rs"), "fn main() {}").expect("write");
+        let parsed = ParsedArgs::default();
+        let err = build_snapshot_for_strategy(
+            &[tmp.path().to_path_buf()],
+            &parsed,
+            true,
+            SnapshotRootStrategy::Project,
+            true,
+        )
+        .expect_err("scan without git must fail");
+        assert!(err.to_string().contains("refused"), "unexpected: {}", err);
+    }
+
+    #[test]
+    #[serial]
+    fn force_non_git_flag_allows_non_git_snapshot_but_not_filesystem_root() {
+        let _deny_env = test_env::EnvVarGuard::clear(LOCT_ALLOW_NON_GIT_ROOT_ENV);
+        let cache_dir = TempDir::new().expect("cache");
+        let _cache_env = test_env::EnvVarGuard::set_path(LOCT_CACHE_DIR_ENV, cache_dir.path());
+        let tmp = TempDir::new().expect("temp");
+        fs::write(tmp.path().join("main.rs"), "fn main() {}").expect("write");
+        let parsed = ParsedArgs {
+            force_non_git: true,
+            ..Default::default()
+        };
+        let snap = build_snapshot_for_strategy(
+            &[tmp.path().to_path_buf()],
+            &parsed,
+            true, // quiet_summary
+            SnapshotRootStrategy::Project,
+            true,
+        )
+        .expect("force-non-git must allow bare folder scan");
+        let _ = snap;
+
+        let err = require_git_scan_root_with(Path::new("/"), true)
+            .expect_err("force still refuses filesystem root");
+        assert!(
+            err.to_string().contains("filesystem root")
+                || err.to_string().contains("refusing to scan"),
+            "unexpected: {err}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_find_loctree_root_skips_legacy_only_nested_loctree() {
+        // Monika/0.9.3 class: subdir/.loctree/legacy@* must not pin identity
+        // when walking up from a nested --file path.
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let nested = root.join("sub-tauri/src/commands");
+        fs::create_dir_all(&nested).unwrap();
+        // Git boundary at monorepo root
+        fs::create_dir_all(root.join(".git")).unwrap();
+        // Stale foreign plant only under sub-tauri
+        let legacy = root.join("sub-tauri/.loctree/legacy@abc1234");
+        fs::create_dir_all(&legacy).unwrap();
+        fs::write(legacy.join("snapshot.json"), "{}").unwrap();
+        // Monorepo root has a real cache snapshot
+        let cache = project_cache_dir(root);
+        fs::create_dir_all(&cache).unwrap();
+        fs::write(cache.join("snapshot.json"), "{}").unwrap();
+
+        let found = Snapshot::find_loctree_root(&nested);
+        assert_eq!(
+            found.as_ref().map(|p| p.canonicalize().unwrap()),
+            Some(root.canonicalize().unwrap()),
+            "must walk past legacy-only sub-.loctree to monorepo root"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn find_loctree_root_stops_at_linked_worktree_not_parent_cache() {
+        // loctree-fail 2026-08-10/11: linked worktree nested under a larger
+        // git-controlled infrastructure root must not inherit the parent's
+        // cache when the worktree itself is a distinct git checkout (.git file).
+        let (_cache_dir, _cache_env) = test_env::isolated_cache();
+        let temp = tempfile::tempdir().unwrap();
+        let base = temp.path();
+
+        let parent = base.join("parent-infra");
+        fs::create_dir_all(parent.join("src")).unwrap();
+        run_git(&parent, &["init"]);
+        fs::write(parent.join("src/parent_only.rs"), "fn parent() {}").unwrap();
+        run_git(&parent, &["add", "."]);
+        run_git(&parent, &["commit", "-m", "parent"]);
+
+        // Parent already has a loctree cache — the contamination surface.
+        let parent_cache = project_cache_dir(&parent);
+        fs::create_dir_all(&parent_cache).unwrap();
+        fs::write(parent_cache.join("snapshot.json"), "{}").unwrap();
+
+        let child_main = base.join("child-main");
+        fs::create_dir_all(child_main.join("src")).unwrap();
+        run_git(&child_main, &["init"]);
+        fs::write(child_main.join("src/child_only.rs"), "fn child() {}").unwrap();
+        run_git(&child_main, &["add", "."]);
+        run_git(&child_main, &["commit", "-m", "child"]);
+        // Branch required before worktree add on some git versions.
+        run_git(&child_main, &["branch", "cut/t0"]);
+
+        let worktree = parent.join("worktrees/child-cut-t0");
+        fs::create_dir_all(parent.join("worktrees")).unwrap();
+        let add = std::process::Command::new("git")
+            .args(["worktree", "add", worktree.to_str().unwrap(), "cut/t0"])
+            .current_dir(&child_main)
+            .output()
+            .expect("git worktree add");
+        if !add.status.success() {
+            eprintln!(
+                "skip worktree isolation test: {}",
+                String::from_utf8_lossy(&add.stderr)
+            );
+            return;
+        }
+        assert!(
+            worktree.join(".git").is_file(),
+            "linked worktree must have .git file"
+        );
+
+        let found = Snapshot::find_loctree_root(&worktree).expect("worktree root");
+        assert_eq!(
+            found.canonicalize().unwrap(),
+            worktree.canonicalize().unwrap(),
+            "must pin the linked worktree, not parent-infra cache"
+        );
+    }
+
+    #[test]
+    #[serial]
     fn test_find_loctree_root_found() {
         let tmp = TempDir::new().expect("create temp dir");
-        // Create .loctree directory at root
-        std::fs::create_dir(tmp.path().join(SNAPSHOT_DIR)).expect("create .loctree");
+        // Create .loctree directory at root with a real marker (not empty shell)
+        let loctree = tmp.path().join(SNAPSHOT_DIR);
+        std::fs::create_dir(&loctree).expect("create .loctree");
+        std::fs::write(loctree.join("config.toml"), "# test").expect("write config");
         // Create a nested subdirectory
         let subdir = tmp.path().join("a/b/c");
         std::fs::create_dir_all(&subdir).expect("create nested subdir");
@@ -4825,6 +5562,7 @@ mod tests {
     #[test]
     #[serial]
     fn test_snapshot_with_files() {
+        let (_cache_dir, _cache_env) = test_env::isolated_cache();
         let tmp = TempDir::new().expect("create temp dir");
         let mut snapshot = Snapshot::new(vec!["src".to_string()]);
 
@@ -4844,6 +5582,7 @@ mod tests {
     #[test]
     #[serial]
     fn test_snapshot_with_edges() {
+        let (_cache_dir, _cache_env) = test_env::isolated_cache();
         let tmp = TempDir::new().expect("create temp dir");
         let mut snapshot = Snapshot::new(vec!["src".to_string()]);
 
@@ -4977,6 +5716,7 @@ mod tests {
     #[test]
     #[serial]
     fn test_snapshot_with_command_bridges() {
+        let (_cache_dir, _cache_env) = test_env::isolated_cache();
         let tmp = TempDir::new().expect("create temp dir");
         let mut snapshot = Snapshot::new(vec!["src".to_string()]);
 
@@ -4999,6 +5739,7 @@ mod tests {
     #[test]
     #[serial]
     fn test_snapshot_with_event_bridges() {
+        let (_cache_dir, _cache_env) = test_env::isolated_cache();
         let tmp = TempDir::new().expect("create temp dir");
         let mut snapshot = Snapshot::new(vec!["src".to_string()]);
 
@@ -5020,6 +5761,7 @@ mod tests {
     #[test]
     #[serial]
     fn test_snapshot_with_barrels() {
+        let (_cache_dir, _cache_env) = test_env::isolated_cache();
         let tmp = TempDir::new().expect("create temp dir");
         let mut snapshot = Snapshot::new(vec!["src".to_string()]);
 
@@ -5253,6 +5995,7 @@ mod tests {
     #[test]
     #[serial]
     fn test_find_latest_snapshot_global_cache_from_subdir() {
+        let (_cache_dir, _cache_env) = test_env::isolated_cache();
         let project = TempDir::new().expect("create temp project dir");
         let nested = project.path().join("a/b/c");
         std::fs::create_dir_all(&nested).expect("create nested dirs");
@@ -5280,17 +6023,12 @@ mod cache_tests {
     use super::*;
     use serial_test::serial;
     use sha2::{Digest, Sha256};
-    use std::ffi::OsString;
     use std::process::Command;
     use tempfile::TempDir;
 
     const CACHE_ENV: &str = "LOCT_CACHE_DIR";
 
-    #[derive(Debug)]
-    struct EnvVarGuard {
-        key: &'static str,
-        original: Option<OsString>,
-    }
+    use super::test_env::EnvVarGuard;
 
     #[derive(Debug)]
     struct CurrentDirGuard {
@@ -5308,47 +6046,6 @@ mod cache_tests {
     impl Drop for CurrentDirGuard {
         fn drop(&mut self) {
             std::env::set_current_dir(&self.original).expect("restore current dir");
-        }
-    }
-
-    impl EnvVarGuard {
-        fn set_path(key: &'static str, value: &Path) -> Self {
-            let guard = Self {
-                key,
-                original: std::env::var_os(key),
-            };
-            set_env_var(key, value.as_os_str());
-            guard
-        }
-
-        fn clear(key: &'static str) -> Self {
-            let guard = Self {
-                key,
-                original: std::env::var_os(key),
-            };
-            remove_env_var(key);
-            guard
-        }
-    }
-
-    impl Drop for EnvVarGuard {
-        fn drop(&mut self) {
-            match &self.original {
-                Some(value) => set_env_var(self.key, value),
-                None => remove_env_var(self.key),
-            }
-        }
-    }
-
-    fn set_env_var<K: AsRef<std::ffi::OsStr>, V: AsRef<std::ffi::OsStr>>(key: K, value: V) {
-        unsafe {
-            std::env::set_var(key, value);
-        }
-    }
-
-    fn remove_env_var<K: AsRef<std::ffi::OsStr>>(key: K) {
-        unsafe {
-            std::env::remove_var(key);
         }
     }
 
@@ -5371,7 +6068,10 @@ mod cache_tests {
     }
 
     fn run_git(repo: &Path, args: &[&str]) {
+        // Same reason as `test_env::GIT_TEST_IDENTITY`: a bare CI container has
+        // no `~/.gitconfig`, so any `commit` here would die on an unknown author.
         let output = Command::new("git")
+            .args(super::tests::GIT_TEST_IDENTITY)
             .args(args)
             .current_dir(repo)
             .output()
@@ -5443,18 +6143,28 @@ mod cache_tests {
     fn cache_base_dir_defaults_to_platform_cache_dir() {
         let _guard = EnvVarGuard::clear(CACHE_ENV);
 
-        let actual = cache_base_dir();
+        // Production resolution (what non-test builds return from
+        // `cache_base_dir()` without the env override).
+        let production = platform_cache_base_dir();
         let expected = dirs::cache_dir()
             .map(|path| path.join("loctree"))
             .unwrap_or_else(|| PathBuf::from(SNAPSHOT_DIR));
-
-        assert_eq!(actual, expected);
+        assert_eq!(production, expected);
         if dirs::cache_dir().is_some() {
             assert!(
-                actual.is_absolute(),
+                production.is_absolute(),
                 "platform cache dir should be absolute"
             );
         }
+
+        // Unit-test builds must NOT resolve to the operator-global cache:
+        // the default falls back to a process-global temp dir instead.
+        let test_default = cache_base_dir();
+        assert_ne!(
+            test_default, production,
+            "unit-test default cache must not be the operator-global cache"
+        );
+        assert!(test_default.is_absolute());
     }
 
     #[test]
@@ -5659,6 +6369,54 @@ mod cache_tests {
         let expected = subproject.canonicalize().expect("canonicalize subproject");
         let actual = resolved.canonicalize().expect("canonicalize resolved root");
         assert_eq!(actual, expected);
+    }
+
+    /// `loct plan src other` passes its targets through as roots. They are
+    /// relative to cwd, so their common project root is cwd — collapsing onto
+    /// the first one silently drops every sibling directory from the scan and
+    /// the command then reports "nothing to reorganize" on a project that has
+    /// plenty to reorganize.
+    #[test]
+    #[serial]
+    fn resolve_snapshot_root_uses_cwd_for_roots_nested_inside_it() {
+        let _guard = EnvVarGuard::clear(CACHE_ENV);
+        let _allow = EnvVarGuard::set_str(LOCT_ALLOW_NON_GIT_ROOT_ENV, "1");
+        let workspace = TempDir::new().expect("create temp workspace");
+        let workspace_root = workspace.path().canonicalize().expect("canonicalize");
+        std::fs::create_dir_all(workspace_root.join("src")).expect("create src");
+        std::fs::create_dir_all(workspace_root.join("other")).expect("create other");
+
+        let _cwd = CurrentDirGuard::set(&workspace_root);
+        let resolved = resolve_snapshot_root(&[PathBuf::from("src"), PathBuf::from("other")]);
+
+        assert_eq!(
+            resolved.canonicalize().expect("canonicalize resolved"),
+            workspace_root,
+            "roots nested inside cwd must resolve to cwd, not to the first root"
+        );
+    }
+
+    /// The other half of the same contract: a root *outside* cwd stays where the
+    /// operator put it. `loct scan /tmp/foo --force-non-git` from inside a
+    /// monorepo must not be re-homed onto that monorepo.
+    #[test]
+    #[serial]
+    fn resolve_snapshot_root_keeps_explicit_root_outside_cwd() {
+        let _guard = EnvVarGuard::clear(CACHE_ENV);
+        let _allow = EnvVarGuard::set_str(LOCT_ALLOW_NON_GIT_ROOT_ENV, "1");
+        let cwd_dir = TempDir::new().expect("create cwd workspace");
+        let outside = TempDir::new().expect("create outside project");
+        let outside_root = outside.path().canonicalize().expect("canonicalize outside");
+        std::fs::create_dir_all(outside_root.join("src")).expect("create src");
+
+        let _cwd = CurrentDirGuard::set(cwd_dir.path());
+        let resolved = resolve_snapshot_root(std::slice::from_ref(&outside_root));
+
+        assert_eq!(
+            resolved.canonicalize().expect("canonicalize resolved"),
+            outside_root,
+            "an explicit root outside cwd must not be re-homed onto cwd"
+        );
     }
 
     #[test]

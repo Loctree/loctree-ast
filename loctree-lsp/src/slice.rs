@@ -4,7 +4,7 @@
 //! using `loctree::slicer::HolographicSlice`. Paths-only — no inline
 //! content. Plan 05 of the LSP roadmap.
 //!
-//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by VetCoders ⓒ 2025-2026 VetCoders
+//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders ⓒ 2025-2026 Vetcoders
 
 use std::path::PathBuf;
 

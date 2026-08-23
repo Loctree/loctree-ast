@@ -19,12 +19,12 @@ env:
 jobs:
   sync-taps:
     name: Sync Homebrew Formula Repos
-    runs-on: [self-hosted, Linux, X64, ops]
+    runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Extract version
         id: version
@@ -37,7 +37,6 @@ jobs:
             VERSION="$INPUT_VERSION"
           else
             VERSION="${RELEASE_TAG_NAME#v}"
-            VERSION="${VERSION#loctree-v}"
           fi
 
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
@@ -72,17 +71,18 @@ jobs:
           CLI_DARWIN_AARCH64_URL="https://github.com/${CLI_RELEASE_REPO}/releases/download/v${VERSION}/loct-darwin-aarch64.tar.gz"
           CLI_DARWIN_X86_64_URL="https://github.com/${CLI_RELEASE_REPO}/releases/download/v${VERSION}/loct-darwin-x86_64.tar.gz"
           CLI_LINUX_X86_64_URL="https://github.com/${CLI_RELEASE_REPO}/releases/download/v${VERSION}/loct-linux-x86_64.tar.gz"
-          MCP_DARWIN_AARCH64_URL="https://github.com/${MCP_RELEASE_REPO}/releases/download/v${VERSION}/loctree-mcp-darwin-aarch64.tar.gz"
-          MCP_DARWIN_X86_64_URL="https://github.com/${MCP_RELEASE_REPO}/releases/download/v${VERSION}/loctree-mcp-darwin-x86_64.tar.gz"
-          MCP_LINUX_X86_64_URL="https://github.com/${MCP_RELEASE_REPO}/releases/download/v${VERSION}/loctree-mcp-linux-x86_64.tar.gz"
+          MCP_DARWIN_AARCH64_URL="https://github.com/${MCP_RELEASE_REPO}/releases/download/v${VERSION}/loct-mcp-darwin-aarch64.tar.gz"
+          MCP_DARWIN_X86_64_URL="https://github.com/${MCP_RELEASE_REPO}/releases/download/v${VERSION}/loct-mcp-darwin-x86_64.tar.gz"
+          MCP_LINUX_X86_64_URL="https://github.com/${MCP_RELEASE_REPO}/releases/download/v${VERSION}/loct-mcp-linux-x86_64.tar.gz"
 
-          echo "cli_darwin_aarch64_sha=$(fetch "$CLI_DARWIN_AARCH64_URL" "$WORKDIR/loct-darwin-aarch64.tar.gz")" >> "$GITHUB_OUTPUT"
-          echo "cli_darwin_x86_64_sha=$(fetch "$CLI_DARWIN_X86_64_URL" "$WORKDIR/loct-darwin-x86_64.tar.gz")" >> "$GITHUB_OUTPUT"
-          echo "cli_linux_x86_64_sha=$(fetch "$CLI_LINUX_X86_64_URL" "$WORKDIR/loct-linux-x86_64.tar.gz")" >> "$GITHUB_OUTPUT"
-
-          echo "mcp_darwin_aarch64_sha=$(fetch "$MCP_DARWIN_AARCH64_URL" "$WORKDIR/loctree-mcp-darwin-aarch64.tar.gz")" >> "$GITHUB_OUTPUT"
-          echo "mcp_darwin_x86_64_sha=$(fetch "$MCP_DARWIN_X86_64_URL" "$WORKDIR/loctree-mcp-darwin-x86_64.tar.gz")" >> "$GITHUB_OUTPUT"
-          echo "mcp_linux_x86_64_sha=$(fetch "$MCP_LINUX_X86_64_URL" "$WORKDIR/loctree-mcp-linux-x86_64.tar.gz")" >> "$GITHUB_OUTPUT"
+          {
+            echo "cli_darwin_aarch64_sha=$(fetch "$CLI_DARWIN_AARCH64_URL" "$WORKDIR/loct-darwin-aarch64.tar.gz")"
+            echo "cli_darwin_x86_64_sha=$(fetch "$CLI_DARWIN_X86_64_URL" "$WORKDIR/loct-darwin-x86_64.tar.gz")"
+            echo "cli_linux_x86_64_sha=$(fetch "$CLI_LINUX_X86_64_URL" "$WORKDIR/loct-linux-x86_64.tar.gz")"
+            echo "mcp_darwin_aarch64_sha=$(fetch "$MCP_DARWIN_AARCH64_URL" "$WORKDIR/loct-mcp-darwin-aarch64.tar.gz")"
+            echo "mcp_darwin_x86_64_sha=$(fetch "$MCP_DARWIN_X86_64_URL" "$WORKDIR/loct-mcp-darwin-x86_64.tar.gz")"
+            echo "mcp_linux_x86_64_sha=$(fetch "$MCP_LINUX_X86_64_URL" "$WORKDIR/loct-mcp-linux-x86_64.tar.gz")"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Clone tap repos
         env:
@@ -108,7 +108,7 @@ jobs:
           set -euo pipefail
 
           bash scripts/render-homebrew-formula.sh loct "$VERSION" "$RUNNER_TEMP/homebrew-cli/Formula/loct.rb"
-          bash scripts/render-homebrew-formula.sh loctree-mcp "$VERSION" "$RUNNER_TEMP/homebrew-mcp/Formula/loctree-mcp.rb"
+          bash scripts/render-homebrew-formula.sh loct-mcp "$VERSION" "$RUNNER_TEMP/homebrew-mcp/Formula/loct-mcp.rb"
 
       - name: Commit and push CLI tap
         env:
@@ -116,8 +116,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          git -C "$RUNNER_TEMP/homebrew-cli" config user.name "loctree release bot"
-          git -C "$RUNNER_TEMP/homebrew-cli" config user.email "loct@loct.io"
+          git -C "$RUNNER_TEMP/homebrew-cli" config user.name "loct release bot"
+          git -C "$RUNNER_TEMP/homebrew-cli" config user.email "support@loctree.com"
           git -C "$RUNNER_TEMP/homebrew-cli" add -A
 
           if git -C "$RUNNER_TEMP/homebrew-cli" diff --cached --quiet; then
@@ -134,8 +134,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          git -C "$RUNNER_TEMP/homebrew-mcp" config user.name "loctree release bot"
-          git -C "$RUNNER_TEMP/homebrew-mcp" config user.email "loct@loct.io"
+          git -C "$RUNNER_TEMP/homebrew-mcp" config user.name "loct release bot"
+          git -C "$RUNNER_TEMP/homebrew-mcp" config user.email "support@loctree.com"
           git -C "$RUNNER_TEMP/homebrew-mcp" add -A
 
           if git -C "$RUNNER_TEMP/homebrew-mcp" diff --cached --quiet; then
@@ -143,5 +143,5 @@ jobs:
             exit 0
           fi
 
-          git -C "$RUNNER_TEMP/homebrew-mcp" commit -m "loctree-mcp ${VERSION}"
+          git -C "$RUNNER_TEMP/homebrew-mcp" commit -m "loct-mcp ${VERSION}"
           git -C "$RUNNER_TEMP/homebrew-mcp" push origin HEAD

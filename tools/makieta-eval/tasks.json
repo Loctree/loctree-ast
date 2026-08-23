@@ -1,0 +1,42 @@
+[
+  {
+    "id": "t01-decision-hub",
+    "repo": "loctree-suite",
+    "scale": "large",
+    "type": "decision_recall",
+    "canary": "canary-types-central",
+    "question": "Dlaczego loctree-rs/src/types.rs jest scentralizowany? Jaka decyzja formująca stoi za tym wyborem? Cytuj intencję lub kartę jeśli jest w kontekście."
+  },
+  {
+    "id": "t02-anti-rec-core",
+    "repo": "loctree-suite",
+    "scale": "large",
+    "type": "anti_rec",
+    "canary": "canary-no-core-touch",
+    "question": "W pracy nad makieta-eval czy powinienem edytować lub proponować zmiany w loctree-rs/src/pack.rs albo overlay.rs? Jakie jest stanowisko korpusu?"
+  },
+  {
+    "id": "t03-intent-purpose",
+    "repo": "loctree-suite",
+    "scale": "large",
+    "type": "decision_recall",
+    "canary": "canary-intent-overlay-purpose",
+    "question": "Jaki jest cel warstwy intent overlay w makiecie (atlas + AICX)? Co daje agentowi w porównaniu do samych kart strukturalnych?"
+  },
+  {
+    "id": "t04-dense-evolution",
+    "repo": "loctree-suite",
+    "scale": "large",
+    "type": "decision_recall",
+    "canary": "canary-dense-cards",
+    "question": "Jaka decyzja wprowadziła gęste karty markdown (1 fakt/linia) i FactSet proof? Kiedy i dlaczego?"
+  },
+  {
+    "id": "t05-false-supersede-trap",
+    "repo": "loctree-suite",
+    "scale": "large",
+    "type": "supersede_trap",
+    "canary": null,
+    "question": "Czy decyzja o centralizacji types.rs została później odwrócona lub nadpisana przez inną? Jeśli tak, podaj najnowszą."
+  }
+]

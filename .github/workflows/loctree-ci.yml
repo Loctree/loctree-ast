@@ -1,7 +1,7 @@
 # Loctree CI - Self-Analysis Dogfooding
 # Uses modern 0.8.0+ artifact-first commands (no deprecated flags)
 #
-# 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents ⓒ 2025-2026 Loctree Team
+# 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI
 
 name: Loctree CI
 
@@ -11,43 +11,41 @@ on:
   pull_request:
     branches: [main, develop]
 
+# The default GITHUB_TOKEN is read-only for every job here; a job that has to
+# write (release uploads) grants itself a narrower, explicit permission.
+permissions:
+  contents: read
+
 env:
   HEALTH_THRESHOLD: 60
 
 jobs:
   loctree-analysis:
-    name: Self-Analysis Dogfooding
     strategy:
       fail-fast: false
       matrix:
         include:
           - name: linux
-            runner: '["self-hosted","Linux","X64","ops"]'
+            runner: ubuntu-latest
           - name: macos
-            runner: '["self-hosted","macOS","ARM64","dragon"]'
-    runs-on: ${{ fromJson(matrix.runner) }}
+            runner: macos-latest
+    name: Self-Analysis Dogfooding (${{ matrix.name }})
+    runs-on: ${{ matrix.runner }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
 
       - name: Install protoc (Linux)
         if: runner.os == 'Linux'
-        run: |
-          if ! command -v protoc >/dev/null 2>&1; then
-            sudo apt-get update
-            sudo apt-get install -y protobuf-compiler
-          fi
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
       - name: Install protoc (macOS)
         if: runner.os == 'macOS'
-        run: |
-          if ! command -v protoc >/dev/null 2>&1; then
-            brew install protobuf
-          fi
+        run: brew install protobuf
 
       - name: Build loctree
         run: cargo build -p loctree --release
@@ -109,7 +107,7 @@ jobs:
           ./target/release/loct report --output loctree-report.html 2>/dev/null || true
 
       - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: loctree-analysis-${{ matrix.name }}
           path: |

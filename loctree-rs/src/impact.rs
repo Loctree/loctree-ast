@@ -2,11 +2,80 @@
 //!
 //! Provides "what breaks if you modify/remove this file" analysis by traversing
 //! the reverse dependency graph to find all direct and transitive consumers.
+//!
+//! Honesty contract (trust-repair W2-A): a zero-consumer result is *absence of
+//! evidence*, not evidence of absence. Removal advice is fail-closed behind
+//! [`GraphCoverage`] — until every removal-relevant surface (package manifests,
+//! build scripts, CI workflows, test harnesses, framework dispatch) is proven
+//! accounted for, the zero-consumer path emits
+//! [`COVERAGE_INCOMPLETE_DIAGNOSTIC`] instead of removal advice. Fixtures
+//! encode "coverage incomplete" simply by using `GraphCoverage::default()`
+//! (all surfaces `false`); "coverage proven" fixtures set every flag `true`.
 
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::snapshot::Snapshot;
+
+/// Canonical fail-closed diagnostic for a zero-consumer result whose graph
+/// coverage is unproven. Shared verbatim by CLI, MCP, and LSP surfaces so the
+/// honesty contract stays in lockstep across binaries.
+pub const COVERAGE_INCOMPLETE_DIAGNOSTIC: &str = "coverage incomplete; cannot assess removal";
+
+/// Graph-coverage accounting for a single impact analysis.
+///
+/// The import graph only sees statically indexed source imports. Removal
+/// safety additionally depends on surfaces the scanner does not yet prove:
+/// package manifests, build scripts (Make targets, build.rs), CI workflows,
+/// test harnesses, and framework/runtime dispatch (loaders, reflection,
+/// `@main`, entrypoint registration). Every flag stays `false` until the
+/// analyzer can prove that surface was accounted for — fail closed, so a
+/// zero-consumer readout can never silently become removal advice.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GraphCoverage {
+    /// Package manifests (Cargo.toml bins/crate roots, package.json, SwiftPM…).
+    pub package_manifests: bool,
+    /// Build scripts: Make targets, build.rs, justfiles, install scripts.
+    pub build_scripts: bool,
+    /// CI workflow references (GitHub Actions, pipelines).
+    pub ci_workflows: bool,
+    /// Test harnesses and fixtures that load the target outside import edges.
+    pub test_harnesses: bool,
+    /// Framework/runtime dispatch: loaders, reflection, `@main`, plugin registries.
+    pub framework_dispatch: bool,
+}
+
+impl GraphCoverage {
+    /// True only when every removal-relevant surface is proven accounted for.
+    pub fn is_complete(&self) -> bool {
+        self.package_manifests
+            && self.build_scripts
+            && self.ci_workflows
+            && self.test_harnesses
+            && self.framework_dispatch
+    }
+
+    /// Names of surfaces the graph has NOT proven accounted for.
+    pub fn gaps(&self) -> Vec<&'static str> {
+        let mut gaps = Vec::new();
+        if !self.package_manifests {
+            gaps.push("package manifests");
+        }
+        if !self.build_scripts {
+            gaps.push("build scripts (Make, build.rs)");
+        }
+        if !self.ci_workflows {
+            gaps.push("CI workflows");
+        }
+        if !self.test_harnesses {
+            gaps.push("test harnesses");
+        }
+        if !self.framework_dispatch {
+            gaps.push("framework/runtime dispatch");
+        }
+        gaps
+    }
+}
 
 /// Result of impact analysis for a file
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -23,10 +92,15 @@ pub struct ImpactResult {
     pub max_depth: usize,
     /// True when the target itself is normally excluded by `.loctignore` and was
     /// only analyzed because the read ran with `--include-ignored`. A `.loctignore`
-    /// target usually has no indexed consumers, so a "safe to remove" verdict on
-    /// such a file must be read with this caveat in mind.
+    /// target usually has no indexed consumers, so a zero-consumer readout on
+    /// such a file says nothing about real usage.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub target_ignored: bool,
+    /// Coverage accounting for the graph this result was computed from.
+    /// A zero-consumer result only supports removal when every flag here is
+    /// proven `true`; otherwise absence of consumers is unknown, not safety.
+    #[serde(default)]
+    pub coverage: GraphCoverage,
 }
 
 /// Single file in the impact chain
@@ -153,6 +227,10 @@ pub fn analyze_impact(snapshot: &Snapshot, target: &str, options: &ImpactOptions
         total_affected,
         max_depth,
         target_ignored,
+        // The snapshot import graph does not yet prove manifests, build
+        // scripts, workflows, test harnesses, or framework dispatch, so
+        // coverage stays all-false until dedicated analyzers land.
+        coverage: GraphCoverage::default(),
     }
 }
 
@@ -209,10 +287,25 @@ pub fn format_impact_text(result: &ImpactResult) -> String {
     if result.total_affected == 0 {
         if result.target_ignored {
             output.push_str(
-                "[OK] No indexed files depend on this file — but it is `.loctignore`-excluded, so treat 'safe to remove' with care.\n",
+                "[UNPROVEN] Target is `.loctignore`-excluded, so consumer edges may be missing entirely from the index.\n",
+            );
+        }
+        if result.coverage.is_complete() {
+            output.push_str(
+                "[OK] No consumers found; graph coverage is proven complete for removal-relevant surfaces.\n",
             );
         } else {
-            output.push_str("[OK] No files depend on this file. Safe to remove.\n");
+            output.push_str(&format!(
+                "[UNPROVEN] No consumers found in the indexed import graph — {}.\n",
+                COVERAGE_INCOMPLETE_DIAGNOSTIC
+            ));
+            output.push_str(&format!(
+                "  Unaccounted surfaces: {}.\n",
+                result.coverage.gaps().join(", ")
+            ));
+            output.push_str(
+                "  Verify with an independent oracle (manifests, Make/workflow targets, tests, framework dispatch) before removing.\n",
+            );
         }
         return output;
     }
@@ -407,8 +500,74 @@ mod tests {
         let output = format_impact_text(&result);
 
         assert!(output.contains("Impact analysis for: src/page.tsx"));
-        assert!(output.contains("No files depend on this file"));
-        assert!(output.contains("Safe to remove"));
+        assert!(output.contains("No consumers found in the indexed import graph"));
+        assert!(output.contains(COVERAGE_INCOMPLETE_DIAGNOSTIC));
+        assert!(
+            !output.to_ascii_lowercase().contains("safe to remove"),
+            "zero-consumer output must never claim removal safety without proven coverage: {output}"
+        );
+    }
+
+    #[test]
+    fn test_analyze_impact_coverage_fails_closed_by_default() {
+        let snapshot = mock_snapshot();
+        let options = ImpactOptions::default();
+
+        let result = analyze_impact(&snapshot, "src/page.tsx", &options);
+
+        assert!(
+            !result.coverage.is_complete(),
+            "no analyzer proves these surfaces yet; coverage must default to incomplete"
+        );
+        assert_eq!(
+            result.coverage.gaps(),
+            vec![
+                "package manifests",
+                "build scripts (Make, build.rs)",
+                "CI workflows",
+                "test harnesses",
+                "framework/runtime dispatch",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_format_impact_text_proven_coverage_still_never_says_safe() {
+        // Fixture encoding of "coverage proven": every GraphCoverage flag is
+        // explicitly set true on the result. Only then does the zero-consumer
+        // branch drop the incomplete-coverage diagnostic — and even that path
+        // reports facts (no consumers, coverage complete), not removal advice.
+        let snapshot = mock_snapshot();
+        let options = ImpactOptions::default();
+
+        let mut result = analyze_impact(&snapshot, "src/page.tsx", &options);
+        result.coverage = GraphCoverage {
+            package_manifests: true,
+            build_scripts: true,
+            ci_workflows: true,
+            test_harnesses: true,
+            framework_dispatch: true,
+        };
+        let output = format_impact_text(&result);
+
+        assert!(output.contains("graph coverage is proven complete"));
+        assert!(!output.contains(COVERAGE_INCOMPLETE_DIAGNOSTIC));
+        assert!(!output.to_ascii_lowercase().contains("safe to remove"));
+    }
+
+    #[test]
+    fn test_impact_json_carries_coverage_accounting() {
+        let snapshot = mock_snapshot();
+        let options = ImpactOptions::default();
+
+        let result = analyze_impact(&snapshot, "src/page.tsx", &options);
+        let json = serde_json::to_value(&result).expect("serializes");
+
+        let coverage = json
+            .get("coverage")
+            .expect("coverage accounting must be visible in the JSON schema");
+        assert_eq!(coverage["package_manifests"], false);
+        assert_eq!(coverage["framework_dispatch"], false);
     }
 
     #[test]

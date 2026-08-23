@@ -124,7 +124,7 @@ pub fn collect_ai_insights(
     }
 
     // Gate Tauri-specific insight on actual Tauri stack presence.
-    // loctree-feedback hak 2026-05-18 Screenscribe HAK 2: pure Python/JS
+    // loctree-fail hak 2026-05-18 Screenscribe HAK 2: pure Python/JS
     // projects with custom JS event dispatch were getting false HIGH
     // severity "Missing Tauri Handlers" because the gap-detector picks
     // up any `invoke('foo')`-like call. Reuse the `has_tauri_stack`
@@ -318,7 +318,7 @@ mod tests {
 
     #[test]
     fn test_collect_ai_insights_skips_missing_handlers_when_no_tauri_stack() {
-        // loctree-feedback hak 2026-05-18 Screenscribe HAK 2 regression
+        // loctree-fail hak 2026-05-18 Screenscribe HAK 2 regression
         // guard: pure Python/JS repo with custom JS event dispatch
         // produces non-empty `gap_missing`, but no `tauri.conf.json`,
         // no `src-tauri/`, no `@tauri-apps/` imports. The insight must

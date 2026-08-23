@@ -1,11 +1,28 @@
 //! Namespace security configuration for future SaaS HTTP wiring.
-
-#![allow(dead_code)]
+//!
+//! NOT wired into the runtime. The HTTP transport (`crate::http::auth`)
+//! enforces authentication and the `context-read` scope, but it does not map a
+//! request onto a namespace: `/mcp` carries the project inside a JSON-RPC body
+//! the middleware does not parse, so namespace ACLs could only be enforced on
+//! `/context_pack` — and half-enforced authorization is worse than none. Per
+//! token, `namespaces` is stored and honored by `AuthManager::verify`, but the
+//! HTTP boundary calls `authorize(.., None)`.
+//!
+//! The `allow(dead_code)` below is deliberately item-scoped rather than
+//! module-scoped: a blanket `#![allow(dead_code)]` here and in `auth` is
+//! exactly what hid the fact that the whole auth subsystem had no call sites.
 
 use anyhow::{Context, Result, anyhow};
 use serde::Deserialize;
 
 /// Security configuration for namespace-aware bearer auth.
+///
+/// Parked: parsed and unit-tested, with no runtime call site yet. See the
+/// module docs for why the HTTP wave stopped short of namespace enforcement.
+#[allow(
+    dead_code,
+    reason = "parked config type; no namespace seam in the HTTP surface yet"
+)]
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub(crate) struct NamespaceSecurityConfig {
@@ -24,6 +41,10 @@ impl Default for NamespaceSecurityConfig {
     }
 }
 
+#[allow(
+    dead_code,
+    reason = "parked config parser; no namespace seam in the HTTP surface yet"
+)]
 impl NamespaceSecurityConfig {
     /// Load security config from a TOML file.
     ///
@@ -69,6 +90,8 @@ impl NamespaceSecurityConfig {
         Ok(config)
     }
 
+    /// Read the config file off disk and parse it. Parked alongside
+    /// [`Self::from_toml_str`] — nothing in the runtime calls this yet.
     pub(crate) async fn load_from_path(path: impl AsRef<std::path::Path>) -> Result<Self> {
         let path = path.as_ref();
         let contents = tokio::fs::read_to_string(path)

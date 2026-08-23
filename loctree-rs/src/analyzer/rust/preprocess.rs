@@ -25,7 +25,7 @@ pub(super) fn find_balanced_bracket(s: &str) -> usize {
 /// Pass-through for function bodies (previously stripped inner `use` stmts).
 /// Inner `use crate::...` (even inside fn) ARE real module consumers for impact/slice/
 /// who-imports. Stripping them produced false "safe to remove" and invisible importers
-/// (see loctree-feedback.md:2900, 3144). Local uses still participate in the import graph;
+/// (see loctree-fail.md:2900, 3144). Local uses still participate in the import graph;
 /// cycles pass can tolerate or filter length-1/self if needed.
 /// KNOWN-GAP: if future cycle FP appears from this, filter in cycles.rs not by
 /// stripping declarations here.

@@ -9,7 +9,7 @@
 //! `{"s": <snapshot_id>, "o": <offset>, "k": <kind>}`. Tokens are
 //! opaque to clients — they MUST round-trip them verbatim.
 //!
-//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by VetCoders ⓒ 2025-2026 VetCoders
+//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders ⓒ 2025-2026 Vetcoders
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;

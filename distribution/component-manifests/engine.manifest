@@ -1,0 +1,60 @@
+target_repo=Loctree/loctree
+license=BUSL-1.1
+readme_src=distribution/component-readmes/engine.md
+dependency_mode=local workspace snapshot
+dependency_note=The engine repo carries the full source workspace - loctree, loctree-ast, loctree-mcp, loctree-lsp and the report-leptos renderer - as path dependencies. It builds standalone, with no wait on crates.io publication.
+include=loctree-rs:loctree-rs
+include=loctree-ast:loctree-ast
+include=loctree-mcp:loctree-mcp
+include=loctree-lsp:loctree-lsp
+include=reports:reports
+# npm package sources and the macOS signing script. These used to travel with
+# publish.yml as its payload; publish.yml no longer ships here (see below), but
+# they stay: @loctree/loctree's published `repository` field points at this mirror,
+# so the npm wrapper source belongs in it, and removing them would strip real
+# content from the public repo for no security gain.
+include=distribution/npm:distribution/npm
+include=distribution/macos:distribution/macos
+exclude=.git/
+exclude=.loctree/
+exclude=.vibecrafted/
+exclude=target/
+exclude=.DS_Store
+exclude=loctree-fail.md
+exclude=**/loctree-fail.md
+extra=distribution/component-extras/engine/glama.json:glama.json
+# The mirror IS the release authority (operator decision, 2026-08-20).
+#
+# Releases are built from Loctree/loctree, on a tag, after merge to main —
+# not from the private suite. Two reasons, both the operator's: the public
+# repo's Actions minutes are free (the suite burned its monthly budget in one
+# day on 2026-08-20 and PR #63 had to be merged red by hand), and a release
+# cut from the repository users can read is the only one whose provenance
+# they can check.
+#
+# This reverses the 2026-08-18 note that stripped publish.yml and
+# release-bundles.yml from the mirror. That note was a Claude hypothesis, and
+# the hazard it described was real for the COPY then live on the public repo:
+# tag-triggered publish on the retired self-hosted runner class, a long-lived
+# NPM_TOKEN, no fail-closed gate. None of that describes the workflows shipped
+# from here today: publish.yml is workflow_dispatch-only (tag is an input, a
+# push of a tag publishes nothing), runs on ubuntu-latest, refuses to publish
+# npm platform packages that do not carry all four executables, and
+# authenticates with OIDC; release-bundles.yml is tag-triggered by design
+# (that is "na taga"), holds contents: read, and treats every signing secret
+# as optional — absent secrets yield unsigned bundles, not a failed or forged
+# release.
+#
+# OPERATOR ACTIONS that make the public repo able to release (none of them
+# can be done from source): npm trusted publishers bound to Loctree/loctree +
+# publish.yml for all six package names once they exist (first publish of a
+# new name bootstraps with a granular token — see distribution/npm/PUBLISHING.md);
+# GPG / Apple signing secrets on Loctree/loctree if signed bundles are wanted;
+# a cross-repo token for the thin release repos (loct, loctree-mcp,
+# loctree-release). Until those exist the workflows run, but publish steps
+# fail closed rather than silently.
+#
+# semgrep.yml stays: a security scanner on a public source repo.
+extra=.github/workflows/semgrep.yml:.github/workflows/semgrep.yml
+extra=.github/workflows/publish.yml:.github/workflows/publish.yml
+extra=.github/workflows/release-bundles.yml:.github/workflows/release-bundles.yml

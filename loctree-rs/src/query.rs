@@ -5,12 +5,13 @@
 //! - `where-symbol <symbol>` - Find where a symbol is defined
 //! - `component-of <file>` - Show what component/module a file belongs to
 //!
-//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents ⓒ 2025-2026 Loctree Team
+//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI
 
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
+use crate::analyzer::occurrences::{FileScope, IndexedUniverse};
 use crate::snapshot::Snapshot;
 
 // ============================================================================
@@ -144,6 +145,70 @@ pub struct QueryResult {
     pub target: String,
     /// Matching results
     pub results: Vec<QueryMatch>,
+
+    /// Number of matches before public-output pagination.
+    #[serde(default)]
+    pub total: usize,
+
+    /// Number of rows actually emitted in `results`.
+    #[serde(default)]
+    pub emitted: usize,
+
+    /// Zero-based offset of the emitted window. Structural queries currently
+    /// emit from zero; the field is explicit so consumers never infer it.
+    #[serde(default)]
+    pub offset: usize,
+
+    /// Requested public limit, when one was applied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+
+    /// True when another row exists after the emitted window.
+    #[serde(default)]
+    pub has_more: bool,
+
+    /// True when the public result list is a bounded prefix.
+    #[serde(default)]
+    pub truncated: bool,
+
+    /// Indexed file universe used to answer this query.
+    #[serde(default)]
+    pub universe: IndexedUniverse,
+}
+
+impl QueryResult {
+    fn complete(kind: &str, target: &str, results: Vec<QueryMatch>, snapshot: &Snapshot) -> Self {
+        let total = results.len();
+        Self {
+            kind: kind.to_string(),
+            target: target.to_string(),
+            results,
+            total,
+            emitted: total,
+            offset: 0,
+            limit: None,
+            has_more: false,
+            truncated: false,
+            universe: IndexedUniverse::from_snapshot(
+                snapshot,
+                FileScope::default(),
+                snapshot.files.len(),
+            ),
+        }
+    }
+
+    /// Bound a public query response without weakening internal resolvers.
+    pub fn bounded(mut self, limit: Option<usize>) -> Self {
+        self.total = self.results.len();
+        if let Some(limit) = limit {
+            self.results.truncate(limit);
+            self.limit = Some(limit);
+        }
+        self.emitted = self.results.len();
+        self.has_more = self.emitted < self.total;
+        self.truncated = self.has_more;
+        self
+    }
 }
 
 /// A single query match
@@ -204,6 +269,66 @@ pub struct SwiftTypeReferenceResult {
 /// ## Path Matching
 /// Uses `paths_match()` for strict comparison - avoids false positives
 /// like `utils.ts` matching `other-utils.ts`.
+/// Verify an `implicit_symbol` edge against real symbol usages.
+///
+/// `implicit_symbol` edges connect Swift-style module members by bare-name
+/// heuristics. Before `who-imports` reports `importer` as a consumer of
+/// `target_file`, require an actual recorded usage:
+/// - symbol query (`symbol = Some(name)`): the importer must use that exact
+///   name; the match carries the first usage line.
+/// - file query (`symbol = None`): the importer must use one of the target
+///   file's implicit-eligible exported type names.
+///
+/// Returns `None` when no real reference exists — the edge is then treated
+/// as noise and dropped from the result, which also sanitizes results built
+/// from stale snapshots that still carry pre-guard implicit edges.
+fn implicit_reference_match(
+    snapshot: &Snapshot,
+    importer: &str,
+    target_file: &str,
+    symbol: Option<&str>,
+) -> Option<QueryMatch> {
+    use crate::analyzer::root_scan::is_implicit_symbol_export;
+
+    let importer_analysis = snapshot
+        .files
+        .iter()
+        .find(|f| paths_match(&f.path, importer))?;
+
+    let (name, line) = match symbol {
+        Some(name) => {
+            let usage = importer_analysis
+                .symbol_usages
+                .iter()
+                .find(|u| u.name == name)?;
+            (name.to_string(), usage.line)
+        }
+        None => {
+            let target = snapshot
+                .files
+                .iter()
+                .find(|f| paths_match(&f.path, target_file))?;
+            let eligible: std::collections::HashSet<&str> = target
+                .exports
+                .iter()
+                .filter(|e| is_implicit_symbol_export(e))
+                .map(|e| e.name.as_str())
+                .collect();
+            let usage = importer_analysis
+                .symbol_usages
+                .iter()
+                .find(|u| eligible.contains(u.name.as_str()))?;
+            (usage.name.clone(), usage.line)
+        }
+    };
+
+    Some(QueryMatch {
+        file: importer_analysis.path.clone(),
+        line: Some(line),
+        context: Some(format!("references {name} (implicit module scope)")),
+    })
+}
+
 pub fn query_who_imports(snapshot: &Snapshot, target: &str) -> QueryResult {
     use std::collections::HashSet;
 
@@ -212,6 +337,9 @@ pub fn query_who_imports(snapshot: &Snapshot, target: &str) -> QueryResult {
 
     // Determine if target is a symbol name or file path
     let is_symbol = !target.contains('/') && !has_file_extension(target);
+    // When the query names a symbol, implicit (module-scope) edges must be
+    // verified against real usages of THAT symbol, not mere edge existence.
+    let symbol_name: Option<&str> = is_symbol.then_some(target);
 
     // Collect starting files to check
     let mut to_check: Vec<String> = if is_symbol {
@@ -222,11 +350,7 @@ pub fn query_who_imports(snapshot: &Snapshot, target: &str) -> QueryResult {
             files = component_path_candidates(snapshot, target);
         }
         if files.is_empty() {
-            return QueryResult {
-                kind: "who-imports".to_string(),
-                target: target.to_string(),
-                results: vec![],
-            };
+            return QueryResult::complete("who-imports", target, vec![], snapshot);
         }
         files
     } else {
@@ -272,6 +396,18 @@ pub fn query_who_imports(snapshot: &Snapshot, target: &str) -> QueryResult {
                     if !visited.contains(&edge.from) {
                         to_check.push(edge.from.clone());
                     }
+                } else if edge.is_implicit_symbol() {
+                    // Implicit module-scope edge (Swift-style): a heuristic
+                    // guess, not an import. Only report it when the alleged
+                    // importer actually references the symbol, and point at
+                    // the real reference line. Blind reporting turned every
+                    // file in a Swift module into an "importer"
+                    // (loctree-fail.md 2026-07-25, blinksh/blink).
+                    if let Some(m) =
+                        implicit_reference_match(snapshot, &edge.from, &current, symbol_name)
+                    {
+                        results.push(m);
+                    }
                 } else {
                     // Regular import - this is an actual consumer
                     results.push(QueryMatch {
@@ -288,11 +424,7 @@ pub fn query_who_imports(snapshot: &Snapshot, target: &str) -> QueryResult {
     results.sort_by(|a, b| a.file.cmp(&b.file));
     results.dedup_by(|a, b| a.file == b.file);
 
-    QueryResult {
-        kind: "who-imports".to_string(),
-        target: target.to_string(),
-        results,
-    }
+    QueryResult::complete("who-imports", target, results, snapshot)
 }
 
 /// Query for where a symbol is defined (where-symbol).
@@ -308,21 +440,26 @@ pub fn query_where_symbol(snapshot: &Snapshot, symbol: &str) -> QueryResult {
         if qualified_type.is_none() {
             for exp in &file.exports {
                 if exp.name == symbol {
+                    let context = rust_where_symbol_context(&file.path, &exp.kind, &exp.name)
+                        .unwrap_or_else(|| format!("export {} {}", exp.kind, exp.name));
                     results.push(QueryMatch {
                         file: file.path.clone(),
                         line: exp.line,
-                        context: Some(format!("export {} {}", exp.kind, exp.name)),
+                        context: Some(context),
                     });
                 }
             }
 
             for local in &file.local_symbols {
                 if local.name == symbol {
-                    let context = if local.context.is_empty() {
-                        format!("local {} {}", local.kind, local.name)
-                    } else {
-                        local.context.clone()
-                    };
+                    let context = rust_where_symbol_context(&file.path, &local.kind, &local.name)
+                        .unwrap_or_else(|| {
+                            if local.context.is_empty() {
+                                format!("local {} {}", local.kind, local.name)
+                            } else {
+                                local.context.clone()
+                            }
+                        });
                     results.push(QueryMatch {
                         file: file.path.clone(),
                         line: local.line,
@@ -364,7 +501,22 @@ pub fn query_where_symbol(snapshot: &Snapshot, symbol: &str) -> QueryResult {
                 continue;
             };
             let line = node.range.map(|r| r.start_line);
-            if results.iter().any(|m| m.file == file && m.line == line) {
+            // Tree-sitter ranges start at leading attributes (`@main` sits on
+            // the line above `struct FixtureApp`), while the per-language
+            // analyzers anchor the same declaration on its keyword line. A
+            // node whose span contains an already-matched line in the same
+            // file is the same physical declaration seen from a second
+            // surface, not a second definition — emitting it would duplicate
+            // the body downstream (LCT-F01).
+            let same_declaration = results.iter().any(|m| {
+                m.file == file
+                    && (m.line == line
+                        || node
+                            .range
+                            .zip(m.line)
+                            .is_some_and(|(r, l)| l >= r.start_line && l <= r.end_line))
+            });
+            if same_declaration {
                 continue;
             }
             let context = node
@@ -379,18 +531,131 @@ pub fn query_where_symbol(snapshot: &Snapshot, symbol: &str) -> QueryResult {
         }
     }
 
+    // One physical definition may be indexed as an export, local symbol and
+    // impl method. Public location truth is file+line, not the number of index
+    // surfaces that happened to observe it. Prefer the richer qualified impl
+    // context by sorting it first, then collapse the duplicate location.
     results.sort_by(|a, b| {
         a.file
             .cmp(&b.file)
             .then_with(|| a.line.cmp(&b.line))
+            .then_with(|| context_rank(&a.context).cmp(&context_rank(&b.context)))
             .then_with(|| a.context.cmp(&b.context))
     });
-    results.dedup_by(|a, b| a.file == b.file && a.line == b.line && a.context == b.context);
+    results.dedup_by(|a, b| a.file == b.file && a.line == b.line);
 
-    QueryResult {
-        kind: "where-symbol".to_string(),
-        target: symbol.to_string(),
-        results,
+    // A module name is a symbol too. `mod health_score;` is not an export, a
+    // local symbol, an impl method or a graph node, so without this the query
+    // answered "(no results)" for a name the snapshot fully knows — and `body`
+    // inherited the dead end (its hint pointed here).
+    for decl in module_declarations(snapshot, symbol) {
+        let already_known = results
+            .iter()
+            .any(|m| m.file == decl.declared_in && m.line == decl.line);
+        if already_known {
+            continue;
+        }
+        results.push(QueryMatch {
+            file: decl.declared_in.clone(),
+            line: decl.line,
+            context: Some(decl.context()),
+        });
+    }
+
+    QueryResult::complete("where-symbol", symbol, results, snapshot)
+}
+
+// ============================================================================
+// Module declarations
+// ============================================================================
+
+/// A `mod <name>;` declaration site.
+///
+/// In Rust a module name is a real symbol, and `mod health_score;` is where it
+/// enters the namespace — but it is not an export, a local symbol, an impl
+/// method or a symbol-graph node, so every definition surface used to answer
+/// "no results" for it. The declaration is recorded on the declaring file as an
+/// import entry flagged `is_mod_declaration`; this type lifts it back out as
+/// the definition site it is, together with the file the module resolves to.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModuleDeclaration {
+    /// Module name as declared (`health_score`).
+    pub module: String,
+    /// File carrying the `mod <name>;` declaration.
+    pub declared_in: String,
+    /// 1-based line of the declaration, when the analyzer anchored one.
+    pub line: Option<usize>,
+    /// File the module resolves to, when the analyzer resolved it.
+    pub module_file: Option<String>,
+}
+
+impl ModuleDeclaration {
+    /// Context string used when this declaration is rendered as a
+    /// `where-symbol` match.
+    pub fn context(&self) -> String {
+        match &self.module_file {
+            Some(path) => format!("module declaration `mod {};` -> {}", self.module, path),
+            None => format!("module declaration `mod {};`", self.module),
+        }
+    }
+}
+
+/// Every `mod <name>;` declaration of `name` across the snapshot.
+///
+/// Pure snapshot read: the mod declarations were already indexed at scan time
+/// (as `is_mod_declaration` import entries), so this neither re-parses sources
+/// nor guesses from file names.
+pub fn module_declarations(snapshot: &Snapshot, name: &str) -> Vec<ModuleDeclaration> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Vec::new();
+    }
+    let mut declarations = Vec::new();
+    for file in &snapshot.files {
+        for import in &file.imports {
+            if !import.is_mod_declaration {
+                continue;
+            }
+            let declares = import.symbols.iter().any(|s| s.name == name);
+            if !declares {
+                continue;
+            }
+            declarations.push(ModuleDeclaration {
+                module: name.to_string(),
+                declared_in: file.path.clone(),
+                line: import.line,
+                module_file: import.resolved_path.clone(),
+            });
+        }
+    }
+    declarations.sort_by(|a, b| a.declared_in.cmp(&b.declared_in).then(a.line.cmp(&b.line)));
+    declarations.dedup_by(|a, b| a.declared_in == b.declared_in && a.line == b.line);
+    declarations
+}
+
+/// Language-native where-symbol labels for Rust.
+///
+/// Generic snapshot kinds are JS-shaped (`function`, `enum`). Rust `enum`
+/// already had an honest label; `function` must print `fn {name}` so a
+/// definition lookup greps the same token a human reads in source.
+fn rust_where_symbol_context(path: &str, kind: &str, name: &str) -> Option<String> {
+    if !path.ends_with(".rs") {
+        return None;
+    }
+    match kind {
+        "enum" => Some(format!("rust enum {name}")),
+        "function" => Some(format!("fn {name}")),
+        _ => None,
+    }
+}
+
+fn context_rank(context: &Option<String>) -> u8 {
+    match context.as_deref() {
+        Some(value) if value.starts_with("impl method ") => 0,
+        Some(value) if value.starts_with("local ") => 1,
+        Some(value) if value.starts_with("export ") => 2,
+        Some(_) => 3,
+        None => 4,
     }
 }
 
@@ -594,6 +859,7 @@ fn is_type_definition_context(context: &str, name: &str) -> bool {
         "export enum ",
         "export protocol ",
         "export typealias ",
+        "rust enum ",
     ];
     if export_prefixes
         .iter()
@@ -736,11 +1002,7 @@ pub fn query_component_of(snapshot: &Snapshot, file: &str) -> QueryResult {
         }
     }
 
-    QueryResult {
-        kind: "component-of".to_string(),
-        target: file.to_string(),
-        results,
-    }
+    QueryResult::complete("component-of", file, results, snapshot)
 }
 
 #[cfg(test)]
@@ -795,6 +1057,104 @@ mod tests {
         assert!(!result.results.is_empty());
     }
 
+    /// Swift multi-file module regression (loctree-fail.md 2026-07-25,
+    /// blinksh/blink): `who-imports` must verify `implicit_symbol` edges
+    /// against real symbol usages instead of reporting module membership.
+    /// The snapshot deliberately carries the noisy pre-guard edges (as stale
+    /// snapshots in the field still do).
+    fn swift_module_snapshot() -> Snapshot {
+        use crate::snapshot::{GraphEdge, IMPLICIT_SYMBOL_EDGE_LABEL};
+        use crate::types::{ExportSymbol, SymbolUsage};
+
+        let mut snapshot = Snapshot::new(vec!["Module".to_string()]);
+
+        // Agent.swift: top-level class + nested `enum Error` flattened into
+        // exports (the shape the Swift analyzer actually produces).
+        let mut agent = FileAnalysis::new("Module/Agent.swift".into());
+        agent.language = "swift".to_string();
+        for (name, kind, line) in [("DefaultAgent", "class", 10), ("Error", "enum", 14)] {
+            agent.exports.push(ExportSymbol::new(
+                name.to_string(),
+                kind,
+                "named",
+                Some(line),
+            ));
+        }
+
+        // Consumer.swift: really references DefaultAgent.
+        let mut consumer = FileAnalysis::new("Module/Consumer.swift".into());
+        consumer.language = "swift".to_string();
+        consumer.symbol_usages.push(SymbolUsage {
+            name: "DefaultAgent".to_string(),
+            line: 21,
+            context: "let agent = DefaultAgent.instance".to_string(),
+        });
+
+        // Unrelated.swift: only uses the stdlib `Error` protocol; the stale
+        // implicit edge to Agent.swift is a name-collision artifact.
+        let mut unrelated = FileAnalysis::new("Module/Unrelated.swift".into());
+        unrelated.language = "swift".to_string();
+        unrelated.symbol_usages.push(SymbolUsage {
+            name: "Error".to_string(),
+            line: 5,
+            context: "func run() throws -> Error".to_string(),
+        });
+
+        snapshot.files.push(agent);
+        snapshot.files.push(consumer);
+        snapshot.files.push(unrelated);
+
+        for from in ["Module/Consumer.swift", "Module/Unrelated.swift"] {
+            snapshot.edges.push(GraphEdge {
+                from: from.to_string(),
+                to: "Module/Agent.swift".to_string(),
+                label: IMPLICIT_SYMBOL_EDGE_LABEL.to_string(),
+            });
+        }
+        snapshot
+    }
+
+    #[test]
+    fn who_imports_symbol_verifies_implicit_edges_against_real_usages() {
+        let snapshot = swift_module_snapshot();
+        let result = query_who_imports(&snapshot, "DefaultAgent");
+
+        let files: Vec<&str> = result.results.iter().map(|m| m.file.as_str()).collect();
+        assert_eq!(
+            files,
+            vec!["Module/Consumer.swift"],
+            "only the file with a real DefaultAgent usage may be reported"
+        );
+        assert_eq!(
+            result.results[0].line,
+            Some(21),
+            "implicit consumer must carry the real reference line"
+        );
+        assert_eq!(
+            result.results[0].context.as_deref(),
+            Some("references DefaultAgent (implicit module scope)")
+        );
+    }
+
+    #[test]
+    fn who_imports_file_filters_implicit_edges_to_eligible_type_usages() {
+        let snapshot = swift_module_snapshot();
+        let result = query_who_imports(&snapshot, "Module/Agent.swift");
+
+        let files: Vec<&str> = result.results.iter().map(|m| m.file.as_str()).collect();
+        // Consumer.swift uses DefaultAgent -> reported with a line.
+        // Unrelated.swift uses only `Error`, which Agent.swift also exports
+        // (nested enum flattened) — so a file-level query still credits it on
+        // stale snapshots; the symbol-level query above is the exact surface.
+        assert!(files.contains(&"Module/Consumer.swift"));
+        let consumer = result
+            .results
+            .iter()
+            .find(|m| m.file == "Module/Consumer.swift")
+            .expect("consumer match");
+        assert_eq!(consumer.line, Some(21));
+    }
+
     #[test]
     fn test_query_where_symbol() {
         let snapshot = mock_snapshot();
@@ -842,6 +1202,163 @@ mod tests {
         let bare = query_where_symbol(&snapshot, "start");
         assert_eq!(bare.results.len(), 1);
         assert_eq!(bare.results[0].file, "src/recorder.rs");
+    }
+
+    #[test]
+    fn test_query_where_symbol_labels_rust_enum_honestly() {
+        let mut snapshot = Snapshot::new(vec!["src".to_string()]);
+        let mut file = FileAnalysis::new("src/main.rs".into());
+        file.exports.push(crate::types::ExportSymbol::new(
+            "Commands".to_string(),
+            "enum",
+            "named",
+            Some(7),
+        ));
+        snapshot.files.push(file);
+
+        let result = query_where_symbol(&snapshot, "Commands");
+        assert_eq!(result.results.len(), 1);
+        assert_eq!(
+            result.results[0].context.as_deref(),
+            Some("rust enum Commands")
+        );
+
+        let mut private_file = FileAnalysis::new("src/private.rs".into());
+        private_file.local_symbols.push(crate::types::LocalSymbol {
+            name: "PrivateCommands".to_string(),
+            kind: "enum".to_string(),
+            line: Some(11),
+            context: "enum PrivateCommands {".to_string(),
+            is_exported: false,
+        });
+        snapshot.files.push(private_file);
+
+        let private = query_where_symbol(&snapshot, "PrivateCommands");
+        assert_eq!(private.results.len(), 1);
+        assert_eq!(
+            private.results[0].context.as_deref(),
+            Some("rust enum PrivateCommands")
+        );
+    }
+
+    #[test]
+    fn test_query_where_symbol_labels_rust_fn_honestly() {
+        let mut snapshot = Snapshot::new(vec!["src".to_string()]);
+        let mut file = FileAnalysis::new("src/analysis_reports.rs".into());
+        file.exports.push(crate::types::ExportSymbol::new(
+            "is_test_file_path".to_string(),
+            "function",
+            "named",
+            Some(568),
+        ));
+        snapshot.files.push(file);
+
+        let result = query_where_symbol(&snapshot, "is_test_file_path");
+        assert_eq!(result.results.len(), 1);
+        assert_eq!(
+            result.results[0].context.as_deref(),
+            Some("fn is_test_file_path")
+        );
+
+        let mut local_file = FileAnalysis::new("src/local.rs".into());
+        local_file.local_symbols.push(crate::types::LocalSymbol {
+            name: "is_test_file_path".to_string(),
+            kind: "function".to_string(),
+            line: Some(12),
+            context: String::new(),
+            is_exported: false,
+        });
+        snapshot.files.push(local_file);
+
+        let local = query_where_symbol(&snapshot, "is_test_file_path");
+        assert_eq!(local.results.len(), 2);
+        assert!(
+            local
+                .results
+                .iter()
+                .all(|m| m.context.as_deref() == Some("fn is_test_file_path")),
+            "Rust functions must print fn NAME, not export function NAME: {:?}",
+            local
+                .results
+                .iter()
+                .map(|m| m.context.as_deref())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_query_where_symbol_deduplicates_one_physical_definition() {
+        let mut snapshot = Snapshot::new(vec!["src".to_string()]);
+        let mut file = FileAnalysis::new("src/recorder.rs".into());
+        file.exports.push(crate::types::ExportSymbol {
+            name: "start".to_string(),
+            kind: "function".to_string(),
+            export_type: "named".to_string(),
+            line: Some(12),
+            params: Vec::new(),
+            symbol_id: crate::types::SymbolIdV1::default(),
+        });
+        file.impl_methods.push(crate::types::ImplMethod {
+            name: "start".to_string(),
+            qualifier: "Recorder".to_string(),
+            line: Some(12),
+            visibility: crate::types::Visibility::Public,
+            ..Default::default()
+        });
+        snapshot.files.push(file);
+
+        let result = query_where_symbol(&snapshot, "start");
+        assert_eq!(result.results.len(), 1);
+        assert_eq!(result.total, 1);
+        assert_eq!(
+            result.results[0].context.as_deref(),
+            Some("impl method Recorder::start")
+        );
+    }
+
+    #[test]
+    fn test_query_result_bounded_reports_total_and_truncation() {
+        let snapshot = mock_snapshot();
+        let result = QueryResult::complete(
+            "where-symbol",
+            "new",
+            (0..40)
+                .map(|line| QueryMatch {
+                    file: "src/lib.rs".to_string(),
+                    line: Some(line),
+                    context: None,
+                })
+                .collect(),
+            &snapshot,
+        )
+        .bounded(Some(25));
+
+        assert_eq!(result.results.len(), 25);
+        assert_eq!(result.total, 40);
+        assert_eq!(result.emitted, 25);
+        assert_eq!(result.offset, 0);
+        assert_eq!(result.limit, Some(25));
+        assert!(result.has_more);
+        assert!(result.truncated);
+        assert_eq!(result.universe.indexed_files, snapshot.files.len());
+        let json = serde_json::to_value(&result).expect("query result serializes");
+        assert_eq!(json["total"], 40);
+        assert_eq!(json["emitted"], 25);
+        assert_eq!(json["offset"], 0);
+        assert_eq!(json["truncated"], true);
+        for required in [
+            "tracked",
+            "untracked",
+            "ignored",
+            "generated",
+            "fixtures",
+            "exclusions",
+        ] {
+            assert!(
+                json["universe"].get(required).is_some(),
+                "universe must declare {required}"
+            );
+        }
     }
 
     #[test]

@@ -44,6 +44,7 @@ fn load_atlas_info(artifacts_dir: &Path) -> Option<ContextAtlasInfo> {
     };
     let content = fs::read_to_string(&manifest_json).ok()?;
     let value: serde_json::Value = serde_json::from_str(&content).ok()?;
+    let atlas_dir_path = manifest_json.parent().map(Path::to_path_buf);
     let cards = value
         .get("cards")
         .and_then(|c| c.as_array())
@@ -51,16 +52,33 @@ fn load_atlas_info(artifacts_dir: &Path) -> Option<ContextAtlasInfo> {
             cards
                 .iter()
                 .filter_map(|card| {
+                    let path = card.get("path")?.as_str()?.to_string();
+                    // The manifest's `lines` value is frozen at materialization
+                    // time and drifts once cards are regenerated. The card file
+                    // is the truth — read it, count for real, and embed the
+                    // body so the static report can open the card in-page.
+                    // The manifest is data, not authority: a pre-seeded or
+                    // malicious manifest could point `path` at any file on disk
+                    // and the report would embed it. Only read card files that
+                    // resolve INSIDE the context-atlas directory.
+                    let card_file = Path::new(&path);
+                    let body = atlas_dir_path
+                        .as_ref()
+                        .and_then(|dir| read_card_within(dir, card_file));
+                    let lines = body.as_ref().map(|b| b.lines().count()).unwrap_or_else(|| {
+                        card.get("lines").and_then(|v| v.as_u64()).unwrap_or(0) as usize
+                    });
                     Some(ContextAtlasCardInfo {
                         id: card.get("id")?.as_str()?.to_string(),
                         title: card.get("title")?.as_str()?.to_string(),
-                        path: card.get("path")?.as_str()?.to_string(),
-                        lines: card.get("lines").and_then(|v| v.as_u64()).unwrap_or(0) as usize,
+                        path,
+                        lines,
                         why: card
                             .get("why")
                             .and_then(|v| v.as_str())
                             .unwrap_or("")
                             .to_string(),
+                        body,
                     })
                 })
                 .collect()
@@ -78,6 +96,24 @@ fn load_atlas_info(artifacts_dir: &Path) -> Option<ContextAtlasInfo> {
             .to_string(),
         cards,
     })
+}
+
+/// Read a card body only when the candidate path resolves inside the
+/// context-atlas directory. Absolute or `..`-laden manifest paths that escape
+/// the atlas dir yield `None` instead of embedding arbitrary local files.
+fn read_card_within(atlas_dir: &Path, candidate: &Path) -> Option<String> {
+    let base = atlas_dir.canonicalize().ok()?;
+    let joined = if candidate.is_absolute() {
+        candidate.to_path_buf()
+    } else {
+        base.join(candidate)
+    };
+    let resolved = joined.canonicalize().ok()?;
+    if resolved.starts_with(&base) {
+        fs::read_to_string(resolved).ok()
+    } else {
+        None
+    }
 }
 
 /// Render HTML report using Leptos SSR
@@ -351,5 +387,106 @@ mod tests {
         // Leptos escapes content automatically
         // We check that both opening and closing tags are safely escaped
         assert!(html.contains("&lt;script&gt;") && html.contains("&lt;/script&gt;"));
+    }
+
+    #[test]
+    fn atlas_card_lines_come_from_the_file_not_the_manifest() {
+        // The manifest freezes `lines` at materialization time; cards can be
+        // regenerated afterwards by other flows. The card file is the truth
+        // the report must render — and its body must be embedded so the
+        // static page can open the card without filesystem access.
+        let tmp = tempfile::tempdir().unwrap();
+        let loctree_dir = tmp.path().join(".loctree");
+        let atlas_dir = loctree_dir.join("context-atlas");
+        std::fs::create_dir_all(&atlas_dir).unwrap();
+        std::fs::write(
+            atlas_dir.join("00-core-map.md"),
+            "# Core Map\nline2\nline3\nline4\nline5\nline6\nline7\n",
+        )
+        .unwrap();
+        std::fs::write(
+            atlas_dir.join("manifest.json"),
+            serde_json::json!({
+                "atlas_dir": atlas_dir.display().to_string(),
+                "manifest": atlas_dir.join("manifest.md").display().to_string(),
+                "manifest_json": atlas_dir.join("manifest.json").display().to_string(),
+                "recommended_start": atlas_dir.join("00-core-map.md").display().to_string(),
+                "message": "test atlas",
+                "cards": [{
+                    "id": "core",
+                    "title": "Core Map",
+                    "path": "00-core-map.md",
+                    "lines": 999,
+                    "why": "test"
+                }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let info = super::load_atlas_info(&loctree_dir).expect("atlas attached");
+        assert_eq!(info.cards.len(), 1);
+        // 999 is the stale manifest lie; 7 is what the file actually holds.
+        assert_eq!(info.cards[0].lines, 7);
+        let body = info.cards[0].body.as_deref().expect("body embedded");
+        assert!(body.contains("# Core Map"));
+
+        // Unreadable card: keep the manifest count, ship no body.
+        std::fs::remove_file(atlas_dir.join("00-core-map.md")).unwrap();
+        let info = super::load_atlas_info(&loctree_dir).expect("atlas attached");
+        assert_eq!(info.cards[0].lines, 999);
+        assert!(info.cards[0].body.is_none());
+    }
+
+    #[test]
+    fn atlas_card_paths_escaping_the_atlas_dir_are_never_embedded() {
+        let tmp = tempfile::tempdir().unwrap();
+        let loctree_dir = tmp.path().join(".loctree");
+        let atlas_dir = loctree_dir.join("context-atlas");
+        std::fs::create_dir_all(&atlas_dir).unwrap();
+
+        // A secret OUTSIDE the atlas dir that a poisoned manifest points at,
+        // once absolutely and once via `..` traversal.
+        let secret = tmp.path().join("secret.txt");
+        std::fs::write(&secret, "s3cr3t").unwrap();
+
+        std::fs::write(
+            atlas_dir.join("manifest.json"),
+            serde_json::json!({
+                "atlas_dir": atlas_dir.display().to_string(),
+                "manifest": atlas_dir.join("manifest.md").display().to_string(),
+                "manifest_json": atlas_dir.join("manifest.json").display().to_string(),
+                "recommended_start": atlas_dir.join("00-core-map.md").display().to_string(),
+                "message": "poisoned atlas",
+                "cards": [
+                    {
+                        "id": "abs",
+                        "title": "Absolute escape",
+                        "path": secret.display().to_string(),
+                        "lines": 1,
+                        "why": "attack"
+                    },
+                    {
+                        "id": "rel",
+                        "title": "Dotdot escape",
+                        "path": "../../secret.txt",
+                        "lines": 1,
+                        "why": "attack"
+                    }
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let info = super::load_atlas_info(&loctree_dir).expect("atlas attached");
+        assert_eq!(info.cards.len(), 2);
+        for card in &info.cards {
+            assert!(
+                card.body.is_none(),
+                "card '{}' escaped the atlas dir and got embedded",
+                card.id
+            );
+        }
     }
 }

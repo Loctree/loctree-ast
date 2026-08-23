@@ -10,6 +10,7 @@ use crate::semantic::{
 };
 use crate::types::{FileAnalysis, Language};
 use std::collections::HashSet;
+use std::path::Path;
 
 const LANG_STR: &str = "make";
 
@@ -43,6 +44,31 @@ impl RuntimeSemanticAnalyzer for MakeSemantics {
 }
 
 impl MakeSemantics {
+    pub(crate) fn analyze_with_root(
+        &self,
+        files: &[FileAnalysis],
+        registry: &IdiomRegistry,
+        out: &mut SemanticFacts,
+        workspace_root: &Path,
+    ) -> anyhow::Result<()> {
+        for file in files {
+            if file.language != LANG_STR && file.language != "makefile" {
+                continue;
+            }
+
+            let content = crate::semantic::io::read_validated_semantic_input_from_root(
+                workspace_root,
+                &file.path,
+            )?;
+            let phony = parse_phony_directives(&content);
+
+            self.classify_exports(file, &phony, registry, out);
+            self.emit_recipe_shell_markers(file, &content, out);
+        }
+
+        Ok(())
+    }
+
     fn classify_exports(
         &self,
         file: &FileAnalysis,
@@ -742,6 +768,32 @@ generate::
         assert!(facts.idiom_tags.is_empty());
         assert!(facts.dispatch_edges.is_empty());
         assert!(facts.env_contracts.is_empty());
+    }
+
+    #[test]
+    fn relative_snapshot_path_is_read_from_workspace_root() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let relative = "tests/fixtures/make_rich/Makefile";
+        let path = tmp.path().join(relative);
+        std::fs::create_dir_all(path.parent().expect("fixture parent")).expect("fixture dirs");
+        let content = ".PHONY: build\nbuild:\n\t@echo ok\n";
+        std::fs::write(&path, content).expect("write fixture");
+
+        let mut file = analyze_makefile(content, relative.to_string());
+        file.language = LANG_STR.into();
+        let registry = IdiomRegistry::load_defaults().expect("defaults");
+        let mut facts = SemanticFacts::default();
+
+        MakeSemantics
+            .analyze_with_root(&[file], &registry, &mut facts, tmp.path())
+            .expect("analyze workspace-relative Makefile");
+
+        assert!(
+            facts
+                .reachability
+                .reached_symbols
+                .contains("tests/fixtures/make_rich/Makefile::build")
+        );
     }
 
     // ------------------------------------------------------------------

@@ -12,17 +12,23 @@ use super::super::{
     with_command_snapshot_cache,
 };
 use super::deprecation::warn_deprecated;
+use crate::analysis_reports::is_test_file_path;
 use crate::progress::Spinner;
 
 /// Handle the follow command - unified wrapper over the existing analysis scopes.
 pub fn handle_follow_command(opts: &FollowOptions, global: &GlobalOptions) -> DispatchResult {
     use std::path::PathBuf;
 
-    let roots = if opts.roots.is_empty() {
-        vec![PathBuf::from(".")]
+    // File paths are scope filters under the enclosing git (or parent) root —
+    // never scan roots. Passing a file used to force a refresh with
+    // "Not a directory (os error 20)" (loctree-fail 2026-08-11).
+    let default_root = [PathBuf::from(".")];
+    let requested = if opts.roots.is_empty() {
+        default_root.as_slice()
     } else {
-        opts.roots.clone()
+        opts.roots.as_slice()
     };
+    let roots = normalize_follow_scan_roots(requested);
     let first_root = roots.first().cloned().unwrap_or_else(|| PathBuf::from("."));
 
     match opts.scope.as_str() {
@@ -41,7 +47,7 @@ pub fn handle_follow_command(opts: &FollowOptions, global: &GlobalOptions) -> Di
             },
             global,
         ),
-        "twins" => handle_twins_follow(&roots, global),
+        "twins" => handle_twins_follow(&roots, opts.limit, global),
         "hotspots" => handle_hotspots_command(
             &HotspotsOptions {
                 root: Some(first_root),
@@ -68,6 +74,7 @@ pub fn handle_follow_command(opts: &FollowOptions, global: &GlobalOptions) -> Di
         "events" => handle_events_command(
             &EventsOptions {
                 roots,
+                limit: opts.limit,
                 ..Default::default()
             },
             global,
@@ -86,11 +93,96 @@ pub fn handle_follow_command(opts: &FollowOptions, global: &GlobalOptions) -> Di
     }
 }
 
-fn handle_twins_follow(roots: &[std::path::PathBuf], global: &GlobalOptions) -> DispatchResult {
+/// Convert follow PATH args into snapshot scan roots.
+///
+/// A file path keeps the repository (git root or parent dir) as the scan root
+/// so `loct follow path/to/file.rs` does not treat the file as a new project
+/// root and crash with "Not a directory".
+fn normalize_follow_scan_roots(roots: &[std::path::PathBuf]) -> Vec<std::path::PathBuf> {
+    use std::path::{Path, PathBuf};
+
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let mut out: Vec<PathBuf> = Vec::new();
+    for raw in roots {
+        let path = if raw.is_absolute() {
+            raw.clone()
+        } else {
+            cwd.join(raw)
+        };
+        let resolved = if path.is_file() {
+            let parent = path.parent().unwrap_or(Path::new("."));
+            crate::git::find_git_root(parent).unwrap_or_else(|| parent.to_path_buf())
+        } else if path.is_dir() {
+            path
+        } else {
+            // Non-existent path: keep as-is (downstream may error more clearly).
+            raw.clone()
+        };
+        let canon = resolved.canonicalize().unwrap_or(resolved);
+        if !out.iter().any(|existing| existing == &canon) {
+            out.push(canon);
+        }
+    }
+    if out.is_empty() {
+        out.push(cwd);
+    }
+    out
+}
+
+#[cfg(test)]
+mod follow_root_tests {
+    use super::normalize_follow_scan_roots;
+    use std::fs;
+    use std::path::PathBuf;
+    use tempfile::TempDir;
+
+    #[test]
+    fn follow_file_path_resolves_to_enclosing_git_root() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        // Minimal git repo so find_git_root works.
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(root)
+            .output()
+            .expect("git init");
+        let src = root.join("src");
+        fs::create_dir_all(&src).unwrap();
+        let file = src.join("lib.rs");
+        fs::write(&file, "fn main() {}").unwrap();
+
+        let roots = normalize_follow_scan_roots(std::slice::from_ref(&file));
+        assert_eq!(roots.len(), 1);
+        let expected = root.canonicalize().unwrap();
+        assert_eq!(roots[0], expected);
+    }
+
+    #[test]
+    fn follow_dir_path_stays_directory() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let roots = normalize_follow_scan_roots(std::slice::from_ref(&root));
+        assert_eq!(roots, vec![root]);
+    }
+
+    #[test]
+    fn follow_dot_default_is_cwd_like() {
+        let roots = normalize_follow_scan_roots(&[PathBuf::from(".")]);
+        assert_eq!(roots.len(), 1);
+        assert!(roots[0].is_dir());
+    }
+}
+
+fn handle_twins_follow(
+    roots: &[std::path::PathBuf],
+    limit: Option<usize>,
+    global: &GlobalOptions,
+) -> DispatchResult {
     let path = roots.first().cloned();
     super::ai::handle_twins_command(
         &super::super::super::command::TwinsOptions {
             path,
+            limit,
             ..Default::default()
         },
         global,
@@ -114,7 +206,9 @@ fn build_follow_all_report(
 
     // Dead exports (canonical pipeline — same number as repo-view/health/twins).
     let dead = compute_dead_truth(snapshot).dead;
-    let dead_top: Vec<_> = dead.iter().take(limit).collect();
+    let mut remaining = limit;
+    let dead_top: Vec<_> = dead.iter().take(remaining).collect();
+    remaining = remaining.saturating_sub(dead_top.len());
 
     // Import cycles.
     let edges: Vec<(String, String, String)> = snapshot
@@ -123,6 +217,8 @@ fn build_follow_all_report(
         .map(|e| (e.from.clone(), e.to.clone(), e.label.clone()))
         .collect();
     let (cycles, _lazy) = find_cycles_classified_with_lazy(&edges);
+    let cycle_top: Vec<_> = cycles.iter().take(remaining).collect();
+    remaining = remaining.saturating_sub(cycle_top.len());
 
     // Structural twin signals.
     let exact_twins = detect_exact_twins_with_frameworks(&snapshot.files, false, None);
@@ -148,7 +244,7 @@ fn build_follow_all_report(
     let hotspot_count = hotspots.len();
     let hotspot_top: Vec<serde_json::Value> = hotspots
         .iter()
-        .take(limit)
+        .take(remaining)
         .map(|(path, in_deg, out_deg)| {
             let category = match *in_deg {
                 n if n >= 10 => "CORE",
@@ -164,12 +260,21 @@ fn build_follow_all_report(
         })
         .collect();
 
+    let returned = dead_top.len() + cycle_top.len() + hotspot_top.len();
+    let total = dead.len() + cycles.len() + hotspot_count;
+
     serde_json::json!({
         "scope": "all",
-        "limit": limit,
-        "note": "Aggregated machine-readable counts across follow scopes. Per-scope full detail: `loct follow <scope> --json`.",
+        "page": {
+            "semantics": "global",
+            "limit": limit,
+            "returned": returned,
+            "total": total,
+            "has_more": returned < total,
+        },
+        "note": "One global result budget is shared by dead, cycles, and hotspots. Counts and twins summaries remain complete; use the scoped commands for detail.",
         "dead": { "count": dead.len(), "top": dead_top },
-        "cycles": { "count": cycles.len(), "cycles": cycles },
+        "cycles": { "count": cycles.len(), "cycles": cycle_top },
         "twins": { "exact_twins": exact_twins.len(), "dead_parrots": dead_parrots.len() },
         "hotspots": { "count": hotspot_count, "top": hotspot_top },
     })
@@ -180,18 +285,18 @@ fn handle_follow_all(
     limit: usize,
     global: &GlobalOptions,
 ) -> DispatchResult {
+    // `all` is an aggregate surface, so invoking each full renderer would turn
+    // `--limit N` into roughly four independent N-sized payloads. Build one
+    // bounded summary for both JSON and human output instead.
+    let snapshot = match load_or_create_snapshot_for_roots(roots, global) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("[loct][error] {}", e);
+            return DispatchResult::Exit(1);
+        }
+    };
+    let report = build_follow_all_report(&snapshot, limit);
     if global.json {
-        // Single aggregated JSON object (the `follow all --json` contract that
-        // `--help` advertised but used to refuse). Per-scope `--json` keeps its
-        // own full-detail output.
-        let snapshot = match load_or_create_snapshot_for_roots(roots, global) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("[loct][error] {}", e);
-                return DispatchResult::Exit(1);
-            }
-        };
-        let report = build_follow_all_report(&snapshot, limit);
         match serde_json::to_string_pretty(&report) {
             Ok(json) => println!("{}", json),
             Err(e) => {
@@ -202,55 +307,28 @@ fn handle_follow_all(
         return DispatchResult::Exit(0);
     }
 
-    println!("=== follow: dead ===");
-    let dead_result = handle_dead_command(
-        &DeadOptions {
-            roots: roots.to_vec(),
-            top: Some(limit),
-            ..Default::default()
-        },
-        global,
+    let page = &report["page"];
+    println!("Follow summary (global limit {}):", limit);
+    println!(
+        "  dead: {} | cycles: {} | twins: {} exact / {} dead | hotspots: {}",
+        report["dead"]["count"],
+        report["cycles"]["count"],
+        report["twins"]["exact_twins"],
+        report["twins"]["dead_parrots"],
+        report["hotspots"]["count"],
     );
-    if !dispatch_ok(&dead_result) {
-        return dead_result;
-    }
-
-    println!("\n=== follow: cycles ===");
-    let cycles_result = handle_cycles_command(
-        &CyclesOptions {
-            roots: roots.to_vec(),
-            ..Default::default()
-        },
-        global,
+    println!(
+        "  emitted {} of {} bounded findings{}",
+        page["returned"],
+        page["total"],
+        if page["has_more"].as_bool().unwrap_or(false) {
+            "; more available via scoped follow commands"
+        } else {
+            ""
+        }
     );
-    if !dispatch_ok(&cycles_result) {
-        return cycles_result;
-    }
-
-    println!("\n=== follow: twins ===");
-    let twins_result = handle_twins_follow(roots, global);
-    if !dispatch_ok(&twins_result) {
-        return twins_result;
-    }
-
-    println!("\n=== follow: hotspots ===");
-    let hotspots_result = handle_hotspots_command(
-        &HotspotsOptions {
-            root: roots.first().cloned(),
-            limit: Some(limit),
-            ..Default::default()
-        },
-        global,
-    );
-    if !dispatch_ok(&hotspots_result) {
-        return hotspots_result;
-    }
 
     DispatchResult::Exit(0)
-}
-
-fn dispatch_ok(result: &DispatchResult) -> bool {
-    matches!(result, DispatchResult::Exit(0))
 }
 
 /// Handle the dead command - detect dead exports
@@ -878,6 +956,18 @@ pub fn handle_trace_command(opts: &TraceOptions, global: &GlobalOptions) -> Disp
                     "    Consider: Remove if unused, or add invoke('{}') call.",
                     bridge.name
                 );
+            } else if bridge.has_handler && bridge.is_called {
+                // The broken cases spelled out their verdict; the healthy one
+                // printed two coordinates and left the reader to infer the
+                // wiring. State it — that verdict is the whole point of trace.
+                // Scope note: CommandBridge proves handler-exists + frontend
+                // -invokes, NOT presence in invoke_handler![]; unregistered
+                // handlers are a separate finding, so we do not claim it here.
+                println!(
+                    "    [OK] wired end-to-end: backend handler defined and reached by \
+frontend invoke('{}').",
+                    bridge.name
+                );
             }
             println!();
         }
@@ -1093,7 +1183,28 @@ pub fn handle_events_command(opts: &EventsOptions, global: &GlobalOptions) -> Di
         });
     }
 
-    let symbol_events = collect_symbol_runtime_events(&snapshot);
+    let mut symbol_events = collect_symbol_runtime_events(&snapshot);
+    let total_events = snapshot.event_bridges.len() + symbol_events.len();
+    let mut nested_events_truncated = false;
+    if let Some(limit) = opts.limit {
+        snapshot.event_bridges.truncate(limit);
+        let remaining = limit.saturating_sub(snapshot.event_bridges.len());
+        symbol_events.truncate(remaining);
+        for bridge in &mut snapshot.event_bridges {
+            nested_events_truncated |= bridge.emits.len() > limit || bridge.listens.len() > limit;
+            bridge.emits.truncate(limit);
+            bridge.listens.truncate(limit);
+        }
+        for event in &mut symbol_events {
+            nested_events_truncated |= event.emits.len() > limit
+                || event.observes.len() > limit
+                || event.selectors.len() > limit;
+            event.emits.truncate(limit);
+            event.observes.truncate(limit);
+            event.selectors.truncate(limit);
+        }
+    }
+    let returned_events = snapshot.event_bridges.len() + symbol_events.len();
 
     if let Some(s) = spinner {
         s.finish_success(&format!(
@@ -1104,7 +1215,21 @@ pub fn handle_events_command(opts: &EventsOptions, global: &GlobalOptions) -> Di
 
     // Output results
     if global.json {
-        let payload = if symbol_events.is_empty() {
+        let payload = if let Some(limit) = opts.limit {
+            serde_json::json!({
+                "event_bridges": snapshot.event_bridges,
+                "symbol_events": symbol_events,
+                "page": {
+                    "semantics": "global",
+                    "limit": limit,
+                    "returned": returned_events,
+                    "total": total_events,
+                    "has_more": returned_events < total_events,
+                    "nested_item_limit": limit,
+                    "nested_truncated": nested_events_truncated,
+                }
+            })
+        } else if symbol_events.is_empty() {
             serde_json::json!(snapshot.event_bridges)
         } else {
             serde_json::json!({
@@ -1272,6 +1397,18 @@ pub fn handle_events_command(opts: &EventsOptions, global: &GlobalOptions) -> Di
                     print_symbol_runtime_events(&symbol_events);
                 }
             }
+        }
+    }
+
+    if !global.json && opts.limit.is_some() {
+        if returned_events < total_events {
+            println!(
+                "{} additional event group(s) omitted by the global --limit",
+                total_events - returned_events
+            );
+        }
+        if nested_events_truncated {
+            println!("Nested event locations were also capped by --limit");
         }
     }
 
@@ -1556,7 +1693,7 @@ pub fn handle_focus_command(opts: &FocusOptions, global: &GlobalOptions) -> Disp
         Some(f) => f,
         None => {
             // Distinguish a genuine wrong path from a correct path that is simply
-            // parked outside the snapshot by .loctignore (loctree-feedback.md: example-app
+            // parked outside the snapshot by .loctignore (loctree-fail.md: example-app
             // docs/). When the latter, lead with the precise cause instead of
             // telling the user to "check the path".
             let ignore_hint = crate::fs_utils::loctignore_exclusion_hint(root, &opts.target);
@@ -1961,7 +2098,7 @@ pub fn handle_zombie_command(opts: &ZombieOptions, global: &GlobalOptions) -> Di
     use std::path::Path;
 
     // Deprecation warning (goes to stderr, won't break piped output)
-    warn_deprecated("zombie", "loct '.dead_parrots'");
+    warn_deprecated("zombie", "loct '.dead_parrots' --artifact findings");
 
     // Show spinner unless in quiet/json mode
     let spinner = if !global.quiet && !global.json {
@@ -2217,26 +2354,6 @@ fn is_entry_point(path: &str) -> bool {
         || path == "index.ts"
 }
 
-/// Check if a file path looks like a test file
-fn is_test_file_path(path: &str) -> bool {
-    path.contains("/test/")
-        || path.contains("/tests/")
-        || path.contains("/__tests__/")
-        || path.contains("/spec/")
-        || path.ends_with(".test.ts")
-        || path.ends_with(".test.tsx")
-        || path.ends_with(".test.js")
-        || path.ends_with(".test.jsx")
-        || path.ends_with(".spec.ts")
-        || path.ends_with(".spec.tsx")
-        || path.ends_with(".spec.js")
-        || path.ends_with(".spec.jsx")
-        || path.ends_with("_test.rs")
-        || path.ends_with("_test.py")
-        || path.starts_with("test_")
-        || path.contains("/test_")
-}
-
 /// Handle the health command - quick summary of cycles + dead + twins
 pub fn handle_health_command(opts: &HealthOptions, global: &GlobalOptions) -> DispatchResult {
     use crate::analyzer::cycles::{CycleCompilability, find_cycles_classified_with_lazy};
@@ -2363,7 +2480,7 @@ pub fn handle_health_command(opts: &HealthOptions, global: &GlobalOptions) -> Di
 
     // Output results
     if global.json {
-        // loctree-feedback hak 2026-05-18 Screenscribe #1: `loct health` must
+        // loctree-fail hak 2026-05-18 Screenscribe #1: `loct health` must
         // not return silent `OK` while `loct findings`, `loct insights`,
         // and broad `loct twins` (barrel chaos + missing index.ts +
         // inconsistent paths) report real issues in the same snapshot.
@@ -2444,7 +2561,7 @@ pub fn handle_health_command(opts: &HealthOptions, global: &GlobalOptions) -> Di
         }
 
         println!();
-        // loctree-feedback hak 2026-05-18 Screenscribe #1: `health` must
+        // loctree-fail hak 2026-05-18 Screenscribe #1: `health` must
         // tell the operator what it did NOT check, so a green narrow-OK
         // never reads as a green broad-OK. Footer enumerates the broader
         // surfaces explicitly.
@@ -2476,112 +2593,17 @@ pub fn handle_health_command(opts: &HealthOptions, global: &GlobalOptions) -> Di
     DispatchResult::Exit(0)
 }
 
-fn insert_audit_collection<T: serde::Serialize>(
-    section: &mut serde_json::Map<String, serde_json::Value>,
-    key: &str,
-    items: &[T],
-    limit: Option<usize>,
-) {
-    let display_limit = limit.unwrap_or(usize::MAX);
-    section.insert(
-        key.to_string(),
-        serde_json::json!(items.iter().take(display_limit).collect::<Vec<_>>()),
-    );
-
-    if let Some(limit) = limit {
-        let omitted = items.len().saturating_sub(limit);
-        section.insert("limit".to_string(), serde_json::json!(limit));
-        section.insert("omitted".to_string(), serde_json::json!(omitted));
-        section.insert("truncated".to_string(), serde_json::json!(omitted > 0));
-    }
-}
-
 fn build_audit_json(
     findings: &crate::analyzer::audit_report::AuditFindings,
     limit: Option<usize>,
 ) -> serde_json::Value {
-    use crate::analyzer::cycles::CycleCompilability;
-    use serde_json::{Map, Value, json};
-
-    let high_confidence = findings
-        .dead_exports
-        .iter()
-        .filter(|d| d.confidence == "high")
-        .count();
-    let low_confidence = findings.dead_exports.len() - high_confidence;
-    let high_risk_cycles = findings
-        .cycles
-        .iter()
-        .filter(|c| c.compilability == CycleCompilability::Breaking)
-        .count();
-    let structural_cycles = findings
-        .cycles
-        .iter()
-        .filter(|c| c.compilability == CycleCompilability::Structural)
-        .count();
-    let orphan_loc: usize = findings.orphan_files.iter().map(|f| f.loc).sum();
-
-    let mut cycles = Map::new();
-    cycles.insert("total".to_string(), json!(findings.cycles.len()));
-    cycles.insert("high_risk".to_string(), json!(high_risk_cycles));
-    cycles.insert("structural".to_string(), json!(structural_cycles));
-    insert_audit_collection(&mut cycles, "items", &findings.cycles, limit);
-
-    let mut dead_exports = Map::new();
-    dead_exports.insert("total".to_string(), json!(findings.dead_exports.len()));
-    dead_exports.insert("high_confidence".to_string(), json!(high_confidence));
-    dead_exports.insert("low_confidence".to_string(), json!(low_confidence));
-    insert_audit_collection(&mut dead_exports, "items", &findings.dead_exports, limit);
-
-    let mut twins = Map::new();
-    twins.insert("total".to_string(), json!(findings.twins.len()));
-    insert_audit_collection(&mut twins, "groups", &findings.twins, limit);
-
-    let mut orphan_files = Map::new();
-    orphan_files.insert("total".to_string(), json!(findings.orphan_files.len()));
-    orphan_files.insert("total_loc".to_string(), json!(orphan_loc));
-    insert_audit_collection(&mut orphan_files, "files", &findings.orphan_files, limit);
-
-    let mut shadow_exports = Map::new();
-    shadow_exports.insert("total".to_string(), json!(findings.shadow_exports.len()));
-    insert_audit_collection(
-        &mut shadow_exports,
-        "items",
-        &findings.shadow_exports,
-        limit,
-    );
-
-    let mut crowds = Map::new();
-    crowds.insert("total".to_string(), json!(findings.crowds.len()));
-    insert_audit_collection(&mut crowds, "clusters", &findings.crowds, limit);
-
-    Value::Object(Map::from_iter([
-        ("cycles".to_string(), Value::Object(cycles)),
-        ("dead_exports".to_string(), Value::Object(dead_exports)),
-        ("twins".to_string(), Value::Object(twins)),
-        ("orphan_files".to_string(), Value::Object(orphan_files)),
-        ("shadow_exports".to_string(), Value::Object(shadow_exports)),
-        ("crowds".to_string(), Value::Object(crowds)),
-        (
-            "summary".to_string(),
-            json!({
-                "total_files": findings.total_files,
-                "total_loc": findings.total_loc,
-            }),
-        ),
-    ]))
+    crate::analysis_reports::audit_json_report(findings, limit)
 }
 
 /// Handle the audit command - full codebase audit with actionable markdown report
 pub fn handle_audit_command(opts: &AuditOptions, global: &GlobalOptions) -> DispatchResult {
-    use crate::analyzer::audit_report::{
-        AuditFindings, OrphanFile, ShadowExport, generate_markdown_report, generate_todos,
-    };
-    use crate::analyzer::crowd::detect_all_crowds;
-    use crate::analyzer::cycles::{CycleCompilability, find_cycles_classified_with_lazy};
-    use crate::analyzer::dead_parrots::DeadFilterConfig;
-    use crate::analyzer::twins::{build_symbol_registry, detect_exact_twins};
-    use std::collections::HashMap;
+    use crate::analyzer::audit_report::{generate_markdown_report, generate_todos};
+    use crate::analyzer::cycles::CycleCompilability;
     use std::path::Path;
 
     // Show spinner unless in quiet/json mode
@@ -2610,171 +2632,21 @@ pub fn handle_audit_command(opts: &AuditOptions, global: &GlobalOptions) -> Disp
         }
     };
 
-    // 1. Cycles analysis
-    let edges: Vec<(String, String, String)> = snapshot
-        .edges
-        .iter()
-        .map(|e| (e.from.clone(), e.to.clone(), e.label.clone()))
-        .collect();
-
-    let (classified_cycles, _) = find_cycles_classified_with_lazy(&edges);
-
-    let _high_risk_cycles = classified_cycles
-        .iter()
-        .filter(|c| c.compilability == CycleCompilability::Breaking)
-        .count();
-    let _structural_cycles = classified_cycles
-        .iter()
-        .filter(|c| c.compilability == CycleCompilability::Structural)
-        .count();
-    let _total_cycles = classified_cycles.len();
-
-    // 2. Dead exports analysis
-    let dead_ok_globs = crate::fs_utils::load_loctignore_dead_ok_globs(root);
-    let dead_exports = crate::analyzer::dead_parrots::compute_dead_truth_with(
+    // One source of truth: the same audit_findings() the library JSON uses.
+    // Role/artifact/entrypoint fences live there — do not reimplement them here.
+    let findings = crate::analysis_reports::audit_findings(
         &snapshot,
-        DeadFilterConfig {
+        root,
+        crate::analysis_reports::AuditReportOptions {
             include_tests: opts.include_tests,
-            include_helpers: false,
             library_mode: global.library_mode,
-            example_globs: Vec::new(),
-            python_library_mode: global.python_library,
-            include_ambient: false,
-            include_dynamic: false,
-            dead_ok_globs,
+            python_library: global.python_library,
         },
-        false,
-    )
-    .dead;
-
-    let high_confidence = dead_exports
-        .iter()
-        .filter(|d| d.confidence == "high")
-        .count();
-    let _low_confidence = dead_exports.len() - high_confidence;
-
-    // 3. Twins analysis
-    let twins = detect_exact_twins(&snapshot.files, opts.include_tests);
-    let _twin_count = twins.len();
-
-    // 4. Orphan files (files with 0 importers)
-    let mut in_degree: HashMap<String, usize> = HashMap::new();
-
-    for file in &snapshot.files {
-        in_degree.insert(file.path.clone(), 0);
-    }
-
-    for edge in &snapshot.edges {
-        *in_degree.entry(edge.to.clone()).or_insert(0) += 1;
-    }
-
-    let mut orphan_files: Vec<(String, usize)> = in_degree
-        .iter()
-        .filter(|(path, count)| {
-            if **count > 0 {
-                return false;
-            }
-            if is_entry_point(path.as_str()) {
-                return false;
-            }
-            if !opts.include_tests && is_test_file_path(path.as_str()) {
-                return false;
-            }
-            true
-        })
-        .map(|(path, _)| {
-            let loc = snapshot
-                .files
-                .iter()
-                .find(|f| &f.path == path)
-                .map(|f| f.loc)
-                .unwrap_or(0);
-            (path.clone(), loc)
-        })
-        .collect();
-
-    orphan_files.sort_by_key(|b| std::cmp::Reverse(b.1));
-    let _orphan_loc: usize = orphan_files.iter().map(|(_, loc)| loc).sum();
-
-    // Artifact fence: generated files, lockfiles, vendored code, fixtures and
-    // docs are not actionable "orphans to review" — separate, don't drop.
-    let (artifact_orphan_files, orphan_files): (Vec<_>, Vec<_>) =
-        orphan_files.into_iter().partition(|(path, _)| {
-            crate::analyzer::classify::artifact_class(path, None).is_artifact()
-                || crate::analyzer::classify::resource_kind(path) == Some("doc")
-        });
-
-    // Entry-point fence: runtime entries (Cargo [[bin]], package.json
-    // main/bin, shebang, detected main markers) have no importers by design —
-    // they are roots, not orphans to review.
-    let runtime_entries =
-        crate::analyzer::dead_parrots::filters::runtime_entrypoint_paths(&snapshot);
-    let (entrypoint_orphan_files, orphan_files): (Vec<_>, Vec<_>) =
-        orphan_files.into_iter().partition(|(path, _)| {
-            runtime_entries.contains(path.replace('\\', "/").trim_start_matches("./"))
-        });
-
-    // 5. Shadow exports
-    let registry = build_symbol_registry(&snapshot.files, opts.include_tests);
-    let mut shadow_exports: Vec<(String, usize, usize)> = Vec::new();
-
-    for twin in &twins {
-        let mut total_locations = 0;
-        let mut dead_count = 0;
-
-        for loc in &twin.locations {
-            total_locations += 1;
-            let key = (loc.file_path.clone(), twin.name.clone());
-            if let Some(entry) = registry.get(&key)
-                && entry.import_count == 0
-            {
-                dead_count += 1;
-            }
-        }
-
-        if dead_count > 0 && dead_count < total_locations {
-            shadow_exports.push((twin.name.clone(), total_locations, dead_count));
-        }
-    }
-
-    // 6. Crowds analysis
-    let crowds = detect_all_crowds(&snapshot.files);
+    );
 
     if let Some(s) = spinner {
         s.finish_success("Audit complete");
     }
-
-    // Build AuditFindings struct
-    let total_loc: usize = snapshot.files.iter().map(|f| f.loc).sum();
-
-    let findings = AuditFindings {
-        cycles: classified_cycles,
-        dead_exports,
-        twins,
-        orphan_files: orphan_files
-            .into_iter()
-            .map(|(path, loc)| OrphanFile { path, loc })
-            .collect(),
-        artifact_orphans: artifact_orphan_files
-            .into_iter()
-            .map(|(path, loc)| OrphanFile { path, loc })
-            .collect(),
-        entrypoint_orphans: entrypoint_orphan_files
-            .into_iter()
-            .map(|(path, loc)| OrphanFile { path, loc })
-            .collect(),
-        shadow_exports: shadow_exports
-            .into_iter()
-            .map(|(name, total_locations, dead_locations)| ShadowExport {
-                name,
-                total_locations,
-                dead_locations,
-            })
-            .collect(),
-        crowds,
-        total_files: snapshot.files.len(),
-        total_loc,
-    };
 
     // Calculate summary stats for terminal output
     use crate::colors::Painter;
@@ -2820,21 +2692,49 @@ pub fn handle_audit_command(opts: &AuditOptions, global: &GlobalOptions) -> Disp
         }
 
         // Print colored summary to terminal
-        let total_issues = findings.cycles.len()
-            + findings.dead_exports.len()
-            + findings.twins.len()
+        let scored_twins = findings
+            .twins
+            .iter()
+            .filter(|twin| {
+                matches!(
+                    twin.class,
+                    crate::analyzer::twins::TwinClass::Exact
+                        | crate::analyzer::twins::TwinClass::ShapeSimilar
+                )
+            })
+            .count();
+        let name_collisions = findings.twins.len().saturating_sub(scored_twins);
+        let total_issues = findings
+            .cycles
+            .iter()
+            .filter(|cycle| {
+                matches!(
+                    cycle.compilability,
+                    CycleCompilability::Breaking | CycleCompilability::Structural
+                )
+            })
+            .count()
+            + findings
+                .dead_exports
+                .iter()
+                .filter(|dead| dead.confidence == "high" && !dead.entrypoint)
+                .count()
+            + scored_twins
+            + findings.orphan_files.len()
             + findings.shadow_exports.len();
 
         println!("\n{}\n", p.header("Audit Summary"));
+        let health = crate::analyzer::audit_report::audit_health(&findings);
         println!(
-            "  Files: {}  |  LOC: {}  |  Issues: {}",
+            "  Files: {}  |  LOC: {}  |  Actionable: {}  |  Health: {}/100",
             p.number(findings.total_files),
             p.number(findings.total_loc),
             if total_issues > 0 {
                 p.warn(&total_issues.to_string())
             } else {
                 p.ok(&total_issues.to_string())
-            }
+            },
+            p.number(health.health as usize)
         );
 
         if high_risk_cycles > 0 {
@@ -2851,11 +2751,18 @@ pub fn handle_audit_command(opts: &AuditOptions, global: &GlobalOptions) -> Disp
                 p.warn(&high_confidence.to_string())
             );
         }
-        if !findings.twins.is_empty() {
+        if scored_twins > 0 {
             println!(
-                "  {} {} duplicate symbol groups",
+                "  {} {} shape-similar twin groups",
                 p.info("[i]"),
-                p.info(&findings.twins.len().to_string())
+                p.info(&scored_twins.to_string())
+            );
+        }
+        if name_collisions > 0 {
+            println!(
+                "  {} {} name collisions (not scored)",
+                p.dim("[i]"),
+                p.dim(&name_collisions.to_string())
             );
         }
 

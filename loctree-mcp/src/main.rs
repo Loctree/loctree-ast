@@ -7,7 +7,7 @@
 //!
 //! - **Project-agnostic**: Each tool accepts `project` parameter
 //! - **Auto-scan**: First use on a project creates snapshot automatically
-//! - **Multi-project cache**: Snapshots kept in RAM for instant responses
+//! - **Bounded cache**: The most recently used project snapshots stay in RAM
 //! - **Zero config**: Just start the server, no --project needed
 //!
 //! ## Usage
@@ -17,9 +17,9 @@
 //! loctree-mcp
 //! ```
 //!
-//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents ⓒ 2025-2026 Loctree Team
+//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -42,7 +42,8 @@ mod http;
 mod security;
 mod signals;
 
-use args::{Args, TransportKind};
+use args::{Args, Command, TransportKind};
+use http::auth::AuthSettings;
 use signals::{ignore_sigpipe, install_panic_hook, safe_stderr_log};
 
 use loctree::analyzer::classify::{detect_language, detect_language_from_filename};
@@ -50,7 +51,8 @@ use loctree::analyzer::crowd::detect_crowd_with_edges;
 use loctree::analyzer::cycles::find_cycles;
 use loctree::analyzer::dead_parrots::{DeadFilterConfig, find_dead_exports};
 use loctree::analyzer::occurrences::{
-    FileScope, OccurrenceResults, ReportOptions, ScanOptions, scan_files_with_scope,
+    FileScope, OccurrenceResults, ReportOptions, ScanOptions, scan_files_for_literal_query,
+    scan_files_with_regex,
 };
 use loctree::analyzer::pipelines::build_pipeline_summary;
 use loctree::analyzer::root_scan::scan_results_from_snapshot;
@@ -64,12 +66,21 @@ use loctree::atlas::{
     ContextOptions, atlas_dir_for_project, compose_context_pack_from_snapshot,
     materialize_context_atlas, render_context_markdown,
 };
+use loctree::body::query_symbol_body;
+use loctree::bundle_identity::{
+    BundleCompatibility, BundleDiagnostic, BundleIdentity, compare_bundles, core_bundle_identity,
+};
+use loctree::diff::SnapshotDiff;
 use loctree::focuser::{FocusConfig, HolographicFocus};
-use loctree::git::find_git_root;
+use loctree::git::{GitRepo, find_git_root};
+use loctree::impact::{ImpactOptions, analyze_impact};
 use loctree::metrics::{repository_metrics, top_hubs_by_importers_direct};
 use loctree::query::{query_where_symbol, query_who_imports};
 use loctree::slicer::{HolographicSlice, SliceConfig};
-use loctree::snapshot::{Snapshot, normalize_roots_for_scope_compare};
+use loctree::snapshot::{
+    AcquireOptions, Snapshot, SnapshotReusePolicy, SnapshotRootStrategy, acquire_snapshot,
+    normalize_roots_for_scope_compare,
+};
 
 // ============================================================================
 // Tool Parameter Types - All tools have optional `project` parameter
@@ -79,6 +90,8 @@ use loctree::snapshot::{Snapshot, normalize_roots_for_scope_compare};
 mod deserialize_usize_lenient {
     use serde::{self, Deserialize, Deserializer};
 
+    /// Accept a required count as either a JSON number or a decimal string, so a
+    /// client that quotes its integers still parses instead of failing the call.
     pub fn deserialize<'de, D>(deserializer: D) -> Result<usize, D::Error>
     where
         D: Deserializer<'de>,
@@ -96,6 +109,32 @@ mod deserialize_usize_lenient {
                 .parse()
                 .map_err(|_| serde::de::Error::custom(format!("invalid number: {s}"))),
         }
+    }
+
+    /// Same leniency for an optional count: absent stays `None`, a quoted number
+    /// parses, and unparseable text is a deserialization error rather than a
+    /// silent default.
+    pub fn deserialize_option<'de, D>(deserializer: D) -> Result<Option<usize>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum StringOrNum {
+            Num(usize),
+            Str(String),
+        }
+
+        Option::<StringOrNum>::deserialize(deserializer)?.map_or(Ok(None), |value| {
+            let parsed = match value {
+                StringOrNum::Num(n) => n,
+                StringOrNum::Str(s) => s
+                    .trim()
+                    .parse()
+                    .map_err(|_| serde::de::Error::custom(format!("invalid number: {s}")))?,
+            };
+            Ok(Some(parsed))
+        })
     }
 }
 
@@ -121,6 +160,9 @@ fn set_default_project_root(root: &str) {
     let _ = DEFAULT_PROJECT_ROOT.set(resolved);
 }
 
+/// Serde default for every tool's `project` field: the `--root` pin when one
+/// was set, otherwise the server's cwd resolved to an absolute path so an agent
+/// with a different cwd still lands on the same tree.
 fn default_project() -> String {
     // A `--root` / `--project` pin wins over cwd. Per-request `project`
     // params still override this — serde only calls us when the field is
@@ -134,6 +176,8 @@ fn default_project() -> String {
         .unwrap_or_else(|_| ".".to_string())
 }
 
+/// Strip a term to lowercase alphanumerics so `public-entry`, `public_entry`,
+/// and `PublicEntry` all collapse to one comparable key for tagmap recall.
 fn tagmap_normalize(value: &str) -> String {
     value
         .chars()
@@ -142,6 +186,9 @@ fn tagmap_normalize(value: &str) -> String {
         .to_ascii_lowercase()
 }
 
+/// Match a snapshot fact against a tagmap keyword, first on raw lowercase
+/// substring and then on the separator-stripped form, so a dashed query still
+/// recalls an underscored symbol.
 fn tagmap_matches(value: &str, keyword_lower: &str, keyword_normalized: &str) -> bool {
     let value_lower = value.to_ascii_lowercase();
     value_lower.contains(keyword_lower)
@@ -149,10 +196,15 @@ fn tagmap_matches(value: &str, keyword_lower: &str, keyword_normalized: &str) ->
             && tagmap_normalize(&value_lower).contains(keyword_normalized))
 }
 
+/// Apply the caller's `file` narrowing through the shared occurrence scope
+/// matcher, so MCP file filters behave identically to the CLI's.
 fn path_filter_matches(path: &str, filter: &str) -> bool {
     loctree::analyzer::occurrences::path_matches_scope(path, filter)
 }
 
+/// Reduce a signature-shaped query such as `async fn find` to its trailing
+/// identifier, dropping keywords, so where-symbol can retry on the bare name
+/// when the full phrase finds nothing.
 fn signature_symbol_anchor(query: &str) -> Option<String> {
     let mut tokens = query
         .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
@@ -166,6 +218,9 @@ fn signature_symbol_anchor(query: &str) -> Option<String> {
     tokens.next_back().map(|token| token.to_ascii_lowercase())
 }
 
+/// Test whether a match's context line contains the anchor as a whole
+/// identifier — this is what lets where-symbol prefer `fn find` over the
+/// substring hit `fn find_helper`.
 fn context_has_identifier(context: &str, ident: &str) -> bool {
     context
         .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
@@ -222,9 +277,12 @@ fn allowed_project_roots() -> Option<Vec<PathBuf>> {
 pub struct LexicallyValidatedPath(PathBuf);
 
 impl LexicallyValidatedPath {
+    /// Borrow the validated path without consuming the witness.
     pub fn as_path(&self) -> &Path {
         self.0.as_path()
     }
+    /// Consume the witness and hand back the owned lexical path; the caller takes
+    /// on the duty to canonicalize and re-check containment before any `fs::*` use.
     pub fn into_path_buf(self) -> PathBuf {
         self.0
     }
@@ -396,6 +454,7 @@ fn enforce_allowed_root(canonical: &Path, allowed_roots: Option<&[PathBuf]>) -> 
     }
 }
 
+/// Inputs for the tools that need nothing but a project: `repo-view`.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct ForAiParams {
     /// Project directory (default: current directory)
@@ -406,6 +465,9 @@ struct ForAiParams {
     force_no_git: bool,
 }
 
+/// Inputs for `context` — snapshot freshness policy, the optional focus
+/// (file / task / scope / changed), the AICX toggle, and the markdown
+/// format plus section cursor.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct ContextParams {
     /// Project directory (default: current directory)
@@ -453,6 +515,8 @@ struct ContextParams {
     section: Option<usize>,
 }
 
+/// Response shape `context` returns: pretty JSON by default, or the paginated
+/// operator-readable markdown pack.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 enum ContextFormat {
@@ -461,6 +525,8 @@ enum ContextFormat {
     Markdown,
 }
 
+/// Inputs for `slice`: the target file, whether consumers are included, the
+/// traversal depth, and an optional forced rescan for freshly created files.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct SliceParams {
     /// Project directory (default: current directory)
@@ -474,8 +540,19 @@ struct SliceParams {
     /// Include consumer files (files that import this file)
     #[serde(default = "default_true")]
     consumers: bool,
+    /// Maximum dependency/consumer traversal depth (default: 2).
+    #[serde(
+        default,
+        deserialize_with = "deserialize_usize_lenient::deserialize_option"
+    )]
+    depth: Option<usize>,
+    /// Force a fresh snapshot before slicing so newly-created files are visible.
+    #[serde(default)]
+    rescan: bool,
 }
 
+/// Inputs for `find` across all seven modes. Most fields are mode-specific and
+/// ignored elsewhere — the literal-mode tuning block in particular.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct FindParams {
     /// Project directory (default: current directory)
@@ -486,7 +563,7 @@ struct FindParams {
     force_no_git: bool,
     /// Symbol name or regex pattern to search for
     name: String,
-    /// Search mode: "symbols" (default), "who-imports", "where-symbol", "tagmap", "crowd", "literal"
+    /// Search mode: "symbols" (default), "who-imports", "where-symbol", "tagmap", "crowd", "literal", "regex"
     #[serde(default = "default_find_mode")]
     mode: String,
     /// Maximum results to return (default: 50)
@@ -530,6 +607,8 @@ struct FindParams {
     offset: usize,
 }
 
+/// Inputs for `impact`: the file whose blast radius is wanted, and how far up
+/// the reverse-dependency graph to walk.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct ImpactParams {
     /// Project directory (default: current directory)
@@ -540,12 +619,65 @@ struct ImpactParams {
     force_no_git: bool,
     /// File path to analyze impact for
     file: String,
+    /// Maximum reverse-dependency traversal depth (default: unlimited).
+    #[serde(
+        default,
+        deserialize_with = "deserialize_usize_lenient::deserialize_option"
+    )]
+    depth: Option<usize>,
 }
 
+/// Inputs for `body`: the symbol to resolve, an optional file to disambiguate
+/// duplicate definitions, and the per-body line cap.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct BodyParams {
+    /// Project directory (default: current directory).
+    #[serde(default = "default_project")]
+    project: String,
+    /// Allow non-git directories. Default false guards accidental scans outside a repo.
+    #[serde(default)]
+    force_no_git: bool,
+    /// Symbol whose bounded source body should be returned.
+    symbol: String,
+    /// Optional repo-relative file/path suffix used to disambiguate definitions.
+    #[serde(default)]
+    file: Option<String>,
+    /// Maximum source lines per body (default: 200).
+    #[serde(
+        default,
+        deserialize_with = "deserialize_usize_lenient::deserialize_option"
+    )]
+    line_cap: Option<usize>,
+    /// Force a fresh snapshot before resolving the symbol.
+    #[serde(default)]
+    rescan: bool,
+}
+
+/// Inputs for `diff`: the git ref to use as the comparison base, and whether
+/// generated or vendored exports count as changes.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct DiffParams {
+    /// Project directory (default: current directory).
+    #[serde(default = "default_project")]
+    project: String,
+    /// Allow non-git directories. Git refs require a git repository.
+    #[serde(default)]
+    force_no_git: bool,
+    /// Snapshot path or git ref to compare from (for example HEAD~1).
+    since: String,
+    /// Include generated/vendored/template exports in symbol changes.
+    #[serde(default)]
+    include_artifacts: bool,
+}
+
+/// Example items per prism section when the caller does not say — eight, enough
+/// to read a band without flooding the response.
 fn default_prism_limit() -> usize {
     8
 }
 
+/// Inputs for `prism`: the two-or-more task framings to score against each
+/// other, plus the AICX overlay controls and per-section example cap.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct PrismParams {
     /// Project directory (default: current directory)
@@ -574,14 +706,18 @@ struct PrismParams {
     limit: usize,
 }
 
+/// Serde default for opt-out booleans such as `consumers` and `with_aicx`,
+/// which are on unless the caller turns them off.
 fn default_true() -> bool {
     true
 }
 
+/// Result cap applied when `find` is called without `limit`.
 fn default_limit() -> usize {
     50
 }
 
+/// Mode `find` falls back to when the caller does not name one.
 fn default_find_mode() -> String {
     "symbols".to_string()
 }
@@ -590,10 +726,12 @@ fn default_find_mode() -> String {
 /// from disk relative to `base`.
 ///
 /// This is the MCP surface of the W1 literal truth layer. It deliberately
-/// reuses [`loctree::analyzer::occurrences::scan_files`] — the *same* scanner
-/// `loct occurrences` / `loct find --literal` use — so MCP results are
-/// byte-for-byte identical to the CLI for the same snapshot. There is no second
-/// scanner here; only the file-enumeration glue is mirrored from the CLI handler
+/// reuses [`loctree::analyzer::occurrences::scan_files_for_literal_query`] — the
+/// *same* multi-literal-aware scanner path `loct occurrences` /
+/// `loct find --literal` use — so MCP results are byte-for-byte identical to
+/// the CLI for the same snapshot (including agent `A|B` OR expansion). There
+/// is no second scanner here; only the file-enumeration glue is mirrored from
+/// the CLI handler
 /// (`loctree-rs/src/cli/dispatch/handlers/occurrences.rs::read_snapshot_contents`),
 /// keeping the file set and the bytes read identical across surfaces.
 fn scan_literal_occurrences(
@@ -624,9 +762,85 @@ fn scan_literal_occurrences(
         .iter()
         .map(|(p, c)| (p.as_str(), c.as_str()))
         .collect::<Vec<_>>();
-    scan_files_with_scope(borrowed, ident.trim(), opts, scope)
+    scan_files_for_literal_query(&borrowed, ident, opts, scope)
 }
 
+/// Regex counterpart to the literal scan: compile the caller's pattern, read
+/// every snapshot file off disk, and report matches with the same coverage
+/// accounting the CLI produces. An invalid pattern surfaces as a scan error, not
+/// a panic.
+fn scan_regex_occurrences(
+    snapshot: &Snapshot,
+    base: &Path,
+    pattern: &str,
+    scope: FileScope<'_>,
+) -> Result<OccurrenceResults, regex::Error> {
+    let re = regex::Regex::new(pattern)?;
+    let contents: Vec<(String, String)> = snapshot
+        .files
+        .iter()
+        .filter_map(|file| {
+            let joined = base.join(&file.path);
+            let resolved = if joined.exists() {
+                joined
+            } else {
+                PathBuf::from(&file.path)
+            };
+            fs::read_to_string(&resolved)
+                .ok()
+                .map(|text| (file.path.clone(), text))
+        })
+        .collect();
+    let borrowed = contents
+        .iter()
+        .map(|(path, body)| (path.as_str(), body.as_str()))
+        .collect::<Vec<_>>();
+    Ok(scan_files_with_regex(borrowed, &re, scope))
+}
+
+/// Materialize a throwaway worktree at `reference`, scan it, then remove the
+/// worktree — this is how `diff` gets a base snapshot without disturbing the
+/// live checkout. A cleanup failure is reported even when the scan succeeded,
+/// so a leaked worktree is never silent.
+fn snapshot_at_git_ref(project: &Path, reference: &str) -> Result<(Snapshot, String), String> {
+    let repo = GitRepo::discover(project).map_err(|err| err.to_string())?;
+    let commit = repo
+        .get_commit_info(reference)
+        .map_err(|err| err.to_string())?;
+    let temp = tempfile::TempDir::new().map_err(|err| err.to_string())?;
+    let worktree = temp.path().join("loctree-mcp-diff-base");
+    repo.create_worktree(reference, &worktree)
+        .map_err(|err| err.to_string())?;
+
+    let acquired = acquire_snapshot(
+        std::slice::from_ref(&worktree),
+        SnapshotReusePolicy::Strict,
+        &AcquireOptions {
+            fresh: true,
+            quiet: true,
+            print_scan_summary: false,
+            strategy: SnapshotRootStrategy::Exact,
+            ..Default::default()
+        },
+    )
+    .map_err(|err| err.to_string());
+    let cleanup = repo
+        .remove_worktree(&worktree)
+        .map_err(|err| err.to_string());
+
+    match (acquired, cleanup) {
+        (Ok(snapshot), Ok(())) => Ok((snapshot, commit.hash)),
+        (Err(scan), Ok(())) => Err(scan),
+        (Ok(_), Err(cleanup)) => Err(format!("diff worktree cleanup failed: {cleanup}")),
+        (Err(scan), Err(cleanup)) => Err(format!(
+            "diff base scan failed: {scan}; cleanup also failed: {cleanup}"
+        )),
+    }
+}
+
+/// Freshness policy carried into every `get_snapshot` call: refuse to scan,
+/// refuse a stale snapshot, force a rescan, and whether a non-git root is
+/// acceptable.
 #[derive(Debug, Clone, Copy, Default)]
 struct SnapshotLoadOptions {
     no_scan: bool,
@@ -636,6 +850,8 @@ struct SnapshotLoadOptions {
 }
 
 impl SnapshotLoadOptions {
+    /// Lift the four freshness flags off `context`'s parameters, keeping the
+    /// policy in one place instead of re-deriving it at each call site.
     fn from_context(params: &ContextParams) -> Self {
         Self {
             no_scan: params.no_scan,
@@ -646,6 +862,8 @@ impl SnapshotLoadOptions {
     }
 }
 
+/// Render a failure as `{"error": "…"}` so a tool that fails still returns
+/// parseable JSON rather than a bare string the client cannot deserialize.
 fn json_error(err: impl std::fmt::Display) -> String {
     serde_json::json!({ "error": err.to_string() }).to_string()
 }
@@ -659,6 +877,9 @@ fn json_error(err: impl std::fmt::Display) -> String {
 /// initial fresh scan legitimately needs more time.
 const CONTEXT_DEADLINE_ENV: &str = "LOCT_MCP_CONTEXT_DEADLINE_SECS";
 
+/// Resolve the per-call `context` deadline from the environment, falling back
+/// to 90s. Zero and unparseable values fall back too, so a typo cannot disable
+/// the deadline.
 fn context_deadline() -> std::time::Duration {
     let secs = std::env::var(CONTEXT_DEADLINE_ENV)
         .ok()
@@ -671,7 +892,7 @@ fn context_deadline() -> std::time::Duration {
 /// Environment override for the markdown-body char budget applied to
 /// `context(format=markdown)`.
 ///
-/// loctree-feedback tail (2026-06-22, recurring ~6×): the full ContextPack markdown
+/// loctree-fail tail (2026-06-22, recurring ~6×): the full ContextPack markdown
 /// hit 149,891 chars and was rejected by the MCP runtime token cap, forcing
 /// every agent off the recommended session-start surface onto a non-Loctree
 /// fallback exactly when structural orientation matters most. The default
@@ -684,8 +905,13 @@ fn context_deadline() -> std::time::Duration {
 /// top-level `## ` sections (synthesis-first, so early sections carry the most
 /// value) and walked via the `next_section` cursor.
 const CONTEXT_MARKDOWN_BUDGET_ENV: &str = "LOCT_MCP_CONTEXT_MAX_CHARS";
+/// Default body budget in characters — roughly half the observed MCP token
+/// ceiling once JSON escaping is accounted for.
 const CONTEXT_MARKDOWN_BUDGET_DEFAULT: usize = 38_000;
 
+/// Resolve the response character budget from the environment. Values under
+/// 2,000 are rejected because a tiny budget would shred the pack into pages too
+/// small to be useful.
 fn context_markdown_budget() -> usize {
     std::env::var(CONTEXT_MARKDOWN_BUDGET_ENV)
         .ok()
@@ -694,8 +920,13 @@ fn context_markdown_budget() -> usize {
         .unwrap_or(CONTEXT_MARKDOWN_BUDGET_DEFAULT)
 }
 
+/// Protocol tag on the marker object emitted when a tool response is capped, so
+/// a client can recognize the truncation envelope by schema rather than prose.
 const MCP_RESPONSE_BUDGET_PROTOCOL: &str = "loctree.mcp.response_budget.v1";
 
+/// Pretty-print a tool result and put it through the response budget. Every
+/// tool returns through here, so the cap is a property of the surface rather
+/// than of individual handlers.
 fn tool_json_response(tool: &str, project: Option<&Path>, value: serde_json::Value) -> String {
     match serde_json::to_string_pretty(&value) {
         Ok(raw) => budget_tool_response(tool, project, raw),
@@ -703,6 +934,9 @@ fn tool_json_response(tool: &str, project: Option<&Path>, value: serde_json::Val
     }
 }
 
+/// Return the payload untouched when it fits the budget; otherwise spill the
+/// full text to a sibling artifact and return a marker pointing at it. The
+/// response is capped before the MCP harness would reject it outright.
 fn budget_tool_response(tool: &str, project: Option<&Path>, raw: String) -> String {
     let budget = context_markdown_budget();
     if raw.chars().count() <= budget {
@@ -715,10 +949,16 @@ fn budget_tool_response(tool: &str, project: Option<&Path>, raw: String) -> Stri
     }
 }
 
+/// Write the uncapped payload to `.loctree/mcp-response-payloads/` under the
+/// project (or the temp dir when no project is known), named by tool and
+/// content digest so identical payloads reuse one file.
 fn write_full_tool_payload(tool: &str, project: Option<&Path>, raw: &str) -> io::Result<PathBuf> {
+    // Without a project, payloads go to the per-user loctree cache (the same
+    // root snapshots use), never to the world-shared OS temp dir: a predictable
+    // path there is open to symlink planting by any other local user.
     let artifact_dir = project
         .map(|project| project.join(".loctree").join("mcp-response-payloads"))
-        .unwrap_or_else(|| std::env::temp_dir().join("loctree-mcp-response-payloads"));
+        .unwrap_or_else(|| loctree::snapshot::cache_base_dir().join("mcp-response-payloads"));
     fs::create_dir_all(&artifact_dir)?;
 
     let artifact_path = artifact_dir.join(format!(
@@ -730,6 +970,8 @@ fn write_full_tool_payload(tool: &str, project: Option<&Path>, raw: &str) -> io:
     Ok(artifact_path)
 }
 
+/// Reduce a tool name to a filename-safe stem, substituting anything outside
+/// `[A-Za-z0-9_-]`, so an artifact path can never escape its directory.
 fn sanitize_artifact_stem(value: &str) -> String {
     let sanitized: String = value
         .chars()
@@ -748,6 +990,10 @@ fn sanitize_artifact_stem(value: &str) -> String {
     }
 }
 
+/// Build the truncation envelope: original size and digest, the artifact
+/// pointer, and a payload preview. The preview is halved repeatedly until the
+/// rendered marker itself fits the budget, so the escape hatch can never
+/// overflow the cap it exists to respect.
 fn budget_marker_response(
     tool: &str,
     raw: &str,
@@ -795,6 +1041,8 @@ fn budget_marker_response(
     }
 }
 
+/// Cut a string to at most `max_chars` characters on a char boundary, so a
+/// preview never splits a multi-byte codepoint.
 fn truncate_chars(value: &str, max_chars: usize) -> String {
     if value.chars().count() <= max_chars {
         return value.to_string();
@@ -1014,6 +1262,9 @@ fn full_markdown_sha256(markdown: &str) -> String {
         .collect()
 }
 
+/// Inputs for `tree`, mirroring the CLI's traversal and filtering flags:
+/// depth, path prefixes, regex match, top/summary ranking, and the hidden /
+/// ignored / artifact toggles.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct TreeParams {
     /// Project directory (default: current directory)
@@ -1022,17 +1273,49 @@ struct TreeParams {
     /// Allow non-git directories. Default false guards accidental scans outside a repo.
     #[serde(default)]
     force_no_git: bool,
-    /// Maximum depth (default: 3)
+    /// Maximum depth. Omit for unlimited traversal, matching the CLI.
     #[serde(
-        default = "default_depth",
-        deserialize_with = "deserialize_usize_lenient::deserialize"
+        default,
+        deserialize_with = "deserialize_usize_lenient::deserialize_option"
     )]
-    depth: usize,
+    depth: Option<usize>,
     /// LOC threshold for highlighting (default: 500)
     #[serde(default = "default_loc_threshold")]
     loc_threshold: usize,
+    /// Restrict output to one or more repo-relative path prefixes.
+    #[serde(default, alias = "path")]
+    paths: Vec<String>,
+    /// Emit files instead of the directory rollup (`loct tree --files`).
+    #[serde(default, alias = "files")]
+    files_only: bool,
+    /// Regex filter applied to repo-relative output paths (`loct tree --match`).
+    #[serde(default, alias = "match")]
+    path_filter: Option<String>,
+    /// Return only the N largest files (`loct tree --top N`).
+    #[serde(
+        default,
+        deserialize_with = "deserialize_usize_lenient::deserialize_option"
+    )]
+    top: Option<usize>,
+    /// Include an N-entry largest-file summary (`loct tree --summary N`).
+    #[serde(
+        default,
+        deserialize_with = "deserialize_usize_lenient::deserialize_option"
+    )]
+    summary: Option<usize>,
+    /// Include dot-paths in the response.
+    #[serde(default)]
+    show_hidden: bool,
+    /// Include snapshot entries marked ignored.
+    #[serde(default)]
+    show_ignored: bool,
+    /// Restrict output to generated/vendor/build-artifact candidates.
+    #[serde(default)]
+    find_artifacts: bool,
 }
 
+/// Inputs for `focus`: the directory to read, whether external consumers are
+/// included (with an explicit inverse alias), and the dependency depth.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct FocusParams {
     /// Project directory (default: current directory)
@@ -1043,12 +1326,26 @@ struct FocusParams {
     force_no_git: bool,
     /// Directory to focus on (e.g., 'src/components')
     directory: String,
+    /// Include files outside the directory that consume the focused module.
+    #[serde(default = "default_true")]
+    consumers: bool,
+    /// Explicit inverse alias matching CLI `--no-consumers` semantics.
+    #[serde(default)]
+    no_consumers: bool,
+    /// Maximum external dependency traversal depth (default: 2).
+    #[serde(
+        default,
+        deserialize_with = "deserialize_usize_lenient::deserialize_option"
+    )]
+    depth: Option<usize>,
 }
 
+/// Scope `follow` runs when the caller does not pick one — every trail at once.
 fn default_follow_scope() -> String {
     "all".to_string()
 }
 
+/// Trails returned per `follow` scope when the caller does not say.
 fn default_follow_limit() -> usize {
     10
 }
@@ -1084,6 +1381,8 @@ struct SuppressionsParams {
     include_fixtures: bool,
 }
 
+/// Inputs for `follow`: which signal trail to pursue, the handler name the
+/// `trace` scope requires, and the per-trail cap.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct FollowParams {
     /// Project directory (default: current directory)
@@ -1106,14 +1405,13 @@ struct FollowParams {
     limit: usize,
 }
 
-fn default_depth() -> usize {
-    3
-}
-
+/// LOC at which `tree` flags a file as large when the caller sets no threshold.
 fn default_loc_threshold() -> usize {
     500
 }
 
+/// Count the leading characters two strings share — the prefix component of the
+/// directory suggestion score.
 fn common_prefix_len(a: &str, b: &str) -> usize {
     a.chars()
         .zip(b.chars())
@@ -1121,6 +1419,9 @@ fn common_prefix_len(a: &str, b: &str) -> usize {
         .count()
 }
 
+/// Rank the snapshot's directories against a `focus` query that matched nothing
+/// and return the closest names, so a typo comes back with candidates instead
+/// of a bare failure. Falls back to the first directories when nothing scores.
 fn suggest_directories(snapshot: &Snapshot, query: &str, max: usize) -> Vec<String> {
     if max == 0 {
         return Vec::new();
@@ -1187,22 +1488,88 @@ fn suggest_directories(snapshot: &Snapshot, query: &str, max: usize) -> Vec<Stri
 }
 
 // ============================================================================
-// Server State - Multi-project cache
+// Server State - Bounded project cache
 // ============================================================================
 
-/// Universal server with multi-project snapshot cache.
+/// A bounded least-recently-used cache of project snapshots.
+struct SnapshotCache {
+    capacity: usize,
+    entries: HashMap<PathBuf, Arc<Snapshot>>,
+    recency: VecDeque<PathBuf>,
+}
+
+impl SnapshotCache {
+    /// Build an empty cache bounded to `capacity` projects.
+    fn new(capacity: usize) -> Self {
+        Self {
+            capacity,
+            entries: HashMap::new(),
+            recency: VecDeque::new(),
+        }
+    }
+
+    /// Return a cached snapshot and mark it most-recently-used, so a hit protects
+    /// the entry from the next eviction.
+    fn get(&mut self, project: &Path) -> Option<Arc<Snapshot>> {
+        let snapshot = self.entries.get(project).map(Arc::clone)?;
+        self.mark_recent(project);
+        Some(snapshot)
+    }
+
+    /// Store a snapshot and evict the least-recently-used project when the cache
+    /// overflows, returning what was dropped. Capacity 0 stores nothing at all.
+    fn insert(&mut self, project: PathBuf, snapshot: Arc<Snapshot>) -> Option<PathBuf> {
+        if self.capacity == 0 {
+            return None;
+        }
+
+        self.entries.insert(project.clone(), snapshot);
+        self.mark_recent(&project);
+
+        if self.entries.len() <= self.capacity {
+            return None;
+        }
+
+        let evicted = self
+            .recency
+            .pop_front()
+            .expect("non-empty cache must have a recency entry");
+        self.entries.remove(&evicted);
+        Some(evicted)
+    }
+
+    /// Move a project to the newest end of the recency queue, removing any earlier
+    /// entry so a project is never queued twice.
+    fn mark_recent(&mut self, project: &Path) {
+        if let Some(index) = self.recency.iter().position(|entry| entry == project) {
+            self.recency.remove(index);
+        }
+        self.recency.push_back(project.to_path_buf());
+    }
+}
+
+/// Universal server with a bounded multi-project snapshot cache.
 #[derive(Clone)]
 pub(crate) struct LoctreeServer {
-    /// Cache of loaded snapshots per project
-    cache: Arc<RwLock<HashMap<PathBuf, Arc<Snapshot>>>>,
+    /// Cache of loaded snapshots per project.
+    cache: Arc<RwLock<SnapshotCache>>,
     /// Tool router (generated by macro)
     tool_router: rmcp::handler::server::router::tool::ToolRouter<Self>,
 }
 
 impl LoctreeServer {
+    /// Test-only constructor using the default cache capacity.
+    #[cfg(test)]
     pub(crate) fn new() -> Self {
+        Self::with_cache_capacity(args::DEFAULT_SNAPSHOT_CACHE_CAPACITY)
+    }
+
+    /// Build a server with its own bounded snapshot cache and tool router. The
+    /// HTTP transport calls this once per session, so sessions do not share cached
+    /// snapshots.
+    pub(crate) fn with_cache_capacity(snapshot_cache_capacity: usize) -> Self {
         Self {
-            cache: Arc::new(RwLock::new(HashMap::new())),
+            cache: Arc::new(RwLock::new(SnapshotCache::new(snapshot_cache_capacity))),
             tool_router: Self::tool_router(),
         }
     }
@@ -1245,6 +1612,9 @@ impl LoctreeServer {
         }
     }
 
+    /// Canonicalize the caller's project and refuse it when it is not inside a git
+    /// checkout, unless `force_no_git` opts a scratch directory in. This is the
+    /// guard between an MCP call and an accidental scan of the whole filesystem.
     fn resolve_project(project: &str, force_no_git: bool) -> Result<PathBuf> {
         let canonical = Self::resolve_existing_project_path(project)?;
         if !force_no_git && find_git_root(&canonical).is_none() {
@@ -1294,8 +1664,8 @@ impl LoctreeServer {
 
         // Check cache first — but require matching scope, not just matching path key.
         let cached_snapshot = {
-            let cache = self.cache.read().await;
-            cache.get(project).map(Arc::clone)
+            let mut cache = self.cache.write().await;
+            cache.get(project)
         };
         if let Some(snapshot) = cached_snapshot {
             if !scope_matches(&snapshot) {
@@ -1344,6 +1714,13 @@ impl LoctreeServer {
                 no_scan_uses_stale: true,
                 full_scan: load_options.fresh,
                 strategy,
+                // `force_no_git` must reach the scan guard, not just the root
+                // strategy above: an MCP client has no command line to pass
+                // `--force-non-git` on, so this field is the only way a caller
+                // can opt a scratch directory in. Leaving it to `Default` made
+                // the tool parameter silently half-wired — the root was pinned
+                // Exact while the scan itself was still refused.
+                force_non_git: load_options.force_no_git,
                 ..Default::default()
             },
         )
@@ -1374,7 +1751,12 @@ impl LoctreeServer {
         // Update cache
         {
             let mut cache = self.cache.write().await;
-            cache.insert(project.to_path_buf(), Arc::clone(&snapshot));
+            if let Some(evicted) = cache.insert(project.to_path_buf(), Arc::clone(&snapshot)) {
+                info!(
+                    "Evicted snapshot for {:?} from bounded in-memory cache",
+                    evicted
+                );
+            }
         }
 
         Ok(snapshot)
@@ -1452,10 +1834,15 @@ impl LoctreeServer {
         ))
     }
 
+    /// Whether the requested path resolves to a real file inside the project — the
+    /// check that decides if a snapshot miss is worth a rescan.
     fn requested_file_exists(project: &Path, file: &str) -> bool {
         Self::resolve_existing_file_under_project(project, file).is_ok()
     }
 
+    /// Resolve a caller-supplied file to an absolute path plus its repo-relative
+    /// form, confined to the project. Rejects empty and NUL-bearing input, refuses
+    /// anything that escapes the project, and requires the target to be a file.
     fn resolve_existing_file_under_project(
         project: &Path,
         file: &str,
@@ -1494,6 +1881,8 @@ impl LoctreeServer {
         Ok((path, rel))
     }
 
+    /// Classify a file's language from its extension, or from the whole filename
+    /// for extensionless files such as `Makefile`.
     fn disk_file_language(path: &Path) -> String {
         let ext = path
             .extension()
@@ -1510,6 +1899,10 @@ impl LoctreeServer {
         detect_language_from_filename(filename)
     }
 
+    /// Build a core-only slice by reading the file straight off disk. This is the
+    /// fallback for a file that genuinely exists but is excluded from the snapshot
+    /// (for example by `.loctignore`), so an explicit request still gets an answer
+    /// carrying the exclusion note.
     fn disk_core_slice_payload(
         project: &Path,
         file: &str,
@@ -1536,11 +1929,16 @@ impl LoctreeServer {
         }))
     }
 
+    /// Explain why a file that exists on disk is absent from the snapshot, naming
+    /// the ignore rule that parked it.
     fn requested_file_ignore_explanation(project: &Path, file: &str) -> Option<String> {
         let (path, _) = Self::resolve_existing_file_under_project(project, file).ok()?;
         loctree::fs_utils::explain_ignore_for_path(project, &path)
     }
 
+    /// Resolve a file against the snapshot, and on a miss for a file that does
+    /// exist on disk, force one fresh scan and retry. Errors accumulate so the
+    /// caller sees both the original miss and what the rescan found.
     async fn resolve_file_in_snapshot_or_refresh(
         &self,
         snapshot: Arc<Snapshot>,
@@ -1587,6 +1985,10 @@ impl LoctreeServer {
         }
     }
 
+    /// Build the receipt block: which sections were loaded, the snapshot authority
+    /// report, the bundle diagnostic, and a digest over session, project, and
+    /// snapshot fingerprint. It is what lets a client prove which tree an answer
+    /// came from.
     fn context_receipt_payload(
         session_id: &str,
         project: &Path,
@@ -1621,11 +2023,13 @@ impl LoctreeServer {
             .map(|byte| format!("{byte:02x}"))
             .collect();
 
+        let bundle = bundle_diagnostic();
         serde_json::json!({
             "sections_loaded": loaded,
             "sections_skipped": if with_aicx { Vec::<&str>::new() } else { vec!["memory"] },
             "aicx": if with_aicx { "enabled" } else { "disabled" },
             "snapshot": authority,
+            "bundle": bundle,
             "sha256": hash
         })
     }
@@ -1637,6 +2041,7 @@ impl LoctreeServer {
 
 #[tool_router]
 impl LoctreeServer {
+    /// Compose the full Agent Context Pack for a project, under a server-side deadline.
     #[tool(
         name = "context",
         description = "Get a complete Agent Context Pack with structural, runtime, risk, action, authority, and optional AICX memory context. Start here for onboarding."
@@ -1656,6 +2061,10 @@ impl LoctreeServer {
         }
     }
 
+    /// The real `context` body, wrapped by the deadline. Resolves the project,
+    /// loads a snapshot under the requested freshness policy, composes the pack,
+    /// materializes the atlas, and returns either paginated markdown or the full
+    /// JSON pack with its receipt.
     async fn context_inner(&self, params: ContextParams) -> String {
         let load_options = SnapshotLoadOptions::from_context(&params);
         let project = match Self::resolve_project(&params.project, params.force_no_git) {
@@ -1680,6 +2089,8 @@ impl LoctreeServer {
             json: matches!(params.format, ContextFormat::Json),
             full: true,
             markdown: matches!(params.format, ContextFormat::Markdown),
+            memory_hours: None,
+            memory_limit: None,
         };
 
         let pack = match compose_context_pack_from_snapshot(&opts, &project, &snapshot) {
@@ -1700,7 +2111,7 @@ impl LoctreeServer {
 
         if matches!(params.format, ContextFormat::Markdown) {
             // The full pack markdown can hit ~150k chars and blow past the MCP
-            // token cap (loctree-feedback tail, recurring). We NEVER truncate — that
+            // token cap (loctree-fail tail, recurring). We NEVER truncate — that
             // strands agents on a head + "go read the cards" and breaks their
             // flow. Instead paginate on top-level `## ` sections under a char
             // budget; the whole pack still comes back in one response when it
@@ -1972,6 +2383,7 @@ impl LoctreeServer {
             .get_snapshot(
                 &project,
                 SnapshotLoadOptions {
+                    fresh: params.rescan,
                     force_no_git: params.force_no_git,
                     ..Default::default()
                 },
@@ -1999,7 +2411,7 @@ impl LoctreeServer {
         };
         let config = SliceConfig {
             include_consumers: params.consumers,
-            max_depth: SliceConfig::default().max_depth,
+            max_depth: params.depth.unwrap_or(SliceConfig::default().max_depth),
         };
         let slice = match HolographicSlice::from_path(&snapshot, &target_path, &config) {
             Some(slice) => slice,
@@ -2049,6 +2461,9 @@ impl LoctreeServer {
         let result = serde_json::json!({
             "target": slice.target,
             "project": project.display().to_string(),
+            "depth": config.max_depth,
+            "rescan": params.rescan,
+            "consumers_included": config.include_consumers,
             "core_loc": slice.stats.core_loc,
             "dependencies": slice.stats.deps_files,
             "consumers": slice.stats.consumers_files,
@@ -2061,10 +2476,49 @@ impl LoctreeServer {
         tool_json_response("slice", Some(&project), result)
     }
 
+    /// Retrieve a bounded symbol definition body from the shared library layer.
+    #[tool(
+        name = "body",
+        description = "Return the bounded source body/range for a symbol. Uses the same loctree::body query as the CLI and reports extent/truncation metadata. Use after find(where-symbol), without falling back to offset-based file reads."
+    )]
+    async fn body(&self, Parameters(params): Parameters<BodyParams>) -> String {
+        let project = match Self::resolve_project(&params.project, params.force_no_git) {
+            Ok(project) => project,
+            Err(err) => return json_error(err),
+        };
+        let snapshot = match self
+            .get_snapshot(
+                &project,
+                SnapshotLoadOptions {
+                    fresh: params.rescan,
+                    force_no_git: params.force_no_git,
+                    ..Default::default()
+                },
+            )
+            .await
+        {
+            Ok(snapshot) => snapshot,
+            Err(err) => return json_error(err),
+        };
+
+        let result = query_symbol_body(&snapshot, &params.symbol, params.line_cap)
+            .filtered_to_file(params.file.as_deref());
+        tool_json_response(
+            "body",
+            Some(&project),
+            serde_json::json!({
+                "project": project.display().to_string(),
+                "file_filter": params.file,
+                "total": result.bodies.len(),
+                "result": result,
+            }),
+        )
+    }
+
     /// Find symbol definitions (supports multi-query: "foo|bar|baz")
     #[tool(
         name = "find",
-        description = "Find symbols, trace imports, or explore features. Modes: 'symbols' (default) — symbol/param search with regex. 'who-imports' — what files import this file (reverse deps). 'where-symbol' — where is this symbol defined. 'tagmap' — unified keyword search (files + crowd + dead). 'crowd' — functional clustering around a keyword. 'literal' — exact identifier-boundary occurrences over the indexed universe; coverage stated per query; 'not found' means not found, with fuzzy hints kept strictly separate. At parity with `loct occurrences` / `loct find --literal`. Literal-mode tuning (all opt-in, ignored otherwise): every occurrence carries a language-aware `occurrence_kind` (css_property, class_token, custom_property, comment, string_literal, data_attribute, identifier, plus the Rust role shapes; `unknown` only as honest fallback); `whole_token=true` treats '-' as token-internal so e.g. 'backdrop' stops matching inside 'overlay-backdrop'/'--vista-z-overlay-backdrop'; `group_by_file=true` adds a per-file `by_file` count rollup; `count_only`/`slim=true` suppresses the full occurrence list (keeping `total`/`files_matched`/`by_file`) for token economy."
+        description = "Find symbols, trace imports, or explore features. Modes: 'symbols' (default) — symbol/param search with regex. 'who-imports' — what files import this file (reverse deps). 'where-symbol' — where is this symbol defined. 'tagmap' — unified keyword search (files + crowd + dead). 'crowd' — functional clustering around a keyword. 'literal' — exact identifier-boundary occurrences over the indexed universe; coverage stated per query; 'not found' means not found, with fuzzy hints kept strictly separate. At parity with `loct occurrences` / `loct find --literal`. Multi-literal OR: pass simple identifiers as `NameA|NameB` (pipe) for exact-union (`match_mode: multi_literal`) — prefer this over shell grep for agent multi-pattern search. Literal-mode tuning (all opt-in, ignored otherwise): every occurrence carries a language-aware `occurrence_kind` (css_property, class_token, custom_property, comment, string_literal, data_attribute, identifier, plus the Rust role shapes; `unknown` only as honest fallback); `whole_token=true` treats '-' as token-internal so e.g. 'backdrop' stops matching inside 'overlay-backdrop'/'--vista-z-overlay-backdrop'; `group_by_file=true` adds a per-file `by_file` count rollup; `count_only`/`slim=true` suppresses the full occurrence list (keeping `total`/`files_matched`/`by_file`) for token economy."
     )]
     async fn find(&self, Parameters(params): Parameters<FindParams>) -> String {
         let project = match Self::resolve_project(&params.project, params.force_no_git) {
@@ -2396,12 +2850,63 @@ impl LoctreeServer {
             );
         }
 
+        // Mode: regex - raw file text scan with the same coverage accounting as
+        // `loct find --regex`; this is deliberately distinct from symbol-name regex.
+        if mode == "regex" {
+            let mut regex_matches = match scan_regex_occurrences(
+                &snapshot,
+                &project,
+                &params.name,
+                FileScope {
+                    file: params.file.as_deref(),
+                },
+            ) {
+                Ok(matches) => matches,
+                Err(err) => {
+                    return tool_json_response(
+                        "find",
+                        Some(&project),
+                        serde_json::json!({
+                            "error": format!("invalid regex: {err}"),
+                            "mode": "regex",
+                            "query": params.name,
+                        }),
+                    );
+                }
+            };
+            regex_matches.apply_report(ReportOptions {
+                group_by_file: params.group_by_file,
+                count_only: params.count_only,
+                offset: params.offset,
+                limit: Some(params.limit),
+            });
+            let total = regex_matches.total;
+            return tool_json_response(
+                "find",
+                Some(&project),
+                serde_json::json!({
+                    "mode": "regex",
+                    "query": params.name,
+                    "project": project.display().to_string(),
+                    "file_filter": params.file,
+                    "regex_matches": regex_matches,
+                    "regex_trust": {
+                        "matched_as_regex": true,
+                        "absence_trustworthy": true,
+                    },
+                    "scope": regex_matches.scope,
+                    "total": total,
+                }),
+            );
+        }
+
         // Mode: literal - exact identifier-boundary scan (W1 literal truth layer).
-        // Reuses the shared `scan_files` scanner, so `literal_matches` is
+        // Reuses the shared multi-literal scanner, so `literal_matches` is
         // byte-for-byte identical to `loct occurrences` / `loct find --literal`
-        // for the same snapshot. Fuzzy name-similarity hints ride along in a
-        // strictly separate `fuzzy_suggestions` block (source: "fuzzy") and are
-        // NEVER promoted into the literal matches — a suggestion is not evidence.
+        // for the same snapshot (including agent pipe-OR `A|B`). Fuzzy
+        // name-similarity hints ride along in a strictly separate
+        // `fuzzy_suggestions` block (source: "fuzzy") and are NEVER promoted
+        // into the literal matches — a suggestion is not evidence.
         if mode == "literal" {
             let mut literal_matches = scan_literal_occurrences(
                 &snapshot,
@@ -2421,17 +2926,36 @@ impl LoctreeServer {
                 limit: Some(params.limit),
             });
             let total = literal_matches.total;
-            let fuzzy_suggestions = literal_fuzzy_suggestions(params.name.trim(), &snapshot.files);
+            let multi_literal = matches!(
+                literal_matches.match_mode,
+                loctree::analyzer::occurrences::MatchMode::MultiLiteral
+            ) || params.name.contains('|');
+            let fuzzy_suggestions = if multi_literal {
+                let patterns = loctree::analyzer::occurrences::expand_literal_patterns(
+                    std::slice::from_ref(&params.name),
+                );
+                let mut all = Vec::new();
+                for pattern in &patterns {
+                    all.extend(literal_fuzzy_suggestions(pattern, &snapshot.files));
+                }
+                all
+            } else {
+                literal_fuzzy_suggestions(params.name.trim(), &snapshot.files)
+            };
             return tool_json_response(
                 "find",
                 Some(&project),
                 serde_json::json!({
                     "mode": "literal",
-                    "query": params.name,
+                    "query": literal_matches.query,
                     "project": project.display().to_string(),
                     "file_filter": params.file,
                     "literal_matches": literal_matches,
                     "fuzzy_suggestions": fuzzy_suggestions,
+                    "literal_trust": {
+                        "multi_literal": multi_literal,
+                        "matched_as_exact_string": true,
+                    },
                     "scope": literal_matches.scope,
                     "total": total
                 }),
@@ -2444,7 +2968,7 @@ impl LoctreeServer {
                 Some(&project),
                 serde_json::json!({
                     "error": format!("Unsupported find mode: {}", params.mode),
-                    "supported_modes": ["symbols", "who-imports", "where-symbol", "tagmap", "crowd", "literal"]
+                    "supported_modes": ["symbols", "who-imports", "where-symbol", "tagmap", "crowd", "literal", "regex"]
                 }),
             );
         }
@@ -2631,6 +3155,19 @@ impl LoctreeServer {
         description = "What breaks if you change or delete this file? Shows direct and transitive consumers. USE THIS BEFORE deleting or major refactor."
     )]
     async fn impact(&self, Parameters(params): Parameters<ImpactParams>) -> String {
+        let bundle = bundle_diagnostic();
+        if bundle.status != BundleCompatibility::Compatible {
+            return tool_json_response(
+                "impact",
+                None,
+                serde_json::json!({
+                    "risk_level": "unknown",
+                    "safe_to_delete": false,
+                    "bundle": bundle,
+                    "error": "bundle identity refused destructive authority"
+                }),
+            );
+        }
         let project = match Self::resolve_project(&params.project, params.force_no_git) {
             Ok(p) => p,
             Err(e) => return format!("Error: {}", e),
@@ -2685,31 +3222,22 @@ impl LoctreeServer {
             },
         };
 
-        // Direct consumers (use exact match on resolved path)
-        let direct: Vec<_> = snapshot
-            .edges
-            .iter()
-            .filter(|e| e.to == target_path)
-            .map(|e| e.from.clone())
-            .collect();
+        let impact = analyze_impact(
+            &snapshot,
+            &target_path,
+            &ImpactOptions {
+                max_depth: params.depth,
+                include_reexports: true,
+            },
+        );
+        let direct = &impact.direct_consumers;
+        let transitive = &impact.transitive_consumers;
 
-        // Transitive consumers (BFS)
-        let mut visited: std::collections::HashSet<String> = direct.iter().cloned().collect();
-        let mut queue: std::collections::VecDeque<String> = direct.iter().cloned().collect();
-        let mut transitive = Vec::new();
-
-        while let Some(file) = queue.pop_front() {
-            for edge in &snapshot.edges {
-                if edge.to == file && !visited.contains(&edge.from) {
-                    visited.insert(edge.from.clone());
-                    queue.push_back(edge.from.clone());
-                    transitive.push(edge.from.clone());
-                }
-            }
-        }
-
+        // Zero consumers in the import graph is absence of evidence, not
+        // evidence of absence: manifests, build scripts, workflows, tests and
+        // framework dispatch are not in the graph yet, so risk stays unknown.
         let risk = if direct.is_empty() {
-            "none"
+            "unknown"
         } else if direct.len() > 10 || !transitive.is_empty() {
             "high"
         } else if direct.len() > 3 {
@@ -2718,28 +3246,119 @@ impl LoctreeServer {
             "low"
         };
 
+        let removal_assessment = if direct.is_empty() && transitive.is_empty() {
+            serde_json::json!({
+                "status": "coverage_incomplete",
+                "message": loctree::impact::COVERAGE_INCOMPLETE_DIAGNOSTIC,
+                "unaccounted_surfaces": impact.coverage.gaps(),
+            })
+        } else {
+            serde_json::json!({
+                "status": "consumers_present",
+                "message": "consumers found in the indexed import graph; removal would break them",
+            })
+        };
+
         let result = serde_json::json!({
             "file": params.file,
             "project": project.display().to_string(),
+            "depth": params.depth,
+            "max_depth_reached": impact.max_depth,
             "risk_level": risk,
             "direct_consumers": {
                 "count": direct.len(),
-                "files": direct.iter().take(20).collect::<Vec<_>>()
+                "files": direct.iter().take(20).map(|entry| &entry.file).collect::<Vec<_>>(),
+                "entries": direct.iter().take(20).collect::<Vec<_>>()
             },
             "transitive_consumers": {
                 "count": transitive.len(),
-                "files": transitive.iter().take(10).collect::<Vec<_>>()
+                "files": transitive.iter().take(10).map(|entry| &entry.file).collect::<Vec<_>>(),
+                "entries": transitive.iter().take(10).collect::<Vec<_>>()
             },
-            "safe_to_delete": direct.is_empty()
+            // Fail closed: the graph cannot prove removal safety until
+            // GraphCoverage surfaces are accounted for (trust-repair W2-A).
+            "safe_to_delete": false,
+            "removal_assessment": removal_assessment
         });
 
         tool_json_response("impact", Some(&project), result)
     }
 
+    /// Compare the live project snapshot with a snapshot materialized from a git ref.
+    #[tool(
+        name = "diff",
+        description = "Compare the current live project snapshot with a git ref such as HEAD~1. Materializes the base through the shared snapshot/diff library, includes dirty working-tree structure in the current side, and returns file/graph/export/impact changes."
+    )]
+    async fn diff(&self, Parameters(params): Parameters<DiffParams>) -> String {
+        let project = match Self::resolve_project(&params.project, params.force_no_git) {
+            Ok(project) => project,
+            Err(err) => return json_error(err),
+        };
+        if params.force_no_git {
+            return json_error("diff requires git history; force_no_git is not supported");
+        }
+
+        let current = match self
+            .get_snapshot(
+                &project,
+                SnapshotLoadOptions {
+                    fresh: true,
+                    force_no_git: false,
+                    ..Default::default()
+                },
+            )
+            .await
+        {
+            Ok(snapshot) => snapshot,
+            Err(err) => return json_error(err),
+        };
+
+        let base_project = project.clone();
+        let since = params.since.clone();
+        let (base, from_commit) =
+            match tokio::task::spawn_blocking(move || snapshot_at_git_ref(&base_project, &since))
+                .await
+            {
+                Ok(Ok(value)) => value,
+                Ok(Err(err)) => return json_error(err),
+                Err(err) => return json_error(format!("diff worker failed: {err}")),
+            };
+
+        let repo = match GitRepo::discover(&project) {
+            Ok(repo) => repo,
+            Err(err) => return json_error(err),
+        };
+        let changed_files = repo
+            .changed_files(&params.since, "HEAD")
+            .unwrap_or_default();
+        let to_commit = repo.get_commit_info("HEAD").ok();
+        let from_info = repo.get_commit_info(&params.since).ok();
+        let diff = SnapshotDiff::compare_fenced(
+            &base,
+            &current,
+            from_info,
+            to_commit,
+            &changed_files,
+            params.include_artifacts,
+        );
+
+        tool_json_response(
+            "diff",
+            Some(&project),
+            serde_json::json!({
+                "project": project.display().to_string(),
+                "since": params.since,
+                "from_commit": from_commit,
+                "current_snapshot": current.authority_report(&project),
+                "diff": diff,
+            }),
+        )
+    }
+
     /// Get directory tree with LOC counts
     #[tool(
         name = "tree",
-        description = "Get directory structure with LOC (lines of code) counts. Helps understand project layout and find large files/directories."
+        description = "Get directory structure with LOC counts. Depth is unlimited when omitted, matching CLI. Supports paths, files_only/files, path_filter/match regex, summary, top, show_hidden, show_ignored, and find_artifacts."
     )]
     async fn tree(&self, Parameters(params): Parameters<TreeParams>) -> String {
         let project = match Self::resolve_project(&params.project, params.force_no_git) {
@@ -2761,31 +3380,63 @@ impl LoctreeServer {
             Err(e) => return format!("Error loading project: {}", e),
         };
 
-        // Build directory tree
+        let path_filter = match params.path_filter.as_deref().map(regex::Regex::new) {
+            Some(Ok(regex)) => Some(regex),
+            Some(Err(err)) => return json_error(format!("invalid path_filter regex: {err}")),
+            None => None,
+        };
+        let is_hidden = |path: &str| path.split('/').any(|part| part.starts_with('.'));
+        let is_artifact = |path: &str, generated: bool| {
+            generated
+                || path.split('/').any(|part| {
+                    matches!(
+                        part,
+                        "target" | "node_modules" | ".venv" | "venv" | "dist" | "build"
+                    )
+                })
+        };
+        let path_selected = |path: &str| {
+            (params.paths.is_empty()
+                || params.paths.iter().any(|prefix| {
+                    let prefix = prefix.trim_matches('/');
+                    path == prefix || path.starts_with(&format!("{prefix}/"))
+                }))
+                && path_filter
+                    .as_ref()
+                    .is_none_or(|regex| regex.is_match(path))
+                && (params.show_hidden || !is_hidden(path))
+        };
+        let files = snapshot
+            .files
+            .iter()
+            .filter(|file| params.show_ignored || !file.ignored)
+            .filter(|file| path_selected(&file.path))
+            .filter(|file| !params.find_artifacts || is_artifact(&file.path, file.is_generated))
+            .collect::<Vec<_>>();
+
         let mut dir_loc: HashMap<String, usize> = HashMap::new();
         let mut large_files = Vec::new();
 
-        for file in &snapshot.files {
+        for file in &files {
             // Accumulate LOC per directory
             let parts: Vec<&str> = file.path.split('/').collect();
-            for i in 1..=parts.len().min(params.depth) {
+            let max_depth = params.depth.unwrap_or(parts.len()).min(parts.len());
+            for i in 1..=max_depth {
                 let dir = parts[..i].join("/");
                 *dir_loc.entry(dir).or_default() += file.loc;
             }
 
-            // Track large files
-            if file.loc >= params.loc_threshold {
-                large_files.push(serde_json::json!({
-                    "path": file.path,
-                    "loc": file.loc,
-                    "language": file.language
-                }));
-            }
+            large_files.push(serde_json::json!({
+                "path": file.path,
+                "loc": file.loc,
+                "language": file.language,
+                "is_large": file.loc >= params.loc_threshold,
+            }));
         }
 
         // Sort directories by LOC
         let mut sorted_dirs: Vec<_> = dir_loc.into_iter().collect();
-        sorted_dirs.sort_by_key(|b| std::cmp::Reverse(b.1));
+        sorted_dirs.sort_by(|a, b| a.0.cmp(&b.0));
 
         // Sort large files
         large_files.sort_by(|a, b| {
@@ -2795,16 +3446,41 @@ impl LoctreeServer {
                 .cmp(&a.get("loc").and_then(|v| v.as_u64()).unwrap_or(0))
         });
 
+        let ranked_limit = params.top.or(params.summary);
+        let file_entries = files
+            .iter()
+            .map(|file| {
+                serde_json::json!({
+                    "path": file.path,
+                    "loc": file.loc,
+                    "language": file.language,
+                    "ignored": file.ignored,
+                    "generated": file.is_generated,
+                })
+            })
+            .collect::<Vec<_>>();
         let result = serde_json::json!({
             "project": project.display().to_string(),
-            "total_files": snapshot.files.len(),
-            "total_loc": snapshot.files.iter().map(|f| f.loc).sum::<usize>(),
+            "total_files": files.len(),
+            "total_loc": files.iter().map(|f| f.loc).sum::<usize>(),
             "depth": params.depth,
-            "top_directories": sorted_dirs.iter().take(15).map(|(dir, loc)| serde_json::json!({
+            "filters": {
+                "paths": params.paths,
+                "path_filter": params.path_filter,
+                "show_hidden": params.show_hidden,
+                "show_ignored": params.show_ignored,
+                "find_artifacts": params.find_artifacts,
+            },
+            "directories": if params.files_only || params.top.is_some() { Vec::new() } else { sorted_dirs.iter().map(|(dir, loc)| serde_json::json!({
                 "path": dir,
                 "loc": loc
-            })).collect::<Vec<_>>(),
-            "large_files": large_files.iter().take(10).collect::<Vec<_>>(),
+            })).collect::<Vec<_>>() },
+            "files": if params.files_only { file_entries } else { Vec::new() },
+            "top_files": if let Some(limit) = ranked_limit {
+                large_files.iter().take(limit).collect::<Vec<_>>()
+            } else {
+                large_files.iter().filter(|file| file["is_large"] == true).take(10).collect::<Vec<_>>()
+            },
             "loc_threshold": params.loc_threshold
         });
 
@@ -2814,7 +3490,7 @@ impl LoctreeServer {
     /// Focus on a specific directory
     #[tool(
         name = "focus",
-        description = "Focus on a specific directory: list files, their LOC, exports, and dependencies within that directory. Great for understanding a module or subsystem."
+        description = "Focus on a directory: files, exports, dependencies and optional consumers. Supports depth and consumers/no_consumers, matching CLI traversal controls."
     )]
     async fn focus(&self, Parameters(params): Parameters<FocusParams>) -> String {
         let project = match Self::resolve_project(&params.project, params.force_no_git) {
@@ -2837,15 +3513,15 @@ impl LoctreeServer {
         };
 
         let config = FocusConfig {
-            include_consumers: true,
-            max_depth: FocusConfig::default().max_depth,
+            include_consumers: params.consumers && !params.no_consumers,
+            max_depth: params.depth.unwrap_or(FocusConfig::default().max_depth),
         };
         let focus = match HolographicFocus::from_path(&snapshot, &params.directory, &config) {
             Some(focus) => focus,
             None => {
                 let suggestions = suggest_directories(&snapshot, &params.directory, 3);
                 // A correct path can still yield no files if .loctignore parks it
-                // outside the snapshot (loctree-feedback.md: vista docs/). Surface that
+                // outside the snapshot (loctree-fail.md: vista docs/). Surface that
                 // precise cause instead of the blanket "Check the path."
                 let ignore_hint =
                     loctree::fs_utils::loctignore_exclusion_hint(&project, &params.directory);
@@ -2876,6 +3552,8 @@ impl LoctreeServer {
         let result = serde_json::json!({
             "directory": focus.target,
             "project": project.display().to_string(),
+            "depth": config.max_depth,
+            "consumers_included": config.include_consumers,
             "summary": {
                 "files": focus.core.len(),
                 "total_loc": focus.stats.core_loc,
@@ -3108,7 +3786,7 @@ impl LoctreeServer {
                 })
                 .collect();
 
-            // loctree-feedback hak 2026-05-18 #6 + 2026-05-23 #13 (L9 closure):
+            // loctree-fail hak 2026-05-18 #6 + 2026-05-23 #13 (L9 closure):
             // CLI `loct twins` returns both exact_twins AND route_twins
             // (since marbles-L8). MCP `follow(scope='twins')` was only
             // returning exact_twins, leaving agents blind to runtime
@@ -3371,6 +4049,7 @@ impl LoctreeServer {
         tool_json_response("follow", Some(&project), result)
     }
 
+    /// Inventory source-side silencers across the project (literal-only, free tier).
     #[tool(
         name = "suppressions",
         description = "Source-side silencer inventory. LITERAL-ONLY detection (free-tier scope): surfaces every Rust #[allow(...)], Rust #[ignore], Rust unsafe { ... } (with Rust 2024 env-var boilerplate triaged as 'unsafe-env-var'), Semgrep nosemgrep comments, TypeScript @ts-ignore, @ts-expect-error, @ts-nocheck, ESLint eslint-disable, Python # noqa, Python # type: ignore, Python # pylint: disable, Python # mypy:, Shell # shellcheck disable. Returns structured JSON: { matches: [{ kind, file, line, snippet, rule_id }], counts: { kind: count }, files_per_kind: { kind: file_count }, total, total_files }. Filter with kinds=[...]. NO semantic enrichment — semantic classification (suspicious/stale/similar-to-fixed) is paid-tier Wave 7+ delta and explicitly out of scope here. Distinct from .loctree/suppressions.toml (that's loctree's OWN finding-suppression file; different concept, similar name)."
@@ -3426,6 +4105,7 @@ impl LoctreeServer {
         )
     }
 
+    /// Score conceptual smear across two or more framings of the same task.
     #[tool(
         name = "prism",
         description = "Score conceptual smear across two or more task framings. Composes one ContextPack per task, computes file overlap and Jaccard distance, and emits the canonical loctree.prism.v1 JSON schema (axes, band, recommendation, task summaries, overlap). Use when a feature feels like it lives in multiple places at once and you need to decide whether vc-polarize is warranted."
@@ -3457,7 +4137,10 @@ impl LoctreeServer {
             Err(err) => return json_error(err),
         };
 
-        serde_json::to_string(&report).unwrap_or_else(json_error)
+        match serde_json::to_value(&report) {
+            Ok(value) => tool_json_response("prism", Some(&project), value),
+            Err(err) => json_error(err),
+        }
     }
 }
 
@@ -3468,26 +4151,36 @@ impl LoctreeServer {
 /// Build-time identity stamp (populated by `build.rs`). Surfaced in the MCP
 /// `initialize` handshake so an agent can detect that the running binary lags
 /// its repo's source HEAD straight from `serverInfo.version` / `instructions`,
-/// without reverse-engineering the tool schema. See `loctree-feedback.md`
+/// without reverse-engineering the tool schema. See `loctree-fail.md`
 /// ("live binary predates the committed fix").
 const BUILD_VERSION: &str = env!("LOCTREE_MCP_BUILD_VERSION");
+/// Short commit the binary was built from, or `unknown` outside a checkout.
+const GIT_COMMIT: &str = env!("LOCTREE_MCP_GIT_COMMIT");
+/// Whether the build tree carried uncommitted changes, which means the binary
+/// corresponds to no commit at all.
+const GIT_DIRTY: bool = env!("LOCTREE_MCP_GIT_DIRTY").as_bytes()[0] == b'1';
 /// Richer human-facing commit stamp: `git describe --always --dirty --tags`.
 const GIT_DESCRIBE: &str = env!("LOCTREE_MCP_GIT_DESCRIBE");
+/// One-line tool roster placed directly under the build banner in the
+/// `initialize` instructions, so an agent sees the available surface before
+/// reading the catalogue.
 const TOOL_SURFACE_DIGEST: &str =
-    "TOOLS: context,repo-view,focus,slice,find,impact,tree,follow,suppressions,prism";
+    "TOOLS: context,repo-view,focus,slice,body,find,impact,diff,tree,follow,suppressions,prism";
 
 /// The tool catalogue half of the `initialize` instructions. The build-identity
 /// header and compact surface digest are prepended at runtime in
 /// [`LoctreeServer::get_info`].
-const INSTRUCTIONS_BODY: &str = "Loctree MCP provides one sharp agent surface: 10 tools, not a mirrored CLI.\n\n\
+const INSTRUCTIONS_BODY: &str = "Loctree MCP provides one sharp agent surface: 12 tools, backed by the shared Loctree library layer.\n\n\
                  START:\n\
                  - context(project, format?) - Complete Agent Context Pack: structural + runtime semantics + risk + action + optional AICX memory + authority labels. Pretty JSON by default; use format='markdown' for operator-readable context.\n\n\
                  MAP TOOLS:\n\
                  - repo-view(project) - Overview: files, LOC, languages, health, top hubs.\n\
                  - focus(directory) - Understand a module. Files, internal edges, external deps.\n\
                  - slice(file) - Before modifying. File + dependencies + consumers in one call.\n\
-                 - find(name) - Before creating. Symbol search with regex. Modes: symbols, who-imports, where-symbol, tagmap, crowd, literal (exact identifier-boundary truth scan, at parity with `loct occurrences`).\n\
+                 - body(symbol) - Bounded source body/range with extent and truncation metadata.\n\
+                 - find(name) - Before creating. Modes: symbols, who-imports, where-symbol, tagmap, crowd, literal, regex (raw text with coverage accounting).\n\
                  - impact(file) - Before deleting. Direct + transitive consumers (blast radius).\n\
+                 - diff(since) - Compare the current live snapshot with a git ref such as HEAD~1.\n\
                  - tree(project) - Directory structure with LOC counts.\n\
                  - follow(scope) - Pursue signals: dead, cycles, twins, hotspots, trace, commands, events, pipelines.\n\n\
                  SILENCER SURFACE:\n\
@@ -3501,11 +4194,32 @@ const INSTRUCTIONS_BODY: &str = "Loctree MCP provides one sharp agent surface: 1
 /// Build-identity header prepended to the `initialize` instructions. Kept as a
 /// standalone helper so the regression tests can assert its exact shape.
 fn build_identity_banner() -> String {
+    let identity = mcp_bundle_identity();
+    let bundle = bundle_diagnostic();
     format!(
-        "BUILD: loctree-mcp {BUILD_VERSION} (git {GIT_DESCRIBE}). \
-         If this commit lags your repo's source HEAD, the running binary is STALE — \
-         rebuild and restart the MCP server before trusting tool-schema parity.\n\n"
+        "BUILD: {} (git {GIT_DESCRIBE}). BUNDLE_AUTHORITY: {}. {}\n\n",
+        identity.version_line(),
+        bundle.authority,
+        bundle.message
     )
+}
+
+/// This binary's identity marker, assembled from the build-time stamp.
+fn mcp_bundle_identity() -> BundleIdentity<'static> {
+    BundleIdentity::new(
+        "loctree-mcp",
+        BUILD_VERSION,
+        GIT_COMMIT,
+        GIT_DIRTY,
+        BUILD_VERSION,
+    )
+}
+
+/// Compare this binary against the installed `loct` core bundle. `impact`
+/// consults the verdict and refuses destructive authority when the two
+/// disagree, because a mismatched pair cannot be trusted about deletion safety.
+fn bundle_diagnostic() -> BundleDiagnostic<'static> {
+    compare_bundles(&core_bundle_identity("loct"), &mcp_bundle_identity())
 }
 
 #[tool_handler(router = self.tool_router)]
@@ -3538,8 +4252,16 @@ impl ServerHandler for LoctreeServer {
 // Main Entry Point
 // ============================================================================
 
+/// Parse the command line and dispatch: print the identity marker for
+/// `--version`, run a `token` subcommand, or bring up the chosen transport.
+/// Logging is pinned to stderr because stdout belongs to JSON-RPC.
 async fn run_server() -> Result<()> {
     let args = Args::parse();
+
+    if args.version {
+        println!("{}", mcp_bundle_identity().version_line());
+        return Ok(());
+    }
 
     // Pin the default project root before serving so the first tool call
     // already resolves empty `project` fields against it. No `--root` keeps
@@ -3559,24 +4281,73 @@ async fn run_server() -> Result<()> {
         )
         .init();
 
+    // Maintenance subcommands run instead of serving.
+    if let Some(Command::Token { action }) = &args.command {
+        return auth::cli::run(action, args.token_store.as_deref()).await;
+    }
+
     info!(
-        "Starting loctree-mcp v{} (git {}) (universal)",
-        BUILD_VERSION, GIT_DESCRIBE
+        "Starting loctree-mcp v{} (git {}) (universal, snapshot cache capacity {})",
+        BUILD_VERSION, GIT_DESCRIBE, args.snapshot_cache_capacity
     );
     if args.root.is_some() {
         info!("Default project root pinned to {}", default_project());
     }
 
+    let auth_settings = AuthSettings::from_args(&args);
+
     match args.transport {
-        TransportKind::Stdio => serve_stdio().await,
-        TransportKind::Http => http::serve_http(&args.bind).await,
+        TransportKind::Stdio if args.exit_on_stdin_eof => Err(anyhow::anyhow!(
+            "--exit-on-stdin-eof is only valid with --transport http"
+        )),
+        TransportKind::Stdio => serve_stdio(args.snapshot_cache_capacity).await,
+        TransportKind::Http if args.exit_on_stdin_eof => {
+            serve_http_until_stdin_eof(&args.bind, args.snapshot_cache_capacity, &auth_settings)
+                .await
+        }
+        TransportKind::Http => {
+            http::serve_http(&args.bind, args.snapshot_cache_capacity, &auth_settings).await
+        }
+    }
+}
+
+/// Serve HTTP until either the server fails or the supervising watcher closes
+/// its private stdin pipe. EOF is a kernel-owned parent-death signal: it still
+/// arrives when the watcher is killed before any Rust `Drop` implementation
+/// can run.
+async fn serve_http_until_stdin_eof(
+    bind: &str,
+    snapshot_cache_capacity: usize,
+    auth_settings: &AuthSettings,
+) -> Result<()> {
+    use tokio::io::AsyncReadExt;
+
+    let stdin_eof = async {
+        let mut stdin = tokio::io::stdin();
+        let mut byte = [0_u8; 1];
+        loop {
+            match stdin.read(&mut byte).await {
+                Ok(0) => return Ok::<(), std::io::Error>(()),
+                Ok(_) => continue,
+                Err(error) => return Err(error),
+            }
+        }
+    };
+
+    tokio::select! {
+        result = http::serve_http(bind, snapshot_cache_capacity, auth_settings) => result,
+        result = stdin_eof => {
+            result.map_err(anyhow::Error::from)?;
+            info!("supervisor stdin closed; stopping HTTP companion");
+            Ok(())
+        }
     }
 }
 
 /// Stdio transport — the default, line-delimited JSON-RPC over stdin/stdout.
 /// Behaves exactly as previous versions of loctree-mcp.
-async fn serve_stdio() -> Result<()> {
-    let server = LoctreeServer::new();
+async fn serve_stdio(snapshot_cache_capacity: usize) -> Result<()> {
+    let server = LoctreeServer::with_cache_capacity(snapshot_cache_capacity);
     info!("Server ready. Listening on stdio...");
     server
         .serve(rmcp::transport::stdio())
@@ -3586,6 +4357,9 @@ async fn serve_stdio() -> Result<()> {
     Ok(())
 }
 
+/// Install the SIGPIPE and panic handling first, then run the server. A broken
+/// pipe means the client disconnected and exits successfully; anything else
+/// logs and exits non-zero.
 #[tokio::main]
 async fn main() -> ExitCode {
     // Ignore SIGPIPE - allows broken pipe to be handled as error instead of signal
@@ -3619,6 +4393,50 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+
+    fn cached_snapshot(root: &str) -> Arc<Snapshot> {
+        Arc::new(Snapshot::new(vec![root.to_string()]))
+    }
+
+    #[test]
+    fn snapshot_cache_evicts_the_least_recently_used_project() {
+        let mut cache = SnapshotCache::new(2);
+        let first = PathBuf::from("/projects/first");
+        let second = PathBuf::from("/projects/second");
+        let third = PathBuf::from("/projects/third");
+
+        assert_eq!(cache.insert(first.clone(), cached_snapshot("first")), None);
+        assert_eq!(
+            cache.insert(second.clone(), cached_snapshot("second")),
+            None
+        );
+        assert!(
+            cache.get(&first).is_some(),
+            "a cache hit must refresh recency"
+        );
+
+        assert_eq!(
+            cache.insert(third.clone(), cached_snapshot("third")),
+            Some(second.clone())
+        );
+        assert!(cache.entries.contains_key(&first));
+        assert!(!cache.entries.contains_key(&second));
+        assert!(cache.entries.contains_key(&third));
+    }
+
+    #[test]
+    fn snapshot_cache_capacity_zero_disables_retention() {
+        let mut cache = SnapshotCache::new(0);
+        let project = PathBuf::from("/projects/uncached");
+
+        assert_eq!(
+            cache.insert(project.clone(), cached_snapshot("uncached")),
+            None
+        );
+        assert!(cache.get(&project).is_none());
+        assert!(cache.entries.is_empty());
+        assert!(cache.recency.is_empty());
+    }
 
     #[test]
     fn build_version_extends_crate_version_with_commit_metadata() {
@@ -3666,8 +4484,8 @@ mod tests {
             "banner must name both the build version and the git describe stamp"
         );
         assert!(
-            instructions.contains("STALE"),
-            "banner must warn that a lagging binary is stale"
+            instructions.contains("BUNDLE_AUTHORITY:"),
+            "banner must state whether bundle authority is available"
         );
         assert_eq!(
             instructions.lines().nth(2),
@@ -3681,6 +4499,27 @@ mod tests {
         );
     }
 
+    #[test]
+    fn mixed_marker_detection_refuses_destructive_authority() {
+        let cli = BundleIdentity::new(
+            "loct",
+            "0.14.0+gaaaaaaaa",
+            "aaaaaaaa",
+            false,
+            "0.14.0+gaaaaaaaa",
+        );
+        let mcp = BundleIdentity::new(
+            "loctree-mcp",
+            "0.14.0+gbbbbbbbb",
+            "bbbbbbbb",
+            false,
+            "0.14.0+gbbbbbbbb",
+        );
+        let diagnostic = compare_bundles(&cli, &mcp);
+        assert_eq!(diagnostic.status, BundleCompatibility::Mixed);
+        assert_eq!(diagnostic.authority, "refused");
+    }
+
     /// Single env-sensitive test for context_deadline() — consolidated to
     /// avoid the parallel race that would happen if these three branches
     /// ran as independent #[test]s mutating the same process-global env var.
@@ -3689,35 +4528,35 @@ mod tests {
         // SAFETY: this is the only test that touches CONTEXT_DEADLINE_ENV;
         // all scenarios run sequentially inside a single test function so
         // there is no race with another #[test] reading the variable.
-        unsafe { std::env::remove_var(CONTEXT_DEADLINE_ENV) };
+        crate::test_env::remove_var(CONTEXT_DEADLINE_ENV);
         assert_eq!(
             context_deadline(),
             std::time::Duration::from_secs(90),
             "default applies when env var is unset"
         );
 
-        unsafe { std::env::set_var(CONTEXT_DEADLINE_ENV, "30") };
+        crate::test_env::set_var(CONTEXT_DEADLINE_ENV, "30");
         assert_eq!(
             context_deadline(),
             std::time::Duration::from_secs(30),
             "valid override is honored"
         );
 
-        unsafe { std::env::set_var(CONTEXT_DEADLINE_ENV, "0") };
+        crate::test_env::set_var(CONTEXT_DEADLINE_ENV, "0");
         assert_eq!(
             context_deadline(),
             std::time::Duration::from_secs(90),
             "zero falls back to default"
         );
 
-        unsafe { std::env::set_var(CONTEXT_DEADLINE_ENV, "not-a-number") };
+        crate::test_env::set_var(CONTEXT_DEADLINE_ENV, "not-a-number");
         assert_eq!(
             context_deadline(),
             std::time::Duration::from_secs(90),
             "garbage falls back to default"
         );
 
-        unsafe { std::env::remove_var(CONTEXT_DEADLINE_ENV) };
+        crate::test_env::remove_var(CONTEXT_DEADLINE_ENV);
     }
 
     #[test]
@@ -3744,7 +4583,24 @@ mod tests {
         );
     }
 
+    /// A fixture the tools can actually scan: the guard refuses roots outside a
+    /// git checkout, and the MCP tools scan in-process with no command line to
+    /// pass an override on. Tests that exercise the guard itself want the
+    /// non-git shape instead — see `non_git_fixture_project`.
     fn fixture_project() -> TempDir {
+        let temp = non_git_fixture_project();
+        // The guard (`require_git_scan_root_with` / `find_git_root`) only asks
+        // whether `.git` exists, so a bare directory satisfies it. Shelling out
+        // to `git init` would be both slower (36 call sites) and a violation of
+        // `mcp_server_does_not_shell_out_to_loctree_cli`, which greps this whole
+        // file — tests included — for process bridges.
+        fs::create_dir_all(temp.path().join(".git")).expect("create .git marker");
+        temp
+    }
+
+    /// The same fixture without a git checkout, for the two tests that assert
+    /// how the scan guard behaves on a non-git root.
+    fn non_git_fixture_project() -> TempDir {
         let temp = tempfile::tempdir().expect("create temp project");
         fs::create_dir_all(temp.path().join("src")).expect("create src dir");
         fs::write(
@@ -3773,6 +4629,31 @@ pub fn public_entry() {
         )
         .expect("write foo.rs");
         temp
+    }
+
+    #[tokio::test]
+    async fn server_retains_only_the_configured_number_of_loaded_projects() {
+        let first = fixture_project();
+        let second = fixture_project();
+        let server = LoctreeServer::with_cache_capacity(1);
+        let options = SnapshotLoadOptions {
+            force_no_git: true,
+            ..Default::default()
+        };
+
+        server
+            .get_snapshot(first.path(), options)
+            .await
+            .expect("load first fixture snapshot");
+        server
+            .get_snapshot(second.path(), options)
+            .await
+            .expect("load second fixture snapshot");
+
+        let cache = server.cache.read().await;
+        assert_eq!(cache.entries.len(), 1);
+        assert!(!cache.entries.contains_key(first.path()));
+        assert!(cache.entries.contains_key(second.path()));
     }
 
     fn params_for(project: &Path) -> ContextParams {
@@ -3860,6 +4741,8 @@ pub fn public_entry() {
                 force_no_git: true,
                 file: "CONTRIBUTING.md".to_string(),
                 consumers: false,
+                depth: None,
+                rescan: false,
             }))
             .await;
 
@@ -3897,6 +4780,8 @@ pub fn public_entry() {
                 force_no_git: true,
                 file: "fixtures/local.rs".to_string(),
                 consumers: false,
+                depth: None,
+                rescan: false,
             }))
             .await;
 
@@ -3916,6 +4801,22 @@ pub fn public_entry() {
 
     #[tokio::test]
     async fn impact_returns_named_fallback_for_explicit_file_excluded_by_loctignore() {
+        // `impact` claims destructive authority, so it refuses to answer when the
+        // installed `loct` and this `loctree-mcp` disagree on bundle identity. On a
+        // Living Tree that disagreement is routine: the checked-out worktree is
+        // dirty, so `loct` reports `<version>.dirty` while a freshly compiled MCP
+        // reports the clean id. That guard firing is correct behaviour, not a
+        // regression — assert it and stop, instead of failing on the fallback
+        // assertions below which only apply once authority is granted.
+        let bundle = bundle_diagnostic();
+        if bundle.status != BundleCompatibility::Compatible {
+            eprintln!(
+                "skipping: bundle authority refused ({:?}); rebuild/install loct from a clean tree to exercise the fallback path",
+                bundle.status
+            );
+            return;
+        }
+
         let project = fixture_project();
         let server = LoctreeServer::new();
         fs::create_dir_all(project.path().join("fixtures")).expect("create fixtures dir");
@@ -3934,6 +4835,7 @@ pub fn public_entry() {
                 project: project.path().display().to_string(),
                 force_no_git: true,
                 file: "fixtures/local.rs".to_string(),
+                depth: None,
             }))
             .await;
 
@@ -4007,6 +4909,8 @@ pub fn public_entry() {
                 force_no_git: true,
                 file: "Makefile".to_string(),
                 consumers: false,
+                depth: None,
+                rescan: false,
             }))
             .await;
         let make_value: serde_json::Value =
@@ -4019,6 +4923,8 @@ pub fn public_entry() {
                 force_no_git: true,
                 file: "scripts/version-bump.sh".to_string(),
                 consumers: false,
+                depth: None,
+                rescan: false,
             }))
             .await;
         let script_value: serde_json::Value =
@@ -4040,6 +4946,8 @@ pub fn public_entry() {
                 force_no_git: true,
                 file: "src/lib.rs".to_string(),
                 consumers: true,
+                depth: None,
+                rescan: false,
             }))
             .await;
         let value: Value = serde_json::from_str(&output).expect("slice output JSON");
@@ -4099,6 +5007,9 @@ pub fn public_entry() {
                 project: project.path().display().to_string(),
                 force_no_git: true,
                 directory: "src/feature".to_string(),
+                consumers: true,
+                no_consumers: false,
+                depth: None,
             }))
             .await;
         let value: Value = serde_json::from_str(&output).expect("focus output JSON");
@@ -4360,12 +5271,13 @@ pub fn public_entry() {
             results.iter().all(|item| item["file"] == "src/handler.rs"),
             "file filter should remove same-name symbols in other files: {output}"
         );
-        assert!(
-            results[0]["context"]
-                .as_str()
-                .unwrap_or_default()
-                .to_ascii_lowercase()
-                .contains("function find"),
+        // `fn find`, not `fn find_helper`: the exact anchor wins over the
+        // substring match. The label is Rust-native since 70f8e9f3 — the
+        // generic, JS-shaped `function {name}` this used to assert no longer
+        // exists for `.rs` paths (see `rust_where_symbol_context`).
+        assert_eq!(
+            results[0]["context"].as_str().unwrap_or_default(),
+            "fn find",
             "signature-shaped query should prefer the exact symbol anchor over substring matches: {output}"
         );
     }
@@ -4520,7 +5432,9 @@ pub fn public_entry() {
         });
         let mut expected_json =
             serde_json::to_value(&expected).expect("serialize expected OccurrenceResults");
-        // Align scope/coverage fields to the actual MCP run's project context to assert parity on occurrences.
+        // Align project-wide accounting to the actual MCP fixture. The direct
+        // scanner oracle intentionally receives only the one source file whose
+        // occurrence rows are compared below.
         if let Some(obj) = expected_json.as_object_mut()
             && let Some(real_obj) = value["literal_matches"].as_object()
         {
@@ -4529,6 +5443,9 @@ pub fn public_entry() {
             }
             if let Some(scope) = real_obj.get("scope") {
                 obj.insert("scope".to_string(), scope.clone());
+            }
+            if let Some(universe) = real_obj.get("universe") {
+                obj.insert("universe".to_string(), universe.clone());
             }
         }
         assert_eq!(
@@ -4595,6 +5512,99 @@ pub fn public_entry() {
     }
 
     #[tokio::test]
+    async fn find_literal_mode_expands_agent_pipe_or_to_multi_literal() {
+        // Agent anti-grep surface: find(mode=literal, name="A|B") must OR exact
+        // literals via the shared engine — not fixed_string-search the pipe.
+        let project = fixture_project();
+        let server = LoctreeServer::new();
+
+        fs::write(
+            project.path().join("src/runtime.rs"),
+            "fn global_async_runtime() {}\nfn get_tokio_runtime() {}\n",
+        )
+        .expect("write runtime.rs");
+        fs::write(
+            project.path().join("src/lib.rs"),
+            "pub mod foo;\npub mod runtime;\n",
+        )
+        .expect("rewrite lib.rs");
+
+        let initial = server.context(Parameters(params_for(project.path()))).await;
+        serde_json::from_str::<serde_json::Value>(&initial).expect("prime snapshot");
+
+        let output = server
+            .find(Parameters(FindParams {
+                project: project.path().display().to_string(),
+                force_no_git: true,
+                name: "global_async_runtime|get_tokio_runtime".to_string(),
+                mode: "literal".to_string(),
+                limit: 50,
+                lang: None,
+                exported_only: false,
+                dead_only: false,
+                min_score: None,
+                similar: None,
+                file: None,
+                whole_token: false,
+                group_by_file: false,
+                count_only: false,
+                offset: 0,
+            }))
+            .await;
+
+        let value: serde_json::Value =
+            serde_json::from_str(&output).expect("multi-literal output should be valid JSON");
+        assert_eq!(value["mode"], "literal");
+        assert_eq!(
+            value["literal_matches"]["match_mode"], "multi_literal",
+            "pipe OR must set multi_literal match_mode: {output}"
+        );
+        assert_eq!(
+            value["literal_trust"]["multi_literal"], true,
+            "literal_trust.multi_literal must be true: {output}"
+        );
+        let total = value["total"].as_u64().unwrap_or(0);
+        assert!(
+            total >= 2,
+            "expected both pattern hits, got total={total}: {output}"
+        );
+        let texts: Vec<&str> = value["literal_matches"]["occurrences"]
+            .as_array()
+            .expect("occurrences")
+            .iter()
+            .filter_map(|o| o["matched_text"].as_str())
+            .collect();
+        assert!(
+            texts.contains(&"global_async_runtime"),
+            "missing first pattern: {output}"
+        );
+        assert!(
+            texts.contains(&"get_tokio_runtime"),
+            "missing second pattern: {output}"
+        );
+        // Engine parity: MCP multi-literal equals direct shared multi scan.
+        let expected = loctree::analyzer::occurrences::scan_files_for_literal_query(
+            &[(
+                "src/runtime.rs",
+                "fn global_async_runtime() {}\nfn get_tokio_runtime() {}\n",
+            )],
+            "global_async_runtime|get_tokio_runtime",
+            ScanOptions::default(),
+            FileScope { file: None },
+        );
+        assert_eq!(
+            value["literal_matches"]["match_mode"],
+            serde_json::to_value(expected.match_mode).unwrap(),
+            "MCP multi-literal match_mode must match engine"
+        );
+        assert_eq!(
+            value["literal_matches"]["total"].as_u64().unwrap(),
+            expected.total as u64,
+            "MCP total must match engine multi-literal total"
+        );
+    }
+
+    #[tokio::test]
     async fn follow_twins_exposes_classification_for_agent_action() {
         let project = fixture_project();
         let server = LoctreeServer::new();
@@ -4652,7 +5662,7 @@ pub fn public_entry() {
         assert_eq!(marker["action"], "consolidate into single module");
     }
 
-    /// Regression for loctree-feedback hak 2026-05-23 #13 (L9 closure): MCP
+    /// Regression for loctree-fail hak 2026-05-23 #13 (L9 closure): MCP
     /// `follow(scope='twins')` must include route-level twins (FastAPI /
     /// Flask / Tauri duplicate `(method, path)` registrations) to match
     /// CLI `loct twins` since marbles-L8. Before this fix MCP returned
@@ -4755,6 +5765,9 @@ pub fn page() {
                 project: project.path().display().to_string(),
                 force_no_git: true,
                 directory: "src/pages".to_string(),
+                consumers: true,
+                no_consumers: false,
+                depth: None,
             }))
             .await;
 
@@ -4841,7 +5854,7 @@ pub fn page() {
         // SAFETY: this is the only test that touches CONTEXT_MARKDOWN_BUDGET_ENV;
         // all scenarios run sequentially inside this single test function, so
         // there is no race with another #[test] reading the variable.
-        unsafe { std::env::remove_var(CONTEXT_MARKDOWN_BUDGET_ENV) };
+        crate::test_env::remove_var(CONTEXT_MARKDOWN_BUDGET_ENV);
         assert_eq!(
             context_markdown_budget(),
             CONTEXT_MARKDOWN_BUDGET_DEFAULT,
@@ -4852,7 +5865,7 @@ pub fn page() {
         // context_format_markdown_returns_pill) just sees a larger single page
         // from this test's transient env mutation — the getter logic is
         // identical regardless of the magnitude.
-        unsafe { std::env::set_var(CONTEXT_MARKDOWN_BUDGET_ENV, "60000") };
+        crate::test_env::set_var(CONTEXT_MARKDOWN_BUDGET_ENV, "60000");
         assert_eq!(
             context_markdown_budget(),
             60_000,
@@ -4861,28 +5874,28 @@ pub fn page() {
 
         // Below the 2_000 floor is rejected (a tiny budget would shred the pack
         // into uselessly small pages).
-        unsafe { std::env::set_var(CONTEXT_MARKDOWN_BUDGET_ENV, "1500") };
+        crate::test_env::set_var(CONTEXT_MARKDOWN_BUDGET_ENV, "1500");
         assert_eq!(
             context_markdown_budget(),
             CONTEXT_MARKDOWN_BUDGET_DEFAULT,
             "sub-floor value is rejected and falls back to the default"
         );
 
-        unsafe { std::env::set_var(CONTEXT_MARKDOWN_BUDGET_ENV, "0") };
+        crate::test_env::set_var(CONTEXT_MARKDOWN_BUDGET_ENV, "0");
         assert_eq!(
             context_markdown_budget(),
             CONTEXT_MARKDOWN_BUDGET_DEFAULT,
             "zero is rejected and falls back to the default"
         );
 
-        unsafe { std::env::set_var(CONTEXT_MARKDOWN_BUDGET_ENV, "not-a-number") };
+        crate::test_env::set_var(CONTEXT_MARKDOWN_BUDGET_ENV, "not-a-number");
         assert_eq!(
             context_markdown_budget(),
             CONTEXT_MARKDOWN_BUDGET_DEFAULT,
             "non-numeric is rejected and falls back to the default"
         );
 
-        unsafe { std::env::remove_var(CONTEXT_MARKDOWN_BUDGET_ENV) };
+        crate::test_env::remove_var(CONTEXT_MARKDOWN_BUDGET_ENV);
     }
 
     #[test]
@@ -4913,6 +5926,38 @@ pub fn page() {
         );
         let artifact = fs::read_to_string(artifact_path).expect("read full payload artifact");
         assert_eq!(artifact, raw, "artifact must preserve unmodified payload");
+    }
+
+    #[test]
+    fn oversized_prism_tool_response_writes_full_payload_artifact_and_marker() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let value = serde_json::json!({
+            "tool": "prism",
+            "items": ["x".repeat(CONTEXT_MARKDOWN_BUDGET_DEFAULT + 8_000)]
+        });
+        let pretty = serde_json::to_string_pretty(&value).expect("pretty payload");
+        let response = tool_json_response("prism", Some(temp.path()), value);
+        assert!(
+            response.chars().count() <= CONTEXT_MARKDOWN_BUDGET_DEFAULT,
+            "budgeted prism response must stay under default budget"
+        );
+
+        let marker: Value = serde_json::from_str(&response).expect("marker JSON");
+        assert_eq!(marker["protocol"], MCP_RESPONSE_BUDGET_PROTOCOL);
+        assert_eq!(marker["tool"], "prism");
+        assert_eq!(marker["status"], "truncated_for_mcp_token_budget");
+        let artifact_path = marker["full_payload"]["path"]
+            .as_str()
+            .expect("full payload path");
+        assert!(
+            artifact_path.ends_with(".full.json"),
+            "marker must point at concrete full JSON artifact: {artifact_path}"
+        );
+        let artifact = fs::read_to_string(artifact_path).expect("read full payload artifact");
+        assert_eq!(
+            artifact, pretty,
+            "prism artifact must preserve the pretty-printed payload"
+        );
     }
 
     #[test]
@@ -5065,7 +6110,7 @@ pub fn page() {
 
     #[tokio::test]
     async fn context_rejects_non_git_project_without_force_flag() {
-        let project = fixture_project();
+        let project = non_git_fixture_project();
         let server = LoctreeServer::new();
         let mut params = params_for(project.path());
         params.force_no_git = false;
@@ -5082,7 +6127,7 @@ pub fn page() {
 
     #[tokio::test]
     async fn context_accepts_non_git_project_with_force_flag() {
-        let project = fixture_project();
+        let project = non_git_fixture_project();
         let server = LoctreeServer::new();
         let mut params = params_for(project.path());
         params.force_no_git = true;
@@ -5459,15 +6504,15 @@ pub fn page() {
     }
 
     #[test]
-    fn public_mcp_tool_surface_is_polarized_to_ten_tools() {
-        // The MCP surface stays intentionally small. Eight map/context tools,
-        // the literal-only `suppressions` inventory, and the polarization-gate
-        // `prism` tool — anything else belongs in the `loct` CLI
-        // (health/findings/audit/coverage). Adding a tool here is a
+    fn public_mcp_tool_surface_is_polarized_to_twelve_tools() {
+        // The MCP surface stays intentionally bounded to the library-backed
+        // agent workflow. `body` and `diff` close the consumer-parity gap;
+        // report commands still belong in the `loct` CLI
+        // (health/findings/audit/coverage). Adding a tool here remains a
         // surface-area decision; rename or update the assertion deliberately.
         //
         // `suppressions` joined on 2026-05-17 to close the silencer-surface
-        // gap recorded in `~/internal-artifacts/loctree/loctree-feedback.md` (existing
+        // gap recorded in `~/.vibecrafted/loctree/loctree-fail.md` (existing
         // logic under `analyzer/search.rs::search_suppressions` was invisible
         // agent-side; this tool exposes it). Free-tier scope is locked to
         // literal detection. Semantic enrichment is paid-tier Wave 7+.
@@ -5499,8 +6544,10 @@ pub fn page() {
                 "context",
                 "repo-view",
                 "slice",
+                "body",
                 "find",
                 "impact",
+                "diff",
                 "tree",
                 "focus",
                 "follow",
@@ -5514,7 +6561,7 @@ pub fn page() {
     /// stay literal-only in its public description. If a future change
     /// adds semantic enrichment without an explicit feature-flag boundary,
     /// this test fails loudly. This protects the free-tier promise (see
-    /// `~/internal-artifacts/loctree/loctree-feedback.md` 2026-05-17 addendum +
+    /// `~/.vibecrafted/loctree/loctree-fail.md` 2026-05-17 addendum +
     /// `loctree::analyzer::suppression_inventory` module docs).
     #[test]
     fn suppressions_mcp_tool_description_advertises_literal_only_free_tier() {
@@ -5559,5 +6606,24 @@ pub fn page() {
              explicitly (free-tier scope OR paid-tier Wave 7+ delta). \
              Found: {description_line}"
         );
+    }
+}
+
+/// Test-only environment mutation — the one audited `unsafe` for
+/// `std::env::set_var` / `remove_var` in this binary. Callers must be
+/// serialised with every other test touching the same variables.
+#[cfg(test)]
+mod test_env {
+    use std::ffi::OsStr;
+
+    pub(crate) fn set_var<K: AsRef<OsStr>, V: AsRef<OsStr>>(key: K, value: V) {
+        // SAFETY: test-only; callers are serialised, so no other thread
+        // observes the environment while it changes.
+        unsafe { std::env::set_var(key, value) }
+    }
+
+    pub(crate) fn remove_var<K: AsRef<OsStr>>(key: K) {
+        // SAFETY: as for `set_var`.
+        unsafe { std::env::remove_var(key) }
     }
 }

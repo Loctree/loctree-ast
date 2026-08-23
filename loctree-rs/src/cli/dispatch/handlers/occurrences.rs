@@ -5,14 +5,18 @@
 //! Identifier-like queries stay token-boundary aware; phrase/punctuation queries
 //! behave as fixed strings. Primary matches are never AST/fuzzy hits. Zero-hit
 //! output may add separate symbol-table near-match hints, never evidence.
+//!
+//! `--regex` switches the same command to pattern evaluation over raw file
+//! text, sharing the engine, coverage line and paging with `find --regex`.
 
 use std::path::{Path, PathBuf};
 
 use super::super::super::command::{FindOptions, OccurrencesOptions};
 use super::super::{DispatchResult, GlobalOptions, load_or_create_query_snapshot_for_roots};
 use crate::analyzer::occurrences::{
-    FileScope, OccurrenceResults, ReportOptions, ScanOptions, attach_near_matches,
-    enrich_with_snapshot, scan_files_with, scan_files_with_regex, scan_files_with_scope,
+    FileScope, FileScopeResolution, LiteralOccurrence, MatchMode, OccurrenceResults, ReportOptions,
+    ScanOptions, attach_near_matches, enrich_with_snapshot, expand_literal_patterns,
+    scan_files_multi_literal, scan_files_with, scan_files_with_regex,
 };
 use crate::analyzer::search::{FuzzySuggestion, literal_fuzzy_suggestions};
 use crate::snapshot::Snapshot;
@@ -27,6 +31,18 @@ pub fn handle_occurrences_command(
     } else {
         opts.roots.clone()
     };
+
+    if opts.regex {
+        return handle_occurrences_regex(opts, &roots, global);
+    }
+
+    let patterns = expand_literal_patterns(std::slice::from_ref(&opts.ident));
+    if patterns.is_empty() {
+        eprintln!(
+            "[loct][error] 'occurrences' requires an identifier. Usage: loct occurrences <ident>"
+        );
+        return DispatchResult::Exit(1);
+    }
 
     let query_global = query_global_options(global);
     let snapshot = match load_or_create_query_snapshot_for_roots(&roots, &query_global) {
@@ -43,15 +59,110 @@ pub fn handle_occurrences_command(
         .iter()
         .map(|(p, c)| (p.as_str(), c.as_str()))
         .collect::<Vec<_>>();
-    let mut results = scan_files_with(
-        borrowed,
-        opts.ident.trim(),
+    let mut results = scan_multi_literal(
+        &borrowed,
+        &patterns,
         ScanOptions {
             whole_token: opts.whole_token,
         },
+        FileScope::default(),
     );
     enrich_with_snapshot(&mut results, &snapshot);
-    attach_near_matches(&mut results, &snapshot.files);
+    if results.total == 0 {
+        for pattern in &patterns {
+            let mut probe = scan_files_with(
+                std::iter::empty::<(&str, &str)>(),
+                pattern,
+                ScanOptions {
+                    whole_token: opts.whole_token,
+                },
+            );
+            attach_near_matches(&mut probe, &snapshot.files);
+            results.near_matches.extend(probe.near_matches);
+        }
+        results
+            .near_matches
+            .sort_by(|a, b| a.symbol.cmp(&b.symbol).then(a.file.cmp(&b.file)));
+        results
+            .near_matches
+            .dedup_by(|a, b| a.symbol == b.symbol && a.file == b.file);
+    }
+    results.declare_snapshot_universe(&snapshot, FileScope::default());
+    results.apply_report(ReportOptions {
+        group_by_file: opts.group_by_file,
+        count_only: opts.count_only,
+        offset: opts.offset,
+        limit: opts.limit,
+    });
+
+    if global.json {
+        match serde_json::to_string_pretty(&results) {
+            Ok(json) => println!("{}", json),
+            Err(e) => {
+                eprintln!("[loct][error] Failed to serialize results: {}", e);
+                return DispatchResult::Exit(1);
+            }
+        }
+    } else {
+        print_human(&results, opts.compact);
+    }
+
+    DispatchResult::Exit(0)
+}
+
+/// Handle `loct occurrences <pattern> --regex` — pattern mode of the literal
+/// oracle.
+///
+/// Flag parity with `find --regex`, not a second implementation: same
+/// `scan_files_with_regex` engine, same snapshot universe, same coverage line,
+/// same `--limit/--offset` paging. Before this existed, an agent that had just
+/// run `loct find --regex 'PAT'` and reached for `loct occurrences 'PAT'
+/// --regex` to cross-check it got "Unknown option" — which on the surface
+/// whose whole job is confirming the other one is indistinguishable from the
+/// tool disagreeing.
+///
+/// Like `find --regex`, this deliberately skips `enrich_with_snapshot`: a
+/// pattern is not a symbol name, so resolving it against the symbol table would
+/// invent structure the match never had.
+fn handle_occurrences_regex(
+    opts: &OccurrencesOptions,
+    roots: &[PathBuf],
+    global: &GlobalOptions,
+) -> DispatchResult {
+    let pattern = opts.ident.trim();
+    if pattern.is_empty() {
+        eprintln!(
+            "[loct][error] 'occurrences --regex' requires a pattern. Usage: loct occurrences <pattern> --regex"
+        );
+        return DispatchResult::Exit(1);
+    }
+    let re = match regex::Regex::new(pattern) {
+        Ok(re) => re,
+        Err(e) => {
+            // Loud by design, exactly as in `find --regex`: a malformed pattern
+            // must never pass as a trustworthy "0 matches".
+            eprintln!("[loct][error] invalid --regex pattern '{}': {}", pattern, e);
+            return DispatchResult::Exit(1);
+        }
+    };
+
+    let query_global = query_global_options(global);
+    let snapshot = match load_or_create_query_snapshot_for_roots(roots, &query_global) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("[loct][error] {}", e);
+            return DispatchResult::Exit(1);
+        }
+    };
+
+    let base = roots.first().cloned().unwrap_or_else(|| PathBuf::from("."));
+    let contents = read_snapshot_contents(&snapshot, &base);
+    let borrowed = contents
+        .iter()
+        .map(|(p, c)| (p.as_str(), c.as_str()))
+        .collect::<Vec<_>>();
+    let mut results = scan_files_with_regex(borrowed, &re, FileScope::default());
+    results.declare_snapshot_universe(&snapshot, FileScope::default());
     results.apply_report(ReportOptions {
         group_by_file: opts.group_by_file,
         count_only: opts.count_only,
@@ -82,20 +193,22 @@ pub fn handle_occurrences_command(
 /// section; they are NEVER promoted into the literal matches. This is what lets
 /// an agent trust `--literal` absence: when the mode says literal, the answer
 /// is literal, and suggestions stay behind the glass.
+///
+/// Multi-pattern OR (agent anti-grep surface):
+/// - `loct find A B` → exact OR of A and B
+/// - `loct find 'A|B'` → same, when every segment is a simple literal
+///   (not regex). This prevents the silent fixed_string-0 trap on pipes.
 pub fn handle_find_literal_command(opts: &FindOptions, global: &GlobalOptions) -> DispatchResult {
-    // Resolve the single literal query to scan for. `find` always scopes to `.`.
-    let ident = literal_find_ident(opts);
-    let ident = match ident {
-        Some(id) if !id.trim().is_empty() => id,
-        _ => {
-            eprintln!(
-                "[loct][error] 'find --literal' requires a query. Usage: loct find --literal <query>"
-            );
-            return DispatchResult::Exit(1);
-        }
-    };
+    let patterns = literal_find_patterns(opts);
+    if patterns.is_empty() {
+        eprintln!(
+            "[loct][error] 'find --literal' requires a query. Usage: loct find --literal <query> [query...]"
+        );
+        return DispatchResult::Exit(1);
+    }
+    let display_query = patterns.join("|");
 
-    let roots = vec![PathBuf::from(".")];
+    let roots = opts.scan_roots();
     let query_global = query_global_options(global);
     let snapshot = match load_or_create_query_snapshot_for_roots(&roots, &query_global) {
         Ok(s) => s,
@@ -111,20 +224,51 @@ pub fn handle_find_literal_command(opts: &FindOptions, global: &GlobalOptions) -
         .iter()
         .map(|(p, c)| (p.as_str(), c.as_str()))
         .collect::<Vec<_>>();
+    let file_scope = opts.file.as_deref().map(|requested| {
+        FileScopeResolution::resolve(
+            requested,
+            snapshot.files.iter().map(|file| file.path.as_str()),
+        )
+    });
+    let scan_scope = file_scope
+        .as_ref()
+        .map(FileScopeResolution::scan_scope)
+        .unwrap_or_default();
 
     // PRIMARY: literal truth layer (identical substrate to `loct occurrences`).
-    let mut literal_matches = scan_files_with_scope(
-        borrowed,
-        ident.trim(),
+    // Multi-pattern expands agent `A|B` / multi-arg into exact-literal union.
+    let mut literal_matches = scan_multi_literal(
+        &borrowed,
+        &patterns,
         ScanOptions {
             whole_token: opts.whole_token,
         },
-        FileScope {
-            file: opts.file.as_deref(),
-        },
+        scan_scope,
     );
     enrich_with_snapshot(&mut literal_matches, &snapshot);
-    attach_near_matches(&mut literal_matches, &snapshot.files);
+    if literal_matches.total == 0 {
+        for pattern in &patterns {
+            let mut probe = scan_files_with(
+                std::iter::empty::<(&str, &str)>(),
+                pattern,
+                ScanOptions {
+                    whole_token: opts.whole_token,
+                },
+            );
+            attach_near_matches(&mut probe, &snapshot.files);
+            literal_matches.near_matches.extend(probe.near_matches);
+        }
+        literal_matches
+            .near_matches
+            .sort_by(|a, b| a.symbol.cmp(&b.symbol).then(a.file.cmp(&b.file)));
+        literal_matches
+            .near_matches
+            .dedup_by(|a, b| a.symbol == b.symbol && a.file == b.file);
+    }
+    literal_matches.declare_snapshot_universe(&snapshot, scan_scope);
+    let file_scope_resolved = file_scope.as_ref().is_none_or(|scope| scope.resolved);
+    let file_scoped = file_scope.as_ref().is_some_and(|scope| scope.resolved);
+    literal_matches.file_scope = file_scope;
     literal_matches.apply_report(ReportOptions {
         group_by_file: opts.group_by_file,
         count_only: opts.count_only,
@@ -134,25 +278,57 @@ pub fn handle_find_literal_command(opts: &FindOptions, global: &GlobalOptions) -
 
     // SECONDARY (strictly separate): fuzzy name-similarity hints, labeled
     // `source: "fuzzy"`. Never merged into `literal_matches`.
-    let fuzzy_suggestions = literal_fuzzy_suggestions(ident.trim(), &snapshot.files);
+    let fuzzy_suggestions = if patterns.len() == 1 {
+        literal_fuzzy_suggestions(patterns[0].as_str(), &snapshot.files)
+    } else {
+        let mut all = Vec::new();
+        for pattern in &patterns {
+            all.extend(literal_fuzzy_suggestions(pattern, &snapshot.files));
+        }
+        all
+    };
 
-    // A query carrying regex metacharacters could not have been evaluated as a
-    // pattern by literal (exact-string) mode. Surfacing this is critical for
-    // security/privacy audits: without it, `--literal` hands a confident "absence
-    // is trustworthy" clean-bill for a query it never actually pattern-matched.
-    let looks_like_regex = query_has_regex_metachars(ident.trim());
-    let absence_trustworthy = literal_matches.total > 0 || !looks_like_regex;
+    // Multi-literal expansion of `A|B` is exact-string OR, not regex evaluation.
+    // Absence for the scanned universe is trustworthy for each simple pattern
+    // (and their union). Absolute whole-repo absence is not, while exclusion
+    // boundaries remain (outside_snapshot / unreadable / …).
+    let multi = patterns.len() > 1 || literal_matches.match_mode == MatchMode::MultiLiteral;
+    let looks_like_regex = !multi && query_has_regex_metachars(display_query.as_str());
+    let absence = absence_trust(
+        &literal_matches.universe,
+        file_scope_resolved,
+        file_scoped,
+        looks_like_regex,
+        literal_matches.total,
+    );
 
     if global.json {
         let payload = serde_json::json!({
             "mode": "literal",
-            "query": ident,
+            "query": display_query,
+            "patterns": patterns,
             "literal_matches": literal_matches,
+            // Mode-stable alias. Without it the envelope key changes with the
+            // mode (`literal_matches` here, `regex_matches` under --regex), so a
+            // parser written against one silently yields zero occurrences on the
+            // other — it reads as "not found" rather than "wrong key", which is
+            // the exact failure shape the coverage line exists to prevent.
+            // Duplicates the payload on purpose: the mode-specific key stays for
+            // existing consumers (loctree-lsp and loctree-mcp both read it).
+            "matches": literal_matches,
             "fuzzy_suggestions": fuzzy_suggestions,
             "literal_trust": {
                 "query_has_regex_metachars": looks_like_regex,
                 "matched_as_exact_string": true,
-                "absence_trustworthy": absence_trustworthy,
+                "multi_literal": multi,
+                // Scanned-universe trust (historical key). Absolute whole-repo
+                // claims must also check absence_scope / exclusion_caveat.
+                "absence_trustworthy": absence.for_scanned,
+                "absence_trustworthy_for_scanned": absence.for_scanned,
+                "absolute_absence_trustworthy": absence.absolute,
+                "absence_scope": absence.scope,
+                "exclusion_caveat": absence.exclusion_caveat,
+                "file_scope_resolved": file_scope_resolved,
             },
         });
         match serde_json::to_string_pretty(&payload) {
@@ -162,18 +338,30 @@ pub fn handle_find_literal_command(opts: &FindOptions, global: &GlobalOptions) -
                 return DispatchResult::Exit(1);
             }
         }
+    } else if opts.compact {
+        print_human(&literal_matches, true);
     } else {
-        print_literal_find_human(ident.trim(), &literal_matches, &fuzzy_suggestions);
+        print_literal_find_human(display_query.as_str(), &literal_matches, &fuzzy_suggestions);
     }
 
     DispatchResult::Exit(0)
+}
+
+/// Scan one or more exact-literal patterns and merge (engine-shared path).
+fn scan_multi_literal(
+    files: &[(&str, &str)],
+    patterns: &[String],
+    opts: ScanOptions,
+    scope: FileScope<'_>,
+) -> OccurrenceResults {
+    scan_files_multi_literal(files, patterns, opts, scope)
 }
 
 /// Handle `loct find --regex <pattern>` — regex over raw file TEXT.
 ///
 /// This is the mode `--literal` could never be: `--literal` is exact-string and,
 /// on a query carrying regex metacharacters, can only report "matched as exact
-/// string" (loctree-feedback.md 2026-06-21 — the dangerous false-clean). `--regex`
+/// string" (loctree-fail.md 2026-06-21 — the dangerous false-clean). `--regex`
 /// actually compiles and evaluates the pattern, so a clean result is genuinely
 /// trustworthy. It keeps loct's artifact-fence coverage accounting and per-hit
 /// context labels (comment / string_literal / code) that the grep/sed fallback
@@ -204,7 +392,7 @@ pub fn handle_find_regex_command(opts: &FindOptions, global: &GlobalOptions) -> 
         }
     };
 
-    let roots = vec![PathBuf::from(".")];
+    let roots = opts.scan_roots();
     let query_global = query_global_options(global);
     let snapshot = match load_or_create_query_snapshot_for_roots(&roots, &query_global) {
         Ok(s) => s,
@@ -220,16 +408,24 @@ pub fn handle_find_regex_command(opts: &FindOptions, global: &GlobalOptions) -> 
         .iter()
         .map(|(p, c)| (p.as_str(), c.as_str()))
         .collect::<Vec<_>>();
+    let file_scope = opts.file.as_deref().map(|requested| {
+        FileScopeResolution::resolve(
+            requested,
+            snapshot.files.iter().map(|file| file.path.as_str()),
+        )
+    });
+    let scan_scope = file_scope
+        .as_ref()
+        .map(FileScopeResolution::scan_scope)
+        .unwrap_or_default();
 
-    let mut matches = scan_files_with_regex(
-        borrowed,
-        &re,
-        FileScope {
-            file: opts.file.as_deref(),
-        },
-    );
+    let mut matches = scan_files_with_regex(borrowed, &re, scan_scope);
     // No enrich_with_snapshot: a regex pattern is not a symbol name, so symbol
     // resolution against it would be meaningless. Matches stay raw-text truth.
+    matches.declare_snapshot_universe(&snapshot, scan_scope);
+    let file_scope_resolved = file_scope.as_ref().is_none_or(|scope| scope.resolved);
+    let file_scoped = file_scope.as_ref().is_some_and(|scope| scope.resolved);
+    matches.file_scope = file_scope;
     matches.apply_report(ReportOptions {
         group_by_file: opts.group_by_file,
         count_only: opts.count_only,
@@ -237,16 +433,31 @@ pub fn handle_find_regex_command(opts: &FindOptions, global: &GlobalOptions) -> 
         limit: opts.limit,
     });
 
+    let absence = absence_trust(
+        &matches.universe,
+        file_scope_resolved,
+        file_scoped,
+        false,
+        matches.total,
+    );
+
     if global.json {
         let payload = serde_json::json!({
             "mode": "regex",
             "query": pattern,
             "regex_matches": matches,
+            // Mode-stable alias — see the literal branch above.
+            "matches": matches,
             "regex_trust": {
                 "pattern_compiled": true,
-                // The pattern WAS evaluated as a pattern, so unlike --literal a
-                // clean result here is a trustworthy absence.
-                "absence_trustworthy": true,
+                // Pattern was evaluated as a pattern over the scanned universe.
+                // Absolute whole-repo absence is conditional when exclusions>0.
+                "absence_trustworthy": absence.for_scanned,
+                "absence_trustworthy_for_scanned": absence.for_scanned,
+                "absolute_absence_trustworthy": absence.absolute,
+                "absence_scope": absence.scope,
+                "exclusion_caveat": absence.exclusion_caveat,
+                "file_scope_resolved": file_scope_resolved,
             },
         });
         match serde_json::to_string_pretty(&payload) {
@@ -263,6 +474,52 @@ pub fn handle_find_regex_command(opts: &FindOptions, global: &GlobalOptions) -> 
     DispatchResult::Exit(0)
 }
 
+/// Machine-readable absence trust for JSON surfaces (literal + regex).
+struct AbsenceTrust {
+    /// Trustworthy for the scanned/indexed universe (and resolved file scope).
+    for_scanned: bool,
+    /// Absolute whole-repo (or whole-file when file-scoped) trust.
+    absolute: bool,
+    /// `"absolute" | "scanned_universe" | "untrustworthy"`.
+    scope: &'static str,
+    exclusion_caveat: Option<String>,
+}
+
+fn absence_trust(
+    universe: &crate::analyzer::occurrences::IndexedUniverse,
+    file_scope_resolved: bool,
+    file_scoped: bool,
+    looks_like_regex_literal: bool,
+    total: usize,
+) -> AbsenceTrust {
+    let for_scanned =
+        file_scope_resolved && universe.scan_complete && (total > 0 || !looks_like_regex_literal);
+    // File-scoped resolved queries prove absence inside that one path.
+    // Repo-wide queries cannot claim absolute absence while exclusion
+    // boundaries remain (outside_snapshot always lists unindexed gaps).
+    let absolute = for_scanned && (file_scoped || !universe.has_exclusion_boundary());
+    let scope = if !for_scanned {
+        "untrustworthy"
+    } else if absolute {
+        "absolute"
+    } else {
+        "scanned_universe"
+    };
+    // Only surface the caveat when absolute trust is withheld — otherwise
+    // agents see a contradictory "absolute + caveat" pair.
+    let exclusion_caveat = if absolute {
+        None
+    } else {
+        universe.absence_exclusion_caveat()
+    };
+    AbsenceTrust {
+        for_scanned,
+        absolute,
+        scope,
+        exclusion_caveat,
+    }
+}
+
 /// Human render for `find --regex`. Mirrors the literal printer's structure
 /// (coverage line, per-file rollup, page, per-hit role label) but labels the
 /// header as regex and never prints fuzzy suggestions (there are none).
@@ -274,8 +531,9 @@ fn print_regex_find_human(pattern: &str, results: &OccurrenceResults) {
     if !results.coverage_line.is_empty() {
         println!("  {}", results.coverage_line);
     }
+    print_file_scope(results);
     if results.total == 0 {
-        println!("  (not found — pattern evaluated; absence is trustworthy)");
+        print_zero_hit_absence(results, AbsenceMode::Regex, false);
         return;
     }
     print_file_rollup(results);
@@ -283,17 +541,188 @@ fn print_regex_find_human(pattern: &str, results: &OccurrenceResults) {
     print_role_summary(results);
     if results.slim {
         println!("  (match list suppressed — count_only/slim)");
+        print_suggested_next(results);
         return;
     }
-    for occ in &results.occurrences {
+    print_occurrence_rows(&results.occurrences, false);
+    // Only on a non-empty hit set: the zero-hit suggestion pair is worded for
+    // *literal* absence ("broaden from literal absence…"), which would be a
+    // lie in regex mode where the pattern really was evaluated.
+    print_suggested_next(results);
+}
+
+/// Max further columns named inline before the list is elided with `…`.
+const MAX_GROUPED_COLS: usize = 5;
+
+/// Spans of consecutive equal keys as `(start_index, len)`, covering `keys` in
+/// order. Pure and total: an empty input yields an empty span list.
+///
+/// Callers rely on the *consecutive* wording: occurrence sets are sorted by
+/// `(file, line, column)`, so same-line hits are always adjacent, and a set
+/// that is not sorted simply groups less — never wrongly.
+fn line_group_spans<K: PartialEq>(keys: &[K]) -> Vec<(usize, usize)> {
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    for (i, key) in keys.iter().enumerate() {
+        if let Some(last) = spans.last_mut()
+            && &keys[last.0] == key
+        {
+            last.1 += 1;
+        } else {
+            spans.push((i, 1));
+        }
+    }
+    spans
+}
+
+/// The ` (+N more at cols …)` tail for hits collapsed into one printed row.
+///
+/// Empty when nothing was collapsed. At most [`MAX_GROUPED_COLS`] columns are
+/// named; the rest become `…`. The count is always the FULL number of
+/// collapsed hits — the row must never under-report how much it folded.
+fn more_cols_suffix(extra_cols: &[usize]) -> String {
+    if extra_cols.is_empty() {
+        return String::new();
+    }
+    let shown = extra_cols
+        .iter()
+        .take(MAX_GROUPED_COLS)
+        .map(|c| c.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let elided = if extra_cols.len() > MAX_GROUPED_COLS {
+        ",…"
+    } else {
+        ""
+    };
+    format!(" (+{} more at cols {}{})", extra_cols.len(), shown, elided)
+}
+
+/// Per-hit annotations (resolved definition, enclosing symbol, fan-in, ignore
+/// flag) rendered as the row's trailing detail.
+fn occurrence_detail_suffix(occ: &LiteralOccurrence, include_ignored: bool) -> String {
+    let mut suffix = String::new();
+    if let Some(definition) = &occ.resolved_definition {
+        suffix.push_str(&format!("  => {}", definition.symbol_id));
+    }
+    if let Some(enclosing) = &occ.enclosing_symbol {
+        suffix.push_str(&format!("  in {}", enclosing.symbol_id));
+    }
+    if let Some(facts) = &occ.enclosing_facts {
+        suffix.push_str(&format!(
+            "  [fan-in {}, {}]",
+            facts.fan_in,
+            if facts.exported { "exported" } else { "local" }
+        ));
+    }
+    if include_ignored && occ.ignored {
+        suffix.push_str("  [ignored: .loctignore]");
+    }
+    suffix
+}
+
+/// Print the hit rows, collapsing multiple hits on the SAME line into one row.
+///
+/// Purely presentational: `total` / `emitted` / pagination / JSON are the raw
+/// counts and stay untouched. Grouping runs over whatever occurrences are in
+/// the emitted page, so a page boundary splitting one line just yields two
+/// grouped rows rather than a wrong count.
+///
+/// A decorative `# =========` banner scanned for an unanchored `=======`
+/// produces ~10 hits on one line; ungrouped that is 10 near-identical rows per
+/// banner, which buried the real conflict hunks in a 505-match sweep.
+///
+/// Rows only collapse when their trailing detail is identical too — a differing
+/// resolved definition or enclosing symbol is evidence, never noise.
+fn print_occurrence_rows(occurrences: &[LiteralOccurrence], include_ignored: bool) {
+    let rows: Vec<(&str, usize, String)> = occurrences
+        .iter()
+        .map(|occ| {
+            (
+                occ.file.as_str(),
+                occ.line,
+                occurrence_detail_suffix(occ, include_ignored),
+            )
+        })
+        .collect();
+    for (start, len) in line_group_spans(&rows) {
+        let occ = &occurrences[start];
+        let extra: Vec<usize> = occurrences[start + 1..start + len]
+            .iter()
+            .map(|o| o.column)
+            .collect();
         println!(
-            "  {}:{}:{}  [{}]  {}",
+            "  {}:{}:{}  [{}]  {}{}{}",
             occ.file,
             occ.line,
             occ.column,
             occ.match_role.as_str(),
-            occ.context
+            occ.context,
+            rows[start].2,
+            more_cols_suffix(&extra)
         );
+    }
+}
+
+/// Whether the zero-hit line is for `--regex` or default/`--literal`.
+enum AbsenceMode {
+    Regex,
+    Literal,
+}
+
+/// Zero-hit human absence contract shared by regex and literal printers.
+///
+/// Absolute "absence is trustworthy" is forbidden for **repo-wide** queries
+/// when the universe declares exclusion boundaries: that was a false
+/// guarantee for gitignored / unindexed surfaces (e.g. generated FFI
+/// bindings outside the snapshot). A resolved `--file` scope is absolute
+/// for that one path.
+fn print_zero_hit_absence(results: &OccurrenceResults, mode: AbsenceMode, looks_like_regex: bool) {
+    if !results.universe.scan_complete {
+        println!(
+            "  (not found — absence is NOT trustworthy because at least one indexed path could not be scanned)"
+        );
+        return;
+    }
+    if results
+        .file_scope
+        .as_ref()
+        .is_some_and(|scope| !scope.resolved)
+    {
+        println!(
+            "  (not found in scope — absence is NOT trustworthy because the requested file scope did not resolve to exactly one indexed path)"
+        );
+        return;
+    }
+    if matches!(mode, AbsenceMode::Literal) && looks_like_regex {
+        // NOT a trustworthy absence: the query carries regex metacharacters,
+        // but `--literal` did an exact-string match and never evaluated it as
+        // a pattern. Printing "absence is trustworthy" here would be a FALSE
+        // CLEAN for a security/privacy audit.
+        println!("  (0 exact-string matches — NOT a trustworthy absence: the query contains");
+        println!("   regex metacharacters and `--literal` matches literally, so a pattern was");
+        println!("   never evaluated. For a regex search use a pattern-aware tool.)");
+        return;
+    }
+    let file_scoped = results
+        .file_scope
+        .as_ref()
+        .is_some_and(|scope| scope.resolved);
+    // Repo-wide only: qualify when exclusion boundaries exist.
+    if !file_scoped && let Some(caveat) = results.universe.absence_exclusion_caveat() {
+        let prefix = match mode {
+            AbsenceMode::Regex => "not found — pattern evaluated; ",
+            AbsenceMode::Literal => "not found — literal ",
+        };
+        println!("  ({prefix}{caveat})");
+        return;
+    }
+    match mode {
+        AbsenceMode::Regex => {
+            println!("  (not found — pattern evaluated; absence is trustworthy)");
+        }
+        AbsenceMode::Literal => {
+            println!("  (not found — literal absence is trustworthy)");
+        }
     }
 }
 
@@ -301,7 +730,7 @@ fn print_regex_find_human(pattern: &str, results: &OccurrenceResults) {
 /// rather than a literal string. A lone `.` is deliberately EXCLUDED: it is
 /// ambiguous (IP addresses like `100.64.0.1`, filenames like `package.json`) and
 /// flagging it would flood every legitimate literal query with false warnings.
-/// The 2026-06-21 loctree-feedback report draws exactly this line — the clean
+/// The 2026-06-21 loctree-fail report draws exactly this line — the clean
 /// `100.64.0.1` (dots only) versus the dangerous `100\.[0-9]+\.[0-9]+`
 /// (backslash, character class, quantifier).
 fn query_has_regex_metachars(query: &str) -> bool {
@@ -329,6 +758,21 @@ fn literal_find_ident(opts: &FindOptions) -> Option<String> {
         .or_else(|| opts.queries.first().cloned())
         .or_else(|| opts.symbol.clone())
         .or_else(|| opts.similar.clone())
+}
+
+/// Expand find options into one or more exact-literal patterns (multi-arg + `A|B`).
+fn literal_find_patterns(opts: &FindOptions) -> Vec<String> {
+    let mut raw: Vec<String> = Vec::new();
+    if !opts.queries.is_empty() {
+        raw.extend(opts.queries.iter().cloned());
+    } else if let Some(q) = opts.query.clone() {
+        raw.push(q);
+    } else if let Some(s) = opts.symbol.clone() {
+        raw.push(s);
+    } else if let Some(s) = opts.similar.clone() {
+        raw.push(s);
+    }
+    expand_literal_patterns(&raw)
 }
 
 /// Read every snapshot file's content (best-effort: skip unreadable files
@@ -367,49 +811,52 @@ fn print_human(results: &OccurrenceResults, compact: bool) {
         print_compact(results);
         return;
     }
+    // The header names the mode the scan actually ran in. Calling a `--regex`
+    // hit set "literal occurrences" would undo the very parity the flag adds.
+    let regex_mode = results.source == "regex";
     println!(
-        "Literal occurrences of '{}' ({} in {} file(s)) [source: {}]",
-        results.query, results.total, results.files_matched, results.source
+        "{} of '{}' ({} in {} file(s)) [source: {}]",
+        if regex_mode {
+            "Regex occurrences"
+        } else {
+            "Literal occurrences"
+        },
+        results.query,
+        results.total,
+        results.files_matched,
+        results.source
     );
     if !results.coverage_line.is_empty() {
         println!("  {}", results.coverage_line);
     }
+    print_file_scope(results);
     if results.total == 0 {
-        print_no_exact_occurrences(results, "  ");
+        if regex_mode {
+            // A compiled pattern that matched nothing is a trustworthy absence;
+            // the literal wording ("no exact occurrences") would understate it.
+            print_zero_hit_absence(results, AbsenceMode::Regex, false);
+        } else {
+            print_no_exact_occurrences(results, "  ");
+        }
         print_suggested_next(results);
         return;
     }
     print_file_rollup(results);
     print_page(results);
     print_role_summary(results);
+    print_hit_shape(results);
     print_file_context(results);
     if results.slim {
         println!("  (occurrence list suppressed — count_only/slim)");
         print_suggested_next(results);
         return;
     }
-    for occ in &results.occurrences {
-        let mut suffix = String::new();
-        if let Some(definition) = &occ.resolved_definition {
-            suffix.push_str(&format!("  => {}", definition.symbol_id));
-        }
-        if let Some(enclosing) = &occ.enclosing_symbol {
-            suffix.push_str(&format!("  in {}", enclosing.symbol_id));
-        }
-        println!(
-            "  {}:{}:{}  [{}]  {}{}",
-            occ.file,
-            occ.line,
-            occ.column,
-            occ.match_role.as_str(),
-            occ.context,
-            suffix
-        );
-    }
+    print_occurrence_rows(&results.occurrences, false);
     print_suggested_next(results);
 }
 
 fn print_compact(results: &OccurrenceResults) {
+    print_file_scope(results);
     if results.total == 0 {
         print_no_exact_occurrences(results, "");
         return;
@@ -437,6 +884,21 @@ fn print_no_exact_occurrences(results: &OccurrenceResults, indent: &str) {
     println!(
         "{}no exact occurrences of '{}'; near-matches: {}",
         indent, results.query, symbols
+    );
+}
+
+fn print_file_scope(results: &OccurrenceResults) {
+    let Some(scope) = &results.file_scope else {
+        return;
+    };
+    let matches = if scope.matched_paths.is_empty() {
+        "none".to_string()
+    } else {
+        scope.matched_paths.join(", ")
+    };
+    println!(
+        "  file scope: requested='{}', status={}, resolved={}, indexed={}, matched={}",
+        scope.requested, scope.status, scope.resolved, scope.indexed, matches
     );
 }
 
@@ -478,18 +940,9 @@ fn print_literal_find_human(query: &str, literal: &OccurrenceResults, fuzzy: &[F
     if !literal.coverage_line.is_empty() {
         println!("  {}", literal.coverage_line);
     }
+    print_file_scope(literal);
     if literal.total == 0 {
-        if looks_like_regex {
-            // NOT a trustworthy absence: the query carries regex metacharacters,
-            // but `--literal` did an exact-string match and never evaluated it as
-            // a pattern. Printing "absence is trustworthy" here would be a FALSE
-            // CLEAN for a security/privacy audit.
-            println!("  (0 exact-string matches — NOT a trustworthy absence: the query contains");
-            println!("   regex metacharacters and `--literal` matches literally, so a pattern was");
-            println!("   never evaluated. For a regex search use a pattern-aware tool.)");
-        } else {
-            println!("  (not found — literal absence is trustworthy)");
-        }
+        print_zero_hit_absence(literal, AbsenceMode::Literal, looks_like_regex);
     } else {
         if looks_like_regex {
             println!(
@@ -499,31 +952,12 @@ fn print_literal_find_human(query: &str, literal: &OccurrenceResults, fuzzy: &[F
         print_file_rollup(literal);
         print_page(literal);
         print_role_summary(literal);
+        print_hit_shape(literal);
         print_file_context(literal);
         if literal.slim {
             println!("  (occurrence list suppressed — count_only/slim)");
         } else {
-            for occ in &literal.occurrences {
-                let mut suffix = String::new();
-                if let Some(definition) = &occ.resolved_definition {
-                    suffix.push_str(&format!("  => {}", definition.symbol_id));
-                }
-                if let Some(enclosing) = &occ.enclosing_symbol {
-                    suffix.push_str(&format!("  in {}", enclosing.symbol_id));
-                }
-                if occ.ignored {
-                    suffix.push_str("  [ignored: .loctignore]");
-                }
-                println!(
-                    "  {}:{}:{}  [{}]  {}{}",
-                    occ.file,
-                    occ.line,
-                    occ.column,
-                    occ.match_role.as_str(),
-                    occ.context,
-                    suffix
-                );
-            }
+            print_occurrence_rows(&literal.occurrences, true);
         }
     }
     print_suggested_next(literal);
@@ -593,6 +1027,21 @@ fn print_role_summary(results: &OccurrenceResults) {
     println!();
 }
 
+/// Print the hit-set shape (single_writer / read_only / …) when present.
+fn print_hit_shape(results: &OccurrenceResults) {
+    let Some(shape) = &results.hit_shape else {
+        return;
+    };
+    print!(
+        "  shape: {}  (defs={}, writes={}, reads={}; authority={})",
+        shape.label, shape.definitions, shape.writers, shape.readers, shape.authority
+    );
+    if let Some(note) = &shape.note {
+        print!(" — {note}");
+    }
+    println!();
+}
+
 /// Render per-file importer/consumer context — the literal hit's blast radius.
 fn print_file_context(results: &OccurrenceResults) {
     if results.file_context.is_empty() {
@@ -622,16 +1071,73 @@ fn print_file_context(results: &OccurrenceResults) {
 
 #[cfg(test)]
 mod tests {
-    use super::query_has_regex_metachars;
+    use super::{line_group_spans, more_cols_suffix, query_has_regex_metachars};
+
+    #[test]
+    fn banner_line_hits_collapse_into_one_row() {
+        // The 505-match sweep: an unanchored `=======` matched every 7th column
+        // of a decorative `# =========` banner, so ONE line produced 10 rows.
+        // Grouping renders it as one row plus an honest `+9 more` tail.
+        let banner_cols: Vec<usize> = (0..10).map(|i| 3 + i * 7).collect();
+        let keys: Vec<(&str, usize, String)> = banner_cols
+            .iter()
+            .map(|_| ("docs/banner.md", 5, String::new()))
+            .collect();
+
+        let spans = line_group_spans(&keys);
+        assert_eq!(spans, vec![(0, 10)], "one line must be one group");
+
+        let tail = more_cols_suffix(&banner_cols[1..]);
+        assert_eq!(tail, " (+9 more at cols 10,17,24,31,38,…)");
+    }
+
+    #[test]
+    fn line_group_spans_splits_on_line_file_and_detail_changes() {
+        // Different lines never merge…
+        let keys = [
+            ("a.rs", 1, String::new()),
+            ("a.rs", 1, String::new()),
+            ("a.rs", 2, String::new()),
+            ("b.rs", 2, String::new()),
+        ];
+        assert_eq!(line_group_spans(&keys), vec![(0, 2), (2, 1), (3, 1)]);
+
+        // …and neither do same-line hits whose trailing detail differs: a
+        // differing resolved definition is evidence, not noise.
+        let mixed = [
+            ("a.rs", 7, "  => mod::Alpha".to_string()),
+            ("a.rs", 7, "  => mod::Beta".to_string()),
+        ];
+        assert_eq!(line_group_spans(&mixed), vec![(0, 1), (1, 1)]);
+
+        let empty: [(&str, usize, String); 0] = [];
+        assert!(line_group_spans(&empty).is_empty());
+    }
+
+    #[test]
+    fn more_cols_suffix_reports_full_count_even_when_columns_are_elided() {
+        assert_eq!(more_cols_suffix(&[]), "");
+        assert_eq!(more_cols_suffix(&[12]), " (+1 more at cols 12)");
+        // Exactly the cap: every column named, no ellipsis.
+        assert_eq!(
+            more_cols_suffix(&[1, 2, 3, 4, 5]),
+            " (+5 more at cols 1,2,3,4,5)"
+        );
+        // Over the cap: count stays truthful, the list is what gets cut.
+        assert_eq!(
+            more_cols_suffix(&[1, 2, 3, 4, 5, 6, 7]),
+            " (+7 more at cols 1,2,3,4,5,…)"
+        );
+    }
 
     #[test]
     fn regex_metachars_flag_pattern_queries_but_not_plain_literals() {
-        // Regression for the 2026-06-21 loctree-feedback report: `--literal` must not
+        // Regression for the 2026-06-21 loctree-fail report: `--literal` must not
         // claim a "trustworthy absence" for a query it could only exact-match.
         // Pattern-shaped queries (the dangerous false-clean case) must flag true.
         for pattern in [
             r"100\.[0-9]+\.[0-9]+",
-            r"/home/[^/]+/",
+            r"/Users/[^/]+/",
             "foo|bar",
             "key.*path",
             "a+b",

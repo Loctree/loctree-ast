@@ -687,7 +687,7 @@ mod tests {
 
         for raw in ["0", "false", "FALSE", "False", "no", "NO", " 0 ", "false "] {
             // SAFETY: env mutation guarded by env_lock() for serial access.
-            unsafe { std::env::set_var(LOCT_OPEN_BROWSER_ENV, raw) };
+            crate::test_env::set_var(LOCT_OPEN_BROWSER_ENV, raw);
             assert!(
                 auto_open_disabled(),
                 "expected {raw:?} to disable browser auto-open"
@@ -697,7 +697,7 @@ mod tests {
         // Truthy / unrecognized values keep the default open behavior.
         for raw in ["1", "true", "yes", "on", "", "anything-else"] {
             // SAFETY: env mutation guarded by env_lock() for serial access.
-            unsafe { std::env::set_var(LOCT_OPEN_BROWSER_ENV, raw) };
+            crate::test_env::set_var(LOCT_OPEN_BROWSER_ENV, raw);
             assert!(
                 !auto_open_disabled(),
                 "expected {raw:?} to leave auto-open enabled"
@@ -705,7 +705,7 @@ mod tests {
         }
 
         // SAFETY: env mutation guarded by env_lock() for serial access.
-        unsafe { std::env::remove_var(LOCT_OPEN_BROWSER_ENV) };
+        crate::test_env::remove_var(LOCT_OPEN_BROWSER_ENV);
         assert!(
             !auto_open_disabled(),
             "unset env must preserve default (auto-open enabled)"
@@ -714,7 +714,7 @@ mod tests {
         // Restore prior value if any so neighbouring tests are unaffected.
         if let Some(prev) = prev {
             // SAFETY: env mutation guarded by env_lock() for serial access.
-            unsafe { std::env::set_var(LOCT_OPEN_BROWSER_ENV, prev) };
+            crate::test_env::set_var(LOCT_OPEN_BROWSER_ENV, prev);
         }
     }
 }

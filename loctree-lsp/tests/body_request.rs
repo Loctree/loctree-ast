@@ -4,7 +4,7 @@
 //! `loctree::body` engine, the optional `file` disambiguation filter, and
 //! the response-shape contract (byte-for-byte the `loct body --json` shape).
 //!
-//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by VetCoders ⓒ 2025-2026 VetCoders
+//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders ⓒ 2025-2026 Vetcoders
 
 use loctree::body::query_symbol_body;
 use loctree::snapshot::Snapshot;
@@ -143,6 +143,7 @@ fn response_serializes_to_loct_body_json_shape() {
         entry_keys,
         [
             "end_line",
+            "extent",
             "file",
             "language",
             "line_cap",
@@ -152,6 +153,6 @@ fn response_serializes_to_loct_body_json_shape() {
             "total_lines",
             "truncated",
         ],
-        "body must serialize the exact 9-field `loct body --json` shape"
+        "body must serialize the exact 10-field `loct body --json` shape"
     );
 }

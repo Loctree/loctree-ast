@@ -24,7 +24,7 @@ case "$FORMULA_NAME" in
   loct-mcp)
     CLASS_NAME="LoctMcp"
     DESCRIPTION="MCP server for loct structural analysis"
-    RELEASE_REPO="${MCP_RELEASE_REPO:-Loctree/loct-mcp}"
+    RELEASE_REPO="${MCP_RELEASE_REPO:-Loctree/loctree-mcp}"
     DARWIN_ARM_ASSET="loct-mcp-darwin-aarch64.tar.gz"
     DARWIN_INTEL_ASSET="loct-mcp-darwin-x86_64.tar.gz"
     LINUX_INTEL_ASSET="loct-mcp-linux-x86_64.tar.gz"

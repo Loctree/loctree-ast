@@ -55,7 +55,7 @@ fn context_pack_walks_all_six_cards() {
             "core",
             "structural",
             "runtime",
-            "memory",
+            "intent",
             "verification",
             "risk"
         ]
@@ -173,6 +173,16 @@ fn start_server(project: &Path) -> TestServer {
             "error",
         ])
         .env("LOCT_CACHE_DIR", project.join(".loctree-cache"))
+        // Fixtures live in TMPDIR, outside any git checkout; the scan guard
+        // (loctree snapshot.rs) documents this env var as its test-side counterpart.
+        .env("LOCT_ALLOW_NON_GIT_ROOT", "1")
+        // Point the bearer-token store at a path that cannot exist, so this
+        // test asserts the open-loopback path regardless of whether the host
+        // running it happens to have real tokens in the default store.
+        // Auth itself is covered by tests/http_auth.rs.
+        .env("LOCTREE_MCP_TOKEN_STORE", project.join("tokens.json"))
+        .env_remove("LOCTREE_MCP_AUTH_TOKEN")
+        .env_remove("LOCTREE_MCP_ALLOW_UNAUTHENTICATED")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())

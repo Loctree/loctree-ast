@@ -10,7 +10,7 @@
 //! - Events emitted but no test coverage (MEDIUM RISK)
 //! - Tested code that's not used in production (potential dead code)
 //!
-//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents ⓒ 2025-2026 Loctree Team
+//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI
 
 use super::classify::{ArtifactFenceStats, artifact_class, is_test_path};
 use crate::snapshot::{CommandBridge, EventBridge, Snapshot};
@@ -27,7 +27,7 @@ use std::collections::{HashMap, HashSet};
 /// "production usage that lacks a test" drowns real coverage gaps in noise.
 ///
 /// Source hak: 2026-05-18 Screenscribe HAK 3 (`loct coverage` mixes external
-/// imports as "missing exports"). See `~/internal-artifacts/loctree/loctree-feedback.md`.
+/// imports as "missing exports"). See `~/.vibecrafted/loctree/loctree-fail.md`.
 fn import_is_local_repo_symbol(import: &ImportEntry) -> bool {
     match import.resolution {
         ImportResolutionKind::Local => true,
@@ -353,7 +353,7 @@ fn find_export_gaps(
             // as production-used-but-untested generates ~30 false coverage
             // gaps for `from typing import Annotated`, `from rich.progress
             // import BarColumn`, etc. — drowning real gaps in noise.
-            // See loctree-feedback.md 2026-05-18 Screenscribe HAK 3.
+            // See loctree-fail.md 2026-05-18 Screenscribe HAK 3.
             if !import_is_local_repo_symbol(import) {
                 continue;
             }

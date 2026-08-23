@@ -6,7 +6,7 @@
 //! advertises (title rendered, command-string empty, position zero-
 //! based, count formatting matching the closure contract).
 //!
-//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by VetCoders ⓒ 2025-2026 VetCoders
+//! 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders ⓒ 2025-2026 Vetcoders
 
 use loctree::snapshot::{GraphEdge, Snapshot, project_cache_dir};
 use loctree::types::{ExportSymbol, FileAnalysis};

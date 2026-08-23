@@ -982,7 +982,7 @@ mod tests {
         }
     }
 
-    /// Regression for recurring loctree-feedback entries where `Cargo.toml`,
+    /// Regression for recurring loctree-fail entries where `Cargo.toml`,
     /// workflow YAML, and repo-local markdown plans were missing from the
     /// snapshot, forcing shell fallback for docs/manifest truth.
     #[test]

@@ -1,0 +1,10 @@
+# The self hosted runners are deprecated.
+# Without this file, actionlint flags every `runs-on: [self-hosted, ...]`
+# in the repo as an unknown label, which buries real findings under noise
+# and makes the linter useless as a gate. These were the Vetcoders
+# self-hosted runners. We no longer use them, but this file is kept as a
+# reference for the future.
+# self-hosted-runner:
+#  labels:
+#    - ops-linux
+#    - dragon-macos

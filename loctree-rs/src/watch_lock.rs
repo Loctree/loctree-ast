@@ -165,14 +165,13 @@ fn write_holder_info(file: &mut File, info: &HolderInfo) -> std::io::Result<()> 
 fn try_signal_term(_pid: u32) -> std::io::Result<()> {
     #[cfg(unix)]
     {
-        // Best-effort SIGTERM. We deliberately use libc directly rather than
-        // pulling in `nix`, because libc is already a transitive dep.
-        // SAFETY: `kill` is async-signal-safe and just sends a signal; pid is
-        // an integer we got from /proc /etc.
-        let rc = unsafe { libc::kill(_pid as libc::pid_t, libc::SIGTERM) };
-        if rc != 0 {
-            return Err(std::io::Error::last_os_error());
-        }
+        // Best-effort SIGTERM through nix's safe wrapper (nix is already in
+        // the dependency graph via rmcp, so this adds no new crate).
+        nix::sys::signal::kill(
+            nix::unistd::Pid::from_raw(_pid as i32),
+            nix::sys::signal::Signal::SIGTERM,
+        )
+        .map_err(std::io::Error::from)?;
         Ok(())
     }
     #[cfg(not(unix))]
