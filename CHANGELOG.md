@@ -6,6 +6,19 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ## [Unreleased]
 
+### Added
+
+- The combined release workflow now builds a full Windows x64 MSVC tarball
+  containing `loct.exe`, `loctree.exe`, `loctree-mcp.exe`,
+  `loctree-lsp.exe`, `aicx.exe`, and `aicx-mcp.exe`, plus the raw
+  `loctree-lsp-windows-x64.exe` editor runtime and checksum sidecar.
+
+### Changed
+
+- Combined bundles default to AICX 0.12.3 and derive addressability checks from
+  the same platform-to-asset mapping used for extraction. Release smoke now
+  starts all six full-bundle binaries and scans a committed Git fixture.
+
 ## [0.14.2] - 2026-08-13
 
 > Supersedes the untagged `0.14.1`. That version was bumped but never tagged or

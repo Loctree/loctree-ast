@@ -8,12 +8,13 @@ set -euo pipefail
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 SUITE_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 
-# Targets built when the caller passes no --target: macOS arm64 plus Linux x64
-# in both gnu and musl flavors.
+# Targets built when the caller passes no --target: macOS arm64, Linux x64 in
+# both gnu and musl flavors, and Windows x64 MSVC.
 DEFAULT_TARGETS=(
   "aarch64-apple-darwin"
   "x86_64-unknown-linux-gnu"
   "x86_64-unknown-linux-musl"
+  "x86_64-pc-windows-msvc"
 )
 # Binaries a bundle must contain: the Loctree set ships in every flavor, the
 # AICX set only in full bundles.
@@ -22,7 +23,7 @@ AICX_RELEASE_BINARIES=(aicx aicx-mcp)
 # Canonical AICX release coordinates used in release mode; --aicx-repo /
 # --aicx-version override them, --aicx-root bypasses the download entirely.
 AICX_REPO_DEFAULT="Loctree/aicx"
-AICX_VERSION_DEFAULT="0.7.3"
+AICX_VERSION_DEFAULT="0.12.3"
 
 # Print the full CLI contract on --help or when no version argument is given.
 usage() {
@@ -33,13 +34,16 @@ Usage:
 Options:
   --aicx-root <path>       Developer override: build AICX from source instead
                            of the canonical GitHub release asset.
-  --aicx-version <version> AICX release version. Default: 0.7.3.
+  --aicx-version <version> AICX release version. Default: 0.12.3.
   --aicx-tag <tag>         AICX release tag. Default: v<aicx-version>.
   --aicx-repo <owner/repo> AICX GitHub repo. Default: Loctree/aicx.
   --loct-io-root <path>    Root containing scripts/sync_releases.py.
                            Defaults to LOCT_IO_ROOT or ../loct-io.
   --target <triple>        Build one target. Repeat to build multiple.
-                           Default: mac arm64, Linux x64 gnu, and Linux x64 musl.
+                           Default: mac arm64, Linux x64 gnu/musl, Windows x64.
+  --print-aicx-asset <triple>
+                           Print the canonical AICX asset name and exit. Used
+                           by CI so addressability checks share this mapping.
   --bundle-flavor <name>   auto, full, or core. Default: auto.
                            auto builds full bundles except musl, which is core.
   --bundle-suffix <text>   Override the flavor-derived artifact-name suffix
@@ -61,7 +65,7 @@ Options:
   -h, --help               Show this help.
 
 Default release mode downloads AICX from:
-  https://github.com/Loctree/aicx/releases/tag/v0.7.3
+  https://github.com/Loctree/aicx/releases/tag/v0.12.3
 
 Developer override mode uses:
   make -C <aicx-root> release-binaries STAGING_DIR=<staging> TARGET=<triple>
@@ -136,6 +140,7 @@ MAKE_CURRENT=0
 SYNC=1
 DRY_RUN=0
 ALLOW_UNSIGNED_MACOS=0
+PRINT_AICX_ASSET_TARGET=""
 TARGETS=()
 
 while [[ $# -gt 0 ]]; do
@@ -152,6 +157,8 @@ while [[ $# -gt 0 ]]; do
       LOCT_IO_ROOT="${2:-}"; shift 2 ;;
     --target)
       TARGETS+=("${2:-}"); shift 2 ;;
+    --print-aicx-asset)
+      PRINT_AICX_ASSET_TARGET="${2:-}"; shift 2 ;;
     --dist-dir)
       DIST_DIR="${2:-}"; shift 2 ;;
     --work-dir)
@@ -343,6 +350,16 @@ write_bundle_checksums() {
   done
 }
 
+# Return the executable suffix used by a target. Keeping this in the bundle
+# owner prevents Windows staging, checksums, README and CI from disagreeing.
+binary_suffix_for_target() {
+  local target="$1"
+  case "$target" in
+    *-windows-*) printf '.exe\n' ;;
+    *) printf '\n' ;;
+  esac
+}
+
 # Map a target triple to the AICX release asset that carries its binaries. musl
 # and unmapped triples die here rather than silently producing a bundle that
 # claims AICX but has none.
@@ -350,15 +367,33 @@ aicx_asset_name_for_target() {
   local target="$1"
   case "$target" in
     aarch64-apple-darwin)
-      printf 'aicx-%s-aarch64-apple-darwin-slim-unsigned.tar.gz\n' "$AICX_TAG" ;;
+      printf 'aicx-%s-aarch64-apple-darwin-slim.zip\n' "$AICX_TAG" ;;
     x86_64-unknown-linux-gnu)
-      printf 'aicx-%s-x86_64-unknown-linux-gnu-slim-unsigned.tar.gz\n' "$AICX_TAG" ;;
-    aarch64-unknown-linux-gnu)
-      printf 'aicx-%s-aarch64-unknown-linux-gnu-slim-unsigned.tar.gz\n' "$AICX_TAG" ;;
+      printf 'aicx-%s-x86_64-linux-gnu-slim.tar.gz\n' "$AICX_TAG" ;;
+    x86_64-pc-windows-msvc)
+      printf 'aicx-%s-x86_64-pc-windows-msvc-slim.zip\n' "$AICX_TAG" ;;
     *-musl)
       die "AICX has no static musl release asset for $target; build a core bundle instead" ;;
     *)
       die "no AICX release asset mapping for target: $target" ;;
+  esac
+}
+
+if [[ -n "$PRINT_AICX_ASSET_TARGET" ]]; then
+  aicx_asset_name_for_target "$PRINT_AICX_ASSET_TARGET"
+  exit 0
+fi
+
+# Extract the canonical AICX archive format for the selected platform.
+extract_aicx_archive() {
+  local archive="$1"
+  local output="$2"
+  case "$archive" in
+    *.tar.gz) tar -xzf "$archive" -C "$output" ;;
+    *.zip)
+      command -v unzip >/dev/null 2>&1 || die "unzip is required to extract $archive"
+      unzip -q "$archive" -d "$output" ;;
+    *) die "unsupported AICX release archive: $archive" ;;
   esac
 }
 
@@ -408,7 +443,7 @@ stage_aicx_from_release() {
   local staging="$2"
   local scratch="$3"
   local codesign_mode="$4"
-  local asset archive sidecar expected actual extract_dir found
+  local asset archive sidecar expected actual extract_dir found suffix bin file
 
   asset=$(aicx_asset_name_for_target "$target")
   archive="$scratch/$asset"
@@ -427,17 +462,19 @@ stage_aicx_from_release() {
   [[ "$actual" == "$expected" ]] || die "AICX sha256 mismatch for $asset: expected $expected, got $actual"
   echo "  AICX sha256 ok: $actual"
 
-  tar -xzf "$archive" -C "$extract_dir"
+  extract_aicx_archive "$archive" "$extract_dir"
   mkdir -p "$staging/bin" "$staging/components"
+  suffix=$(binary_suffix_for_target "$target")
   for bin in aicx aicx-mcp; do
+    file="$bin$suffix"
     found=""
     while IFS= read -r candidate; do
       found="$candidate"
       break
-    done < <(find "$extract_dir" -type f -name "$bin")
-    [[ -n "$found" ]] || die "AICX release asset missing binary: $bin"
-    install -m 0755 "$found" "$staging/bin/$bin"
-    printf '  %s -> %s\n' "$bin" "$staging/bin/$bin"
+    done < <(find "$extract_dir" -type f -name "$file")
+    [[ -n "$found" ]] || die "AICX release asset missing binary: $file"
+    install -m 0755 "$found" "$staging/bin/$file"
+    printf '  %s -> %s\n' "$file" "$staging/bin/$file"
   done
   case "$target" in
     *apple-darwin)
@@ -473,10 +510,16 @@ version = sys.argv[2]
 repo = sys.argv[3]
 tag = sys.argv[4]
 target = sys.argv[5]
-reason = (
-    "AICX does not publish a static musl release asset; this core bundle keeps "
-    "Loctree musl-static and leaves AICX memory features as an optional runtime dependency."
-)
+if target.endswith("-musl"):
+    reason = (
+        "AICX does not publish a static musl release asset; this core bundle keeps "
+        "Loctree musl-static and leaves AICX memory features as an optional runtime dependency."
+    )
+else:
+    reason = (
+        f"AICX does not publish a release asset for {target}; this core bundle leaves "
+        "AICX memory features as an optional runtime dependency."
+    )
 data = {
     "source": repo,
     "version": version,
@@ -517,15 +560,17 @@ write_bundle_readme() {
   local output="$1"
   local target="$2"
   local flavor="$3"
+  local suffix
+  suffix=$(binary_suffix_for_target "$target")
 
   {
     printf "# Loctree %s bundle\n\n" "$flavor"
     printf -- "- Target: \`%s\`\n" "$target"
     printf -- "- Flavor: \`%s\`\n\n" "$flavor"
     printf "## Included binaries\n\n"
-    printf -- "- \`loct\`\n- \`loctree\`\n- \`loctree-mcp\`\n- \`loctree-lsp\`\n"
+    printf -- "- \`loct%s\`\n- \`loctree%s\`\n- \`loctree-mcp%s\`\n- \`loctree-lsp%s\`\n" "$suffix" "$suffix" "$suffix" "$suffix"
     if [[ "$flavor" == "full" ]]; then
-      printf -- "- \`aicx\`\n- \`aicx-mcp\`\n\n"
+      printf -- "- \`aicx%s\`\n- \`aicx-mcp%s\`\n\n" "$suffix" "$suffix"
       printf "AICX is bundled from \`%s\` release \`%s\`.\n" "$AICX_REPO" "$AICX_TAG"
     else
       printf "\n## AICX / memory features\n\n"
@@ -543,9 +588,15 @@ for target in "${TARGETS[@]}"; do
   staging="$target_work/$bundle_name"
   tarball="$DIST_DIR/$bundle_name.tar.gz"
   components_json="$staging/components.json"
-  bundle_binaries=("${LOCTREE_RELEASE_BINARIES[@]}")
+  binary_suffix=$(binary_suffix_for_target "$target")
+  bundle_binaries=()
+  for bin in "${LOCTREE_RELEASE_BINARIES[@]}"; do
+    bundle_binaries+=("$bin$binary_suffix")
+  done
   if [[ "$bundle_flavor" == "full" ]]; then
-    bundle_binaries+=("${AICX_RELEASE_BINARIES[@]}")
+    for bin in "${AICX_RELEASE_BINARIES[@]}"; do
+      bundle_binaries+=("$bin$binary_suffix")
+    done
   elif [[ -n "$AICX_ROOT" ]]; then
     die "--bundle-flavor core cannot be combined with --aicx-root; core bundles do not include AICX"
   fi

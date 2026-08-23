@@ -23,12 +23,12 @@ not "cargo publish the crate and hope for the best."
 The binary-first Loctree suite bundle is built by:
 
 ```bash
-make release-bundles VERSION=0.13.0 AICX_VERSION=<released-aicx-version>
+make release-bundles VERSION=0.14.3 AICX_VERSION=0.12.3
 ```
 
 The same path is used by the GitHub Actions workflow
 `Build Combined Release Bundles` (`.github/workflows/release-bundles.yml`) on
-self-hosted macOS ARM64 and Linux x64 runners.
+GitHub-hosted macOS ARM64, Linux x64, and Windows x64 runners.
 
 Default tarball output:
 
@@ -43,12 +43,21 @@ dist/release-bundles/<version>/
 - loctree-<version>-x86_64-unknown-linux-musl-core.tar.gz
 - loctree-<version>-x86_64-unknown-linux-musl-core.tar.gz.sha256
 - loctree-<version>-x86_64-unknown-linux-musl-core.tar.gz.sig
+- loctree-<version>-x86_64-pc-windows-msvc.tar.gz
+- loctree-<version>-x86_64-pc-windows-msvc.tar.gz.sha256
+- loctree-<version>-x86_64-pc-windows-msvc.tar.gz.sig
+- loctree-lsp-windows-x64.exe
+- loctree-lsp-windows-x64.exe.sha256
 ```
 
 The `.sig` files are emitted when `LOCTREE_GPG_KEY_ID` or `--gpg-key` is set.
 Full target tarballs carry `components.json`, `CHECKSUMS.sha256`, `README.md`,
 and the six suite binaries: `loct`, `loctree`, `loctree-mcp`, `loctree-lsp`,
 `aicx`, `aicx-mcp`.
+
+Windows keeps the same combined `.tar.gz` archive naming as existing consumers,
+with `.exe` on every staged binary. AICX release inputs are extracted from the
+platform-native `.zip` on macOS/Windows and `.tar.gz` on Linux.
 
 The musl tarball is deliberately named `-core`. It carries static Loctree
 binaries plus `components.json`, `CHECKSUMS.sha256`, and `README.md`, but it

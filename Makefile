@@ -52,8 +52,9 @@ release-binaries: setup-protoc
 	$(CARGO_BUILD) --locked --release --target "$(BUILD_TARGET)" --bin loct --bin loctree --bin loctree-mcp --bin loctree-lsp
 	@mkdir -p "$(STAGING_DIR)/bin" "$(STAGING_DIR)/components"
 	@for bin in $(RELEASE_BINARIES); do \
-		install -m 0755 "target/$(TARGET)/release/$$bin" "$(STAGING_DIR)/bin/$$bin"; \
-		printf '  %s -> %s\n' "$$bin" "$(STAGING_DIR)/bin/$$bin"; \
+		file="$$bin$(RELEASE_BINARY_SUFFIX)"; \
+		install -m 0755 "target/$(TARGET)/release/$$file" "$(STAGING_DIR)/bin/$$file"; \
+		printf '  %s -> %s\n' "$$file" "$(STAGING_DIR)/bin/$$file"; \
 	done
 	@case "$(TARGET)" in \
 		*apple-darwin) \
@@ -72,7 +73,7 @@ release-binaries: setup-protoc
 
 release-bundles:
 	@if [ -z "$(VERSION)" ]; then \
-		echo "VERSION is required. Usage: make release-bundles VERSION=0.10.0 [AICX_VERSION=0.7.3] [BUNDLE_TARGET=x86_64-unknown-linux-gnu|x86_64-unknown-linux-musl]" >&2; \
+		echo "VERSION is required. Usage: make release-bundles VERSION=0.14.3 [AICX_VERSION=0.12.3] [BUNDLE_TARGET=aarch64-apple-darwin|x86_64-unknown-linux-gnu|x86_64-pc-windows-msvc]" >&2; \
 		exit 1; \
 	fi
 	@set --; \
@@ -94,6 +95,7 @@ BUNDLE_TARGET ?=
 CODESIGN ?= auto
 CARGO_BUILD ?= cargo build
 RELEASE_BINARIES := loct loctree loctree-mcp loctree-lsp
+RELEASE_BINARY_SUFFIX := $(if $(findstring -windows-,$(TARGET)),.exe,)
 
 # Glibc (gnu) Linux binaries must run on OLDER distros (ubuntu-22.04 = glibc 2.35,
 # debian-12 = 2.36), not just the build host (ops-linux = glibc 2.39, which made
@@ -436,7 +438,8 @@ help:
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'install' '- Install loct, loctree & loctree-mcp'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'install-all' '- Install loct, loctree, loctree-mcp & loctree-lsp'
 	@printf '%s\n' '  make release-bundles VERSION=X - Build combined Loctree+AICX release tarballs'
-	@printf '%s\n' '      Optional: AICX_VERSION=0.7.3 BUNDLE_TARGET=x86_64-unknown-linux-gnu'
+	@printf '%s\n' '      Optional: AICX_VERSION=0.12.3 BUNDLE_TARGET=x86_64-unknown-linux-gnu'
+	@printf '%s\n' '      Windows: BUNDLE_TARGET=x86_64-pc-windows-msvc builds the full six-binary .tar.gz bundle'
 	@printf '%s\n' '      Musl: BUNDLE_TARGET=x86_64-unknown-linux-musl builds a -core tarball without bundled AICX'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test' '- Run all tests'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'check' '- Quick type check (no clippy)'

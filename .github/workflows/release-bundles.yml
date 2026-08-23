@@ -10,7 +10,7 @@ on:
       aicx_version:
         description: "AICX release version to include"
         required: false
-        default: "0.7.3"
+        default: "0.12.3"
         type: string
   push:
     tags:
@@ -52,7 +52,7 @@ jobs:
           else
             VERSION="${REF_NAME#v}"
           fi
-          AICX_VERSION="${INPUT_AICX_VERSION:-0.7.3}"
+          AICX_VERSION="${INPUT_AICX_VERSION:-0.12.3}"
 
           if [[ ! "$VERSION" =~ ^[0-9]+[.][0-9]+[.][0-9]+$ ]]; then
             echo "version must look like x.y.z" >&2
@@ -84,17 +84,30 @@ jobs:
             exit 1
           fi
 
+      - name: Test release bundle contracts
+        run: |
+          set -euo pipefail
+          node distribution/tests/npm_wrapper_test.js
+          bash distribution/tests/windows_bundle_test.sh
+
       - name: Check AICX release assets are addressable
         env:
           AICX_VERSION: ${{ steps.meta.outputs.aicx_version }}
         run: |
           set -euo pipefail
           base_url="https://github.com/Loctree/aicx/releases/download/v${AICX_VERSION}"
-          assets=(
-            "aicx-v${AICX_VERSION}-aarch64-apple-darwin-slim-unsigned.tar.gz"
-            "aicx-v${AICX_VERSION}-x86_64-unknown-linux-gnu-slim-unsigned.tar.gz"
+          targets=(
+            aarch64-apple-darwin
+            x86_64-unknown-linux-gnu
+            x86_64-pc-windows-msvc
           )
-          for asset in "${assets[@]}"; do
+          for target in "${targets[@]}"; do
+            asset=$(bash distribution/build-bundle.sh "$AICX_VERSION" \
+              --aicx-version "$AICX_VERSION" \
+              --no-sync \
+              --dry-run \
+              --print-aicx-asset "$target")
+            echo "checking $asset"
             curl -fsLI "${base_url}/${asset}" >/dev/null
             curl -fsLI "${base_url}/${asset}.sha256" >/dev/null
           done
@@ -140,6 +153,14 @@ jobs:
             bundle_flavor: core
             artifact_suffix: "-core"
             lsp_asset: ""
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            bundle_flavor: full
+            artifact_suffix: ""
+            lsp_asset: loctree-lsp-windows-x64.exe
+    defaults:
+      run:
+        shell: bash
     steps:
       - name: Checkout loctree-suite
         # actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -186,6 +207,15 @@ jobs:
               echo "$RUNNER_TEMP/zig" >> "$GITHUB_PATH"
             fi
           fi
+
+      - name: Install Windows build dependencies
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not (Get-Command protoc -ErrorAction SilentlyContinue)) {
+            choco install protoc --yes --no-progress
+          }
+          protoc --version
 
       - name: Import macOS signing certificate if provided
         if: runner.os == 'macOS'
@@ -252,19 +282,23 @@ jobs:
           set -euo pipefail
           bundle="dist/release-bundles/${VERSION}/loctree-${VERSION}-${TARGET}${ARTIFACT_SUFFIX}.tar.gz"
           root="loctree-${VERSION}-${TARGET}${ARTIFACT_SUFFIX}"
+          suffix=""
+          if [[ "$TARGET" == *-windows-* ]]; then
+            suffix=".exe"
+          fi
           tar -tzf "$bundle" > "$RUNNER_TEMP/bundle-files.txt"
           # loctree-suite native binaries are mandatory on every target.
           REQUIRED=(
-            "$root/bin/loct"
-            "$root/bin/loctree"
-            "$root/bin/loctree-mcp"
-            "$root/bin/loctree-lsp"
+            "$root/bin/loct${suffix}"
+            "$root/bin/loctree${suffix}"
+            "$root/bin/loctree-mcp${suffix}"
+            "$root/bin/loctree-lsp${suffix}"
             "$root/components.json"
             "$root/CHECKSUMS.sha256"
             "$root/README.md"
           )
           if [[ "$BUNDLE_FLAVOR" == "full" ]]; then
-            REQUIRED+=("$root/bin/aicx" "$root/bin/aicx-mcp")
+            REQUIRED+=("$root/bin/aicx${suffix}" "$root/bin/aicx-mcp${suffix}")
           else
             REQUIRED+=("$root/components/loctree-aicx.json")
             FORBIDDEN=("$root/bin/aicx" "$root/bin/aicx-mcp")
@@ -293,6 +327,30 @@ jobs:
             grep -F '"optional_runtime_dependency": true' "$verify_dir/$root/components/loctree-aicx.json" >/dev/null
           fi
 
+      - name: Smoke all bundled versions and scan a committed fixture
+        if: matrix.bundle_flavor == 'full'
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+          TARGET: ${{ matrix.target }}
+          ARTIFACT_SUFFIX: ${{ matrix.artifact_suffix }}
+        run: |
+          set -euo pipefail
+          bundle="dist/release-bundles/${VERSION}/loctree-${VERSION}-${TARGET}${ARTIFACT_SUFFIX}.tar.gz"
+          root="loctree-${VERSION}-${TARGET}${ARTIFACT_SUFFIX}"
+          extract_dir="$RUNNER_TEMP/version-smoke"
+          suffix=""
+          if [[ "$TARGET" == *-windows-* ]]; then
+            suffix=".exe"
+          fi
+          rm -rf "$extract_dir"
+          mkdir -p "$extract_dir"
+          tar -xzf "$bundle" -C "$extract_dir"
+          for bin in loct loctree loctree-mcp loctree-lsp aicx aicx-mcp; do
+            "$extract_dir/$root/bin/${bin}${suffix}" --version
+          done
+          "$extract_dir/$root/bin/loct${suffix}" scan \
+            "$PWD/distribution/tests/fixtures/release-smoke"
+
       # Raw per-platform loctree-lsp asset for the JetBrains verified-download
       # path. It is EXTRACTED from the bundle that was just built, verified and
       # signed — not rebuilt — so the binary JetBrains downloads is byte-identical
@@ -314,8 +372,12 @@ jobs:
           work="$RUNNER_TEMP/lsp-asset"
           rm -rf "$work"
           mkdir -p "$work"
-          tar -xzf "$bundle" -C "$work" "$root/bin/loctree-lsp"
-          install -m 0755 "$work/$root/bin/loctree-lsp" "${dist}/${LSP_ASSET}"
+          suffix=""
+          if [[ "$TARGET" == *-windows-* ]]; then
+            suffix=".exe"
+          fi
+          tar -xzf "$bundle" -C "$work" "$root/bin/loctree-lsp${suffix}"
+          install -m 0755 "$work/$root/bin/loctree-lsp${suffix}" "${dist}/${LSP_ASSET}"
           # Sidecar shape is "<sha256>  <name>". Every consumer reads whitespace
           # field 1 of the first line: fetch-release-lsp.js expectedSha(),
           # client.ts expectedShaFromSidecar(), JetBrains CachedBinaryVerifier
@@ -507,6 +569,7 @@ jobs:
             "loctree-${VERSION}-x86_64-apple-darwin.tar.gz"
             "loctree-${VERSION}-x86_64-unknown-linux-gnu.tar.gz"
             "loctree-${VERSION}-x86_64-unknown-linux-musl-core.tar.gz"
+            "loctree-${VERSION}-x86_64-pc-windows-msvc.tar.gz"
           )
           # Raw per-platform runtimes. These are PlatformAsset.assetName()'s
           # return values, and the lsp_asset column of vscode-extension.yml.
@@ -514,6 +577,7 @@ jobs:
             loctree-lsp-darwin-arm64
             loctree-lsp-darwin-x64
             loctree-lsp-linux-x64
+            loctree-lsp-windows-x64.exe
           )
 
           missing=0
@@ -534,8 +598,12 @@ jobs:
           # file name. Assert it rather than trusting the bundle build.
           for asset in "${ARCHIVES[@]}"; do
             root="${asset%.tar.gz}"
-            if ! tar -tzf "$asset" | grep -Fxq "$root/bin/loctree-lsp"; then
-              echo "::error::$asset does not contain $root/bin/loctree-lsp"
+            member="$root/bin/loctree-lsp"
+            if [[ "$asset" == *-windows-msvc.tar.gz ]]; then
+              member="${member}.exe"
+            fi
+            if ! tar -tzf "$asset" | grep -Fxq "$member"; then
+              echo "::error::$asset does not contain $member"
               exit 1
             fi
           done
@@ -557,15 +625,20 @@ jobs:
             [loctree-lsp-darwin-arm64]="loctree-${VERSION}-aarch64-apple-darwin"
             [loctree-lsp-darwin-x64]="loctree-${VERSION}-x86_64-apple-darwin"
             [loctree-lsp-linux-x64]="loctree-${VERSION}-x86_64-unknown-linux-gnu"
+            [loctree-lsp-windows-x64.exe]="loctree-${VERSION}-x86_64-pc-windows-msvc"
           )
           work="$RUNNER_TEMP/archive-lsp"
           for raw in "${!PAIRS[@]}"; do
             root="${PAIRS[$raw]}"
             rm -rf "$work"
             mkdir -p "$work"
-            tar -xzf "$root.tar.gz" -C "$work" "$root/bin/loctree-lsp"
+            member="$root/bin/loctree-lsp"
+            if [[ "$raw" == *.exe ]]; then
+              member="${member}.exe"
+            fi
+            tar -xzf "$root.tar.gz" -C "$work" "$member"
             a="$(sha256sum "$raw" | awk '{print $1}')"
-            b="$(sha256sum "$work/$root/bin/loctree-lsp" | awk '{print $1}')"
+            b="$(sha256sum "$work/$member" | awk '{print $1}')"
             if [[ "$a" != "$b" ]]; then
               echo "::error::$raw differs from $root/bin/loctree-lsp ($a != $b)"
               exit 1
@@ -597,8 +670,9 @@ jobs:
           cat > "$notes" <<EOF
           Loctree $VERSION release artifacts.
 
-          Combined suite bundles (loct, loctree, loctree-mcp, loctree-lsp) plus the raw
-          per-platform loctree-lsp binaries consumed by the VS Code and JetBrains plugins.
+          Combined Loctree + AICX suite bundles for macOS arm64, Linux GNU and Windows
+          x64, core bundles for macOS x64 and Linux musl, plus the raw per-platform
+          loctree-lsp binaries consumed by the VS Code and JetBrains plugins.
 
           Verify with 'sha256sum -c SHA256SUMS' or the per-asset '.sha256' sidecars.
 

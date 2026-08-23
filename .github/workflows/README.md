@@ -9,7 +9,7 @@ Loctree monorepo.
 
 | Workflow | Trigger | Purpose | Status |
 |----------|---------|---------|--------|
-| **release-bundles.yml** | Manual dispatch / tag push (`v*`) | Build full Loctree + AICX tarballs and the musl Loctree core tarball through `distribution/build-bundle.sh` on GitHub-hosted macOS ARM64 and Linux X64 runners | ✅ Active |
+| **release-bundles.yml** | Manual dispatch / tag push (`v*`) | Build combined Loctree + AICX tarballs for macOS ARM64, Linux X64 GNU, and Windows X64 MSVC, plus core tarballs for macOS X64 and Linux musl | ✅ Active |
 | **publish.yml** | **Manual dispatch** (`workflow_dispatch`, input `tag`) | Publish crates, build binaries, push active-line assets into thin repos, publish the runtime wrapper as `loctree` and `@loctree/loctree` via npm trusted publishing, then create the monorepo release | ✅ Active |
 | **homebrew-release.yml** | Monorepo release published / manual dispatch | Render formulas and sync active-line formulas into `Loctree/homebrew-cli` + `Loctree/homebrew-mcp` | ✅ Active |
 
@@ -36,6 +36,8 @@ User-facing binary distribution is split into thin repos:
 
 - Combined suite tarballs: `dist/release-bundles/<version>/loctree-<version>-<target>.tar.gz`
 - Musl core tarball: `dist/release-bundles/<version>/loctree-<version>-x86_64-unknown-linux-musl-core.tar.gz`
+- Windows full tarball: `dist/release-bundles/<version>/loctree-<version>-x86_64-pc-windows-msvc.tar.gz`
+- Windows raw LSP: `dist/release-bundles/<version>/loctree-lsp-windows-x64.exe`
 - CLI assets: `Loctree/loct`
 - MCP assets: `Loctree/loctree-mcp`
 - Homebrew tap for CLI: `Loctree/homebrew-cli`
