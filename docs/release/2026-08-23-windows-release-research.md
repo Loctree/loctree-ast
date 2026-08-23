@@ -52,16 +52,47 @@ so editor and CLI distribution cannot drift by bytes.
   merged as `8aac34c`.
 - The public Loctree overlay was missing the entire JetBrains plugin even
   though Make, release docs, and version assertions treated it as shipped.
-  The plugin source is restored from `loctree-suite/develop`, and Windows x64
-  now resolves the raw `.exe` release asset with the existing fail-closed
-  checksum verifier.
+  PR #69 restores the complete VS Code, JetBrains, and Neovim source surface
+  from `loctree-suite/develop`. JetBrains Windows x64 now resolves the raw
+  `.exe` release asset with the existing fail-closed checksum verifier. Its
+  76 tests and plugin build pass; the VS Code typecheck and compile pass.
+- The first exact-main AICX packaging run (`32645968371`) passed Cargo, Linux,
+  and macOS, but Windows stopped in release-channel validation before bundle
+  construction. Native Windows Python emitted CRLF; Bash command substitution
+  retained the carriage return on the first two lines of the optional-package
+  stream, so two visibly identical `0.12.3` strings compared unequal. AICX PR
+  #56 normalizes that transport boundary and adds a self-test which forces
+  Python CRLF output. The full Windows bundle remains unproven until the
+  repaired exact-main matrix reaches its build and npm dry-run steps.
+- `make version VERSION=0.14.3` synchronized Cargo, npm, JetBrains, VS Code,
+  and installer surfaces. Its first test pass was invalidated by an operator
+  mistake: `GIT_AUTHOR_NAME=codex` was exported to the whole process and
+  overrode four Git fixture identities. Re-running `cargo test --workspace`
+  without that environment produced a clean result, including all 1,965 core
+  tests and doctests. Authorship was scoped only to the final commit.
+- Semgrep emitted the VS Code version probe as a formally suppressed SARIF
+  result: the executable is reduced to a canonical file or the exact platform
+  binary name, argv is fixed to `--version`, and no shell is used. GitHub still
+  opened the suppressed record as a blocking code-scanning alert. PR #69 now
+  filters only SARIF results carrying formal suppressions before upload; the
+  local workflow-equivalent sample changed from 16 records to 15 while all 15
+  unsuppressed findings remained.
 
 ## Privacy gate
 
 `vc-deprivatize` is required before every public merge. The Windows bundle
-change introduced no private data. The restored JetBrains directory has no
-CRITICAL or HIGH findings; its two REVIEW findings are the public product
-support address and a deterministic test timestamp, both explicitly retained.
+change introduced no private data. The restored complete editor source and
+the isolated 0.14.3 release diff both pass verification. Their REVIEW findings
+are the public product support address, the Marketplace publisher, and a
+deterministic test timestamp; all are explicitly retained in the central
+decision ledger.
+
+The full public repository does not yet pass the same gate: it contains an
+inherited baseline of 560 unambiguous findings, concentrated in historical
+BACKLOG and CHANGELOG material. This release does not claim that baseline is
+clean, and it does not mix a broad historical rewrite into the Windows release
+cut. The changed release surface is clean; the repository-wide cleanup remains
+a separately tracked public hygiene obligation.
 
 A separate `loctree-com` branch was rejected from the release path even though
 its CI was green: compared with `origin/main`, it added raw conversation
@@ -74,8 +105,8 @@ narrow clean-main change after release assets exist.
 
 1. Green AICX same-SHA packaging gate and signed 0.12.3 assets on macOS arm64,
    Linux x64 GNU, and Windows x64 MSVC.
-2. Clean Loctree 0.14.3 version bump through the repository's own synchronized
-   version contract.
+2. Merge Loctree PR #69 after all public checks are green, then verify the
+   merged `main` is exactly the commit used for the tag.
 3. Green tag-driven Loctree bundles, Windows smoke, npm cold installs, and
    checksum/signature verification.
 4. Public installer and release registry advancement through a narrow
