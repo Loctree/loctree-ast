@@ -46,15 +46,19 @@ Provenance attestation is produced automatically, and requires the publishing
 repository to be public.
 
 > **Bootstrap caveat.** A trusted publisher can only be configured on a package
-> that already exists. The first 0.14.2 publish introduces six not-yet-existing
-> names (`@loctree/loctree`, four `@loctree/loctree-*` platform packages, and
-> the first Gen3 version of bare `loctree`), so that first publish runs with a
-> granular npm token; configure trusted publishers for all six immediately
-> after, then retire the token. This ordering is deliberate, not a workaround.
+> that already exists. The first Gen3 publish introduces five new scoped names
+> (`@loctree/loctree` plus four `@loctree/loctree-*` platform packages) and the
+> first Gen3 version of the existing bare `loctree`, so that publish runs with a
+> granular npm token by dispatching `publish.yml` with `npm_bootstrap=true`.
+> The workflow verifies that credential before its npm publish job, retains
+> OIDC permissions so provenance attestations are still emitted, and skips any
+> exact version already published if a partial run is retried. Configure trusted
+> publishers for all six package identities immediately after, then dispatch future releases with
+> `npm_bootstrap=false`. This ordering is deliberate, not a workaround.
 
-> **Registry reality (2026-08-20).** The live Gen3 package is
+> **Registry reality (2026-08-23).** The live Gen3 package is
 > `@loctree/loct@0.13.1` under the legacy scoped name; `@loctree/loctree` does
-> not exist on the registry yet and first ships at 0.14.2. Bare `loctree` still
+> not exist on the registry yet and first ships at 0.14.3. Bare `loctree` still
 > resolves the deprecated 0.8.x line (deprecated 2026-08-20). The npm runtime
 > package is a separate distribution track from crates.io. crates.io publishes
 > `loctree` and the legacy-named `loctree-mcp`; `loctree-lsp` remains an

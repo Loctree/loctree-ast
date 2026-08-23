@@ -7,6 +7,11 @@ on:
         description: "Legacy thin-repo/crates release tag (vX.Y.Z)"
         required: true
         type: string
+      npm_bootstrap:
+        description: "Use NPM_TOKEN for the first publish of new Gen3 package names"
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -63,6 +68,36 @@ jobs:
             echo "distribution/npm version does not match tag: $NPM_VERSION != $TAG_VERSION" >&2
             exit 1
           fi
+
+  verify-npm-bootstrap:
+    name: Verify npm authentication mode
+    needs: verify-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Test idempotent npm publish helper
+        run: node --test distribution/npm/publish-if-missing.test.mjs
+
+      - name: Verify bootstrap token before expensive npm packaging
+        if: inputs.npm_bootstrap
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          npm install -g npm@latest
+          npm whoami
+
+      - name: Confirm trusted-publishing mode
+        if: ${{ !inputs.npm_bootstrap }}
+        run: echo "npm publish will use the workflow OIDC identity"
 
   publish-crates:
     name: Publish Rust Crates
@@ -842,13 +877,12 @@ jobs:
       - build-mcp-macos-arm64
       - build-mcp-macos-x86_64
       - build-mcp-windows
+      - verify-npm-bootstrap
     runs-on: ubuntu-latest
-    # Trusted publishing (OIDC). npm mints a short-lived credential from this
-    # job's identity instead of a long-lived NPM_TOKEN, so there is no secret to
-    # leak and no publisher IP to allowlist — which is what blocked publishing
-    # once CI moved off the self-hosted runner. Requires a trusted publisher
-    # configured on npmjs.com for every package this job pushes, pointing at
-    # this repository and this workflow filename.
+    # Steady state uses trusted publishing (OIDC). The explicit bootstrap input
+    # temporarily supplies NPM_TOKEN only to create names that do not yet exist;
+    # provenance still uses this job's OIDC permission. After bootstrap, every
+    # package must trust this repository and workflow filename.
     permissions:
       id-token: write
       contents: read
@@ -961,11 +995,28 @@ jobs:
           fi
           echo "All platform packages carry executable loct, loctree, loctree-mcp, loctree-lsp."
 
-      - name: Publish npm platform packages (technical, full-suite embed)
+      - name: Publish npm platform packages (bootstrap token)
+        if: inputs.npm_bootstrap
         working-directory: distribution/npm/loct
+        env:
+          RELEASE_VERSION: ${{ needs.verify-release.outputs.version }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
+          set -euo pipefail
           for plat_dir in platform-packages/*/; do
-            (cd "$plat_dir" && npm publish --access public)
+            node ../publish-if-missing.mjs --package-dir "$plat_dir" --version "$RELEASE_VERSION"
+          done
+          sleep 20
+
+      - name: Publish npm platform packages (trusted OIDC)
+        if: ${{ !inputs.npm_bootstrap }}
+        working-directory: distribution/npm/loct
+        env:
+          RELEASE_VERSION: ${{ needs.verify-release.outputs.version }}
+        run: |
+          set -euo pipefail
+          for plat_dir in platform-packages/*/; do
+            node ../publish-if-missing.mjs --package-dir "$plat_dir" --version "$RELEASE_VERSION"
           done
           sleep 20
 
@@ -973,20 +1024,37 @@ jobs:
       # tarball, same version, no duplicated resolver. `@loctree/loctree` is
       # the canonical identity: the scope names the org, the name names the
       # repo, mirroring github.com/Loctree/loctree exactly. Plain `loctree` is
-      # the free short form users reach for (`npm i -g loctree`). Both must
-      # have a trusted publisher configured on npmjs.com — and a FIRST publish
-      # of a not-yet-existing name cannot go through OIDC: bootstrap new names
-      # with a token, then configure trusted publishing (see
+      # the free short form users reach for (`npm i -g loctree`). It and all
+      # five scoped Gen3 names need trusted publishers — and a FIRST publish of
+      # a not-yet-existing name cannot use OIDC: bootstrap new names with a
+      # token, then configure trusted publishing (see
       # distribution/npm/PUBLISHING.md).
-      - name: Publish the user-facing wrapper (@loctree/loctree, then loctree)
+      - name: Publish the user-facing wrapper with bootstrap token
+        if: inputs.npm_bootstrap
         working-directory: distribution/npm/loct
+        env:
+          RELEASE_VERSION: ${{ needs.verify-release.outputs.version }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
-          npm publish --access public
+          node ../publish-if-missing.mjs --package-dir . --version "$RELEASE_VERSION"
 
           npm pkg set name=loctree
-          npm publish --access public
-          git checkout -- package.json
+          node ../publish-if-missing.mjs --package-dir . --version "$RELEASE_VERSION"
+          npm pkg set name=@loctree/loctree
+
+      - name: Publish the user-facing wrapper with trusted OIDC
+        if: ${{ !inputs.npm_bootstrap }}
+        working-directory: distribution/npm/loct
+        env:
+          RELEASE_VERSION: ${{ needs.verify-release.outputs.version }}
+        run: |
+          set -euo pipefail
+          node ../publish-if-missing.mjs --package-dir . --version "$RELEASE_VERSION"
+
+          npm pkg set name=loctree
+          node ../publish-if-missing.mjs --package-dir . --version "$RELEASE_VERSION"
+          npm pkg set name=@loctree/loctree
 
   publish-monorepo-release:
     name: Publish Monorepo Release

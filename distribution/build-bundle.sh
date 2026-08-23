@@ -103,13 +103,14 @@ print(os.path.abspath(os.path.expanduser(sys.argv[1])))
 PY
 }
 
-# Print the SHA-256 of one file using whichever of shasum/sha256sum exists, so
-# checksums are produced identically on macOS and Linux runners.
+# Print the SHA-256 of one file using whichever of shasum/sha256sum exists.
+# Feed the file on stdin: GNU checksum tools prefix the digest with `\` when a
+# Windows path needs escaping, which would make a correct digest compare unequal.
 sha256_file() {
   if command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 "$1" | awk '{print $1}'
+    shasum -a 256 < "$1" | awk '{print $1}'
   elif command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$1" | awk '{print $1}'
+    sha256sum < "$1" | awk '{print $1}'
   else
     die "missing shasum or sha256sum"
   fi
@@ -587,6 +588,7 @@ for target in "${TARGETS[@]}"; do
   target_work="$WORK_DIR/$target"
   staging="$target_work/$bundle_name"
   tarball="$DIST_DIR/$bundle_name.tar.gz"
+  tarball_tmp="$target_work/$bundle_name.tar.gz"
   components_json="$staging/components.json"
   binary_suffix=$(binary_suffix_for_target "$target")
   bundle_binaries=()
@@ -661,8 +663,11 @@ for target in "${TARGETS[@]}"; do
   write_bundle_readme "$staging/README.md" "$target" "$bundle_flavor"
   write_bundle_checksums "$staging" "$staging/CHECKSUMS.sha256" "${bundle_binaries[@]}"
 
-  rm -f "$tarball" "$tarball.sha256" "$tarball.sig"
-  (cd "$target_work" && tar -czf "$tarball" "$bundle_name")
+  rm -f "$tarball" "$tarball.sha256" "$tarball.sig" "$tarball_tmp"
+  # Keep the archive operand relative. GNU tar treats `D:\...` as remote
+  # `host:path` syntax on Git Bash even though it is a local Windows drive.
+  (cd "$target_work" && tar -czf "$bundle_name.tar.gz" "$bundle_name")
+  mv "$tarball_tmp" "$tarball"
   printf "%s  %s\n" "$(sha256_file "$tarball")" "$(basename "$tarball")" > "$tarball.sha256"
   echo "  tarball -> $tarball"
   echo "  sha256  -> $tarball.sha256"

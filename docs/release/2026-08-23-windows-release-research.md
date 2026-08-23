@@ -112,3 +112,88 @@ narrow clean-main change after release assets exist.
 4. Public installer and release registry advancement through a narrow
    deprivatized `loctree-com` PR and the VM deployment contract.
 5. Real client verification on Windows plus macOS and Debian/Linux probes.
+
+## npm first-publish bootstrap finding
+
+The live registry check before dispatch found five absent Gen3 scoped npm
+identities (`@loctree/loctree` plus four `@loctree/loctree-*` platform
+packages); bare `loctree` exists only on its legacy 0.8.x line. npm trusted
+publishing cannot be configured for a package that does not yet exist, while
+the workflow had already removed its documented bootstrap-token path. An OIDC
+dispatch was therefore guaranteed to fail even though its build artifacts
+could be correct.
+
+The repaired workflow makes bootstrap an explicit dispatch input, verifies the
+granular token before npm packaging, retains OIDC/provenance, and publishes
+each immutable package version idempotently so a partial first run can be
+retried safely. After v0.14.3 creates the five scoped identities and advances
+bare `loctree`, all six package identities need trusted publishers; future
+dispatches then use OIDC only.
+
+## Tag run Windows dependency-scope finding
+
+The first v0.14.3 tag run proved four bundle targets, including Debian 12 musl,
+but Windows compilation failed before packaging. `loctree-mcp/Cargo.toml` opened
+`[target.'cfg(unix)'.dependencies]` for `libc` and then declared `tracing`,
+`tracing-subscriber`, and `clap` without reopening a cross-platform table.
+TOML kept those three dependencies inside the Unix-only table, so Linux and
+macOS were green while Windows reported unresolved imports and missing clap
+derive attributes. The fix moves the Unix table below the shared dependencies
+and adds a cargo-metadata regression that asserts the three dependencies remain
+unscoped while `libc` stays `cfg(unix)`.
+
+## Branch bundle Windows checksum-path finding
+
+The repaired branch build (`32658638595`) then compiled all four native
+Windows executables successfully, but stopped while importing the already
+published AICX 0.12.3 Windows ZIP. The sidecar expected
+`348245adc3272e2ebc0cc2bc8add9bb25bc2d9d1cb2f88ecc31d87a2ea236ec9`; the
+local computation returned the same digest with a leading backslash. GNU
+checksum output prefixes the digest with `\` when its filename field requires
+escaping, and a native Windows path exercises that format.
+
+`sha256_file` now feeds the archive over stdin, so the checksum tool has no
+Windows filename to escape. The Windows bundle contract replaces `shasum`
+with a strict fake that accepts only stdin and returns the expected digest;
+the old filename-argument implementation fails that test. This preserves
+cryptographic verification and fixes only the textual transport boundary.
+
+The next branch run (`32659590071`) proved that checksum verification now
+passes, then exposed the archive-output equivalent: GNU tar interpreted the
+absolute `D:\...` output path as its historical remote `host:path` syntax and
+attempted to connect to host `D`. Bundle creation now writes a relative archive
+beside the staging directory and moves the finished file into the requested
+distribution directory. The Windows contract wraps tar and rejects absolute or
+drive-qualified create operands, so this cannot regress behind a Linux-only
+test path.
+
+The third branch run (`32660678820`) proved archive creation on Windows and all
+four non-Windows bundles, then failed while extracting selected files for
+verification. Git Bash exposed `RUNNER_TEMP` as `D:\\a\\_temp`; GNU tar does
+not apply MSYS argument conversion to its `-C` operand and tried to open the
+literal escaped drive path. The build job now normalizes the runner temp once
+with `cygpath -u` on Windows and publishes `BASH_RUNNER_TEMP` to every later
+Bash step. Bundle verification, the six-binary runtime smoke, and raw LSP
+staging therefore share one POSIX path contract. The Windows bundle test
+asserts both the normalization and the absence of the three known raw
+`RUNNER_TEMP` tar paths.
+
+## AICX npm Windows extractor finding
+
+After the AICX 0.12.3 binary release succeeded, all four npm packages were
+published and cold installs passed on hosted macOS and Linux. Hosted Windows
+still failed while the real SSH Windows host succeeded. The optional Windows
+package downloaded the correct release ZIP, but its `postinstall.js` invoked
+an unqualified `tar`. Git Bash placed GNU tar first on hosted CI and it could
+not extract the ZIP; PowerShell placed the native Windows bsdtar first on the
+real host.
+
+AICX PR #58 resolves and validates `%SystemRoot%\\System32\\tar.exe` (falling
+back to `%WINDIR%`) and invokes it without a shell. A metadata regression
+forbids the unqualified Windows extraction call. A pre-release probe copied
+the changed installer into an isolated directory on the real SSH Windows host,
+downloaded and checksum-verified the public 0.12.3 ZIP, and ran both installed
+binaries as `0.12.3+g8243654a` with exit 0. The exact temporary directory was
+then removed; global npm and Cargo installations were untouched. Because npm
+versions are immutable, this repair will ship as AICX 0.12.4 rather than
+overwriting 0.12.3.

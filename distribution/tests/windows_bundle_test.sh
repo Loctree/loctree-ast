@@ -5,6 +5,16 @@ ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 TMP_ROOT=$(mktemp -d)
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
+workflow="$ROOT_DIR/.github/workflows/release-bundles.yml"
+grep -F 'bash_runner_temp="$(cygpath -u "$RUNNER_TEMP")"' "$workflow" >/dev/null
+grep -F 'verify_dir="$BASH_RUNNER_TEMP/bundle-verify"' "$workflow" >/dev/null
+grep -F 'extract_dir="$BASH_RUNNER_TEMP/version-smoke"' "$workflow" >/dev/null
+grep -F 'work="$BASH_RUNNER_TEMP/lsp-asset"' "$workflow" >/dev/null
+if grep -E '(verify_dir|extract_dir|work)="\$RUNNER_TEMP/(bundle-verify|version-smoke|lsp-asset)"' "$workflow" >/dev/null; then
+  echo "Windows tar paths must use the Git Bash-normalized runner temp" >&2
+  exit 1
+fi
+
 mkdir -p "$TMP_ROOT/bin" "$TMP_ROOT/release-payload"
 
 cat > "$TMP_ROOT/bin/make" <<'SH'
@@ -74,6 +84,33 @@ fi
 printf '%s  %s\n' "$archive_sha" "$archive_name" \
   > "$TMP_ROOT/release-payload/$archive_name.sha256"
 
+# Model Git Bash checksum behavior without depending on the host platform.
+# The production helper must hash stdin; passing a Windows filename directly
+# lets GNU checksum tools prefix an otherwise correct digest with `\`.
+cat > "$TMP_ROOT/bin/shasum" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ "$#" -eq 2 && "$1" == "-a" && "$2" == "256" ]]
+cat >/dev/null
+printf '%s  -\n' "$FAKE_ARCHIVE_SHA"
+SH
+chmod +x "$TMP_ROOT/bin/shasum"
+
+real_tar=$(command -v tar)
+cat > "$TMP_ROOT/bin/tar" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+args=("$@")
+for ((i = 0; i < ${#args[@]}; i++)); do
+  if [[ "${args[$i]}" == "-czf" ]]; then
+    archive="${args[$((i + 1))]}"
+    [[ "$archive" != */* && "$archive" != *:* ]]
+  fi
+done
+exec "$REAL_TAR" "$@"
+SH
+chmod +x "$TMP_ROOT/bin/tar"
+
 asset() {
   bash "$ROOT_DIR/distribution/build-bundle.sh" 0.14.3 \
     --aicx-version 0.12.3 \
@@ -87,6 +124,8 @@ asset() {
 [[ "$(asset x86_64-pc-windows-msvc)" == "aicx-v0.12.3-x86_64-pc-windows-msvc-slim.zip" ]]
 
 FAKE_RELEASE_DIR="$TMP_ROOT/release-payload" \
+FAKE_ARCHIVE_SHA="$archive_sha" \
+REAL_TAR="$real_tar" \
 LOCTREE_GPG_KEY_ID="" \
 PATH="$TMP_ROOT/bin:$PATH" bash "$ROOT_DIR/distribution/build-bundle.sh" 0.14.3 \
   --aicx-version 0.12.3 \
