@@ -1,8 +1,9 @@
 # Windows-inclusive release research log — 2026-08-23
 
-Status: in progress. This document records the release evidence before the
-`v0.14.3` tag is created. Runtime and registry results will be added after the
-tag-driven workflows finish.
+Status: corrective releases in progress. The immutable `v0.14.3` tag exposed
+Windows release-contract failures after four other targets passed. The fixes
+are merged to public `main`; AICX `0.12.4` and Loctree `0.14.4` preserve the
+failed-tag provenance instead of rewriting it.
 
 ## Research question
 
@@ -101,17 +102,16 @@ and a bundled archive. The branch was preserved for archaeology, but PR #15
 was closed and will not be deployed. Site advancement will be rebuilt as a
 narrow clean-main change after release assets exist.
 
-## Remaining proof before tag and publish
+## Remaining proof before corrective publish
 
-1. Green AICX same-SHA packaging gate and signed 0.12.3 assets on macOS arm64,
-   Linux x64 GNU, and Windows x64 MSVC.
-2. Merge Loctree PR #69 after all public checks are green, then verify the
-   merged `main` is exactly the commit used for the tag.
-3. Green tag-driven Loctree bundles, Windows smoke, npm cold installs, and
-   checksum/signature verification.
-4. Public installer and release registry advancement through a narrow
-   deprivatized `loctree-com` PR and the VM deployment contract.
-5. Real client verification on Windows plus macOS and Debian/Linux probes.
+1. Merge the synchronized AICX 0.12.4 release PR, sign the merged-main tag,
+   then verify GitHub Release and npm cold installs on all three OSes.
+2. Merge the synchronized Loctree 0.14.4 release PR with AICX 0.12.4 as its
+   bundle default, sign the merged-main tag, and prove all five bundles.
+3. Advance the public installer and release registry through the merged,
+   deprivatized `loctree-com` VM deployment contract.
+4. Re-run real client verification on Windows plus macOS and Debian/Linux
+   against the final corrective versions.
 
 ## npm first-publish bootstrap finding
 
@@ -197,3 +197,18 @@ binaries as `0.12.3+g8243654a` with exit 0. The exact temporary directory was
 then removed; global npm and Cargo installations were untouched. Because npm
 versions are immutable, this repair will ship as AICX 0.12.4 rather than
 overwriting 0.12.3.
+
+## Merged repair proof
+
+Loctree branch run `32662090853` at `095bd210eb0475068d6ca616963c38c02d0c3282`
+completed successfully on macOS arm64/x64, Linux GNU/musl, and Windows MSVC.
+The Windows job passed archive construction, content verification, all six
+version probes, committed-fixture scan, raw LSP staging, and artifact upload.
+PR #70 then merged through protected checks as `ca1fea39d431ae6c50d80ba49e7379c67ce273cc`.
+
+AICX PR #58 passed the complete hosted matrix on macOS, Linux, and Windows,
+including default and native-GGUF tests, then merged as
+`050e8244c3c4bf2b767ce4859ba74c7476845ffb`. Its separate 0.12.4 release PR
+contains only synchronized Cargo, lockfile, npm, changelog, and documentation
+surfaces; the Loctree 0.14.4 release branch selects AICX 0.12.4 as the canonical
+combined-bundle input.

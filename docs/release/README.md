@@ -204,7 +204,7 @@ this one — without it the script aborts on a missing
 `../loct-io/scripts/sync_releases.py`. Override the location with
 `LOCT_IO_ROOT=/path/to/loct-io`.
 
-Bundles embed AICX release binaries (default `AICX_VERSION=0.12.3`) downloaded
+Bundles embed AICX release binaries (default `AICX_VERSION=0.12.4`) downloaded
 from `Loctree/aicx` releases and checksum-verified.
 
 Smoke the staged binaries:

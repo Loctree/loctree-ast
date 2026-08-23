@@ -67,14 +67,14 @@ cp "$FAKE_RELEASE_DIR/${url##*/}" "$output"
 SH
 chmod +x "$TMP_ROOT/bin/curl"
 
-archive_name="aicx-v0.12.3-x86_64-pc-windows-msvc-slim.zip"
+archive_name="aicx-v0.12.4-x86_64-pc-windows-msvc-slim.zip"
 python3 - "$TMP_ROOT/release-payload/$archive_name" <<'PY'
 import sys
 import zipfile
 
 with zipfile.ZipFile(sys.argv[1], "w") as archive:
-    archive.writestr("aicx-v0.12.3/aicx.exe", "aicx test\n")
-    archive.writestr("aicx-v0.12.3/aicx-mcp.exe", "aicx-mcp test\n")
+    archive.writestr("aicx-v0.12.4/aicx.exe", "aicx test\n")
+    archive.writestr("aicx-v0.12.4/aicx-mcp.exe", "aicx-mcp test\n")
 PY
 if command -v shasum >/dev/null 2>&1; then
   archive_sha=$(shasum -a 256 "$TMP_ROOT/release-payload/$archive_name" | awk '{print $1}')
@@ -112,23 +112,23 @@ SH
 chmod +x "$TMP_ROOT/bin/tar"
 
 asset() {
-  bash "$ROOT_DIR/distribution/build-bundle.sh" 0.14.3 \
-    --aicx-version 0.12.3 \
+  bash "$ROOT_DIR/distribution/build-bundle.sh" 0.14.4 \
+    --aicx-version 0.12.4 \
     --no-sync \
     --dry-run \
     --print-aicx-asset "$1"
 }
 
-[[ "$(asset aarch64-apple-darwin)" == "aicx-v0.12.3-aarch64-apple-darwin-slim.zip" ]]
-[[ "$(asset x86_64-unknown-linux-gnu)" == "aicx-v0.12.3-x86_64-linux-gnu-slim.tar.gz" ]]
-[[ "$(asset x86_64-pc-windows-msvc)" == "aicx-v0.12.3-x86_64-pc-windows-msvc-slim.zip" ]]
+[[ "$(asset aarch64-apple-darwin)" == "aicx-v0.12.4-aarch64-apple-darwin-slim.zip" ]]
+[[ "$(asset x86_64-unknown-linux-gnu)" == "aicx-v0.12.4-x86_64-linux-gnu-slim.tar.gz" ]]
+[[ "$(asset x86_64-pc-windows-msvc)" == "aicx-v0.12.4-x86_64-pc-windows-msvc-slim.zip" ]]
 
 FAKE_RELEASE_DIR="$TMP_ROOT/release-payload" \
 FAKE_ARCHIVE_SHA="$archive_sha" \
 REAL_TAR="$real_tar" \
 LOCTREE_GPG_KEY_ID="" \
-PATH="$TMP_ROOT/bin:$PATH" bash "$ROOT_DIR/distribution/build-bundle.sh" 0.14.3 \
-  --aicx-version 0.12.3 \
+PATH="$TMP_ROOT/bin:$PATH" bash "$ROOT_DIR/distribution/build-bundle.sh" 0.14.4 \
+  --aicx-version 0.12.4 \
   --target x86_64-pc-windows-msvc \
   --bundle-flavor full \
   --bundle-suffix "" \
@@ -136,8 +136,8 @@ PATH="$TMP_ROOT/bin:$PATH" bash "$ROOT_DIR/distribution/build-bundle.sh" 0.14.3 
   --work-dir "$TMP_ROOT/work" \
   --no-sync
 
-archive="$TMP_ROOT/dist/loctree-0.14.3-x86_64-pc-windows-msvc.tar.gz"
-root="loctree-0.14.3-x86_64-pc-windows-msvc"
+archive="$TMP_ROOT/dist/loctree-0.14.4-x86_64-pc-windows-msvc.tar.gz"
+root="loctree-0.14.4-x86_64-pc-windows-msvc"
 [[ -s "$archive" ]]
 tar -tzf "$archive" > "$TMP_ROOT/contents.txt"
 for bin in loct.exe loctree.exe loctree-mcp.exe loctree-lsp.exe aicx.exe aicx-mcp.exe; do

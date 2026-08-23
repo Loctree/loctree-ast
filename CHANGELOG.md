@@ -6,18 +6,23 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ## [Unreleased]
 
-### Added
-
-- The combined release workflow now builds a full Windows x64 MSVC tarball
-  containing `loct.exe`, `loctree.exe`, `loctree-mcp.exe`,
-  `loctree-lsp.exe`, `aicx.exe`, and `aicx-mcp.exe`, plus the raw
-  `loctree-lsp-windows-x64.exe` editor runtime and checksum sidecar.
+## [0.14.4] - 2026-08-23
 
 ### Changed
 
-- Combined bundles default to AICX 0.12.3 and derive addressability checks from
-  the same platform-to-asset mapping used for extraction. Release smoke now
-  starts all six full-bundle binaries and scans a committed Git fixture.
+- Combined bundles now default to the corrective AICX 0.12.4 release across
+  local build tooling, tag workflows, tests, and operator documentation.
+
+### Fixed
+
+- Windows combined bundles now build, verify, smoke all six binaries against a
+  committed Git fixture, stage the editor LSP executable, and upload through
+  one Git Bash-safe path contract. Checksum generation and archive creation no
+  longer pass drive-qualified filenames through GNU tools.
+- The first scoped npm publish has an explicit, preflighted bootstrap lane and
+  idempotent package publication; later releases remain on trusted publishing.
+- `loctree-mcp` keeps shared CLI/logging dependencies cross-platform while
+  retaining `libc` as Unix-only, restoring the Windows MSVC build.
 
 ## [0.14.3] - 2026-08-23
 
