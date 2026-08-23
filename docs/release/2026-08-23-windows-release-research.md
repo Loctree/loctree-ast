@@ -1,8 +1,9 @@
 # Windows-inclusive release research log — 2026-08-23
 
-Status: in progress. This document records the release evidence before the
-`v0.14.3` tag is created. Runtime and registry results will be added after the
-tag-driven workflows finish.
+Status: corrective releases in progress. The immutable `v0.14.3` tag exposed
+Windows release-contract failures after four other targets passed. The fixes
+are merged to public `main`; AICX `0.12.5` and Loctree `0.14.4` preserve the
+failed-tag provenance instead of rewriting it.
 
 ## Research question
 
@@ -101,17 +102,18 @@ and a bundled archive. The branch was preserved for archaeology, but PR #15
 was closed and will not be deployed. Site advancement will be rebuilt as a
 narrow clean-main change after release assets exist.
 
-## Remaining proof before tag and publish
+## Remaining proof before corrective publish
 
-1. Green AICX same-SHA packaging gate and signed 0.12.3 assets on macOS arm64,
-   Linux x64 GNU, and Windows x64 MSVC.
-2. Merge Loctree PR #69 after all public checks are green, then verify the
-   merged `main` is exactly the commit used for the tag.
-3. Green tag-driven Loctree bundles, Windows smoke, npm cold installs, and
-   checksum/signature verification.
-4. Public installer and release registry advancement through a narrow
-   deprivatized `loctree-com` PR and the VM deployment contract.
-5. Real client verification on Windows plus macOS and Debian/Linux probes.
+1. AICX 0.12.5 is complete: signed merged-main release, GitHub assets, npm
+   packages, hosted cold installs on all three OSes, and a real SSH Windows
+   cold install all passed.
+2. The synchronized Loctree 0.14.4 branch rehearsal with AICX 0.12.5 passed all
+   five bundles. Merge the release PR, sign the exact merged-main tag, and
+   repeat the five-platform proof on the immutable tag before publication.
+3. Advance the public installer and release registry through the merged,
+   deprivatized `loctree-com` VM deployment contract.
+4. Re-run real client verification on Windows plus macOS and Debian/Linux
+   against the final corrective versions.
 
 ## npm first-publish bootstrap finding
 
@@ -195,5 +197,65 @@ the changed installer into an isolated directory on the real SSH Windows host,
 downloaded and checksum-verified the public 0.12.3 ZIP, and ran both installed
 binaries as `0.12.3+g8243654a` with exit 0. The exact temporary directory was
 then removed; global npm and Cargo installations were untouched. Because npm
-versions are immutable, this repair will ship as AICX 0.12.4 rather than
-overwriting 0.12.3.
+versions are immutable, this repair was first cut as AICX 0.12.4 rather than
+overwriting 0.12.3. The 0.12.4 tag later failed its signed Windows build and
+was superseded by the immutable corrective 0.12.5 release described below.
+
+## Merged repair proof
+
+Loctree branch run `32662090853` at `095bd210eb0475068d6ca616963c38c02d0c3282`
+completed successfully on macOS arm64/x64, Linux GNU/musl, and Windows MSVC.
+The Windows job passed archive construction, content verification, all six
+version probes, committed-fixture scan, raw LSP staging, and artifact upload.
+PR #70 then merged through protected checks as `ca1fea39d431ae6c50d80ba49e7379c67ce273cc`.
+
+AICX PR #58 passed the complete hosted matrix on macOS, Linux, and Windows,
+including default and native-GGUF tests, then merged as
+`050e8244c3c4bf2b767ce4859ba74c7476845ffb`.
+
+## AICX corrective release proof
+
+The signed AICX `v0.12.4` run `32665708444` passed exact-tag verification,
+macOS signing/notarization, and the Linux GPG bundle, but the serialized Windows
+runner exhausted memory in the final single-process full-LTO `rustc` link.
+Publish remained fail-closed. PR #60 keeps `opt-level=3` and stripping, disables
+cross-crate LTO only for the low-memory signed Windows target, and adds a
+`make version-check` contract covering serialization, LTO, and the LLVM-free
+MSVC feature set. It merged as
+`ced57997dd97a2b08960f35e3a657d7b0c49a200`.
+
+The signed `v0.12.5` run `32669780693` then completed exact-tag verification,
+macOS codesign/notary, Linux GPG + Debian packaging, Windows MSVC ZIP build,
+all archive smokes, checksums, detached signatures, and GitHub Release publish.
+Independent download verification passed every checksum and every GPG
+signature; public macOS binaries reported `0.12.5+gced57997`.
+
+npm run `32671741799` published `@loctree/aicx@0.12.5` plus all three platform
+packages and passed empty-prefix cold installs on hosted macOS, Ubuntu, and
+Windows. A separate real `ssh windows` install ran under a one-shot scheduled
+task because that host limits individual SSH commands to about 30 seconds. It
+returned npm exit 0 and both `aicx` and `aicx-mcp` as
+`0.12.5+gced57997`; its isolated temp directory, task, script, result, and logs
+were all removed. The mandatory AICX deprivatize pass reported no unambiguous
+PII or secret leaks. Loctree 0.14.4 therefore selects AICX 0.12.5 as its
+canonical combined-bundle input.
+
+## Final Loctree branch rehearsal
+
+Workflow-dispatch run `32672964365` completed successfully at exact release
+head `3e6e090152c0db904048b6b5d2673990a5ed5112`. Input verification and all five
+bundle jobs passed: macOS arm64/x64, Linux GNU/musl, and Windows MSVC. The
+publish job was correctly skipped because this was a branch rehearsal rather
+than an immutable `v*` tag push.
+
+The Debian 12 musl smoke reported the extracted `loct` executable as statically
+linked, ran `loct 0.14.4+g3e6e0901`, and scanned the one-file committed Git
+fixture successfully without installing Git in the container. This directly
+closes the original v0.14.2 `no git repository at '/fixture'` failure.
+
+The hosted Windows job ran all six bundled executables from the archive:
+Loctree `0.14.4+g3e6e0901` for `loct`, `loctree`, `loctree-mcp`, and
+`loctree-lsp`, plus `aicx` and `aicx-mcp` at `0.12.5+gced57997`. Its committed
+Git fixture scan completed with `Status: OK`, and the raw
+`loctree-lsp-windows-x64.exe` asset plus checksum uploaded successfully. The
+immutable tag run must repeat this proof before any publish button is used.
