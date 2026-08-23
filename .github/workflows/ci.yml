@@ -72,6 +72,11 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Git hook and preflight contracts
         run: make test-git-hooks
+      - name: npm publish idempotency contracts
+        if: runner.os == 'Linux'
+        run: |
+          node --test distribution/npm/publish-if-missing.test.mjs
+          python3 tests/windows_dependency_contract.py
       - name: Rust clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: rg-vs-loct scorecard gate

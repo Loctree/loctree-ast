@@ -58,15 +58,17 @@ shellexpand = { workspace = true }
 reqwest = { workspace = true }
 tempfile = "3"
 
-# Unix signal handling (for SIGPIPE)
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
-
 # Logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 
 # CLI
 clap = { version = "4", features = ["derive"] }
+
+# Unix signal handling (for SIGPIPE). Keep this target-specific table after
+# the cross-platform dependencies: TOML table scope persists until the next
+# header, so entries below it would otherwise silently become Unix-only.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]

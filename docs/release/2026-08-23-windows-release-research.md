@@ -112,3 +112,32 @@ narrow clean-main change after release assets exist.
 4. Public installer and release registry advancement through a narrow
    deprivatized `loctree-com` PR and the VM deployment contract.
 5. Real client verification on Windows plus macOS and Debian/Linux probes.
+
+## npm first-publish bootstrap finding
+
+The live registry check before dispatch found five absent Gen3 scoped npm
+identities (`@loctree/loctree` plus four `@loctree/loctree-*` platform
+packages); bare `loctree` exists only on its legacy 0.8.x line. npm trusted
+publishing cannot be configured for a package that does not yet exist, while
+the workflow had already removed its documented bootstrap-token path. An OIDC
+dispatch was therefore guaranteed to fail even though its build artifacts
+could be correct.
+
+The repaired workflow makes bootstrap an explicit dispatch input, verifies the
+granular token before npm packaging, retains OIDC/provenance, and publishes
+each immutable package version idempotently so a partial first run can be
+retried safely. After v0.14.3 creates the five scoped identities and advances
+bare `loctree`, all six package identities need trusted publishers; future
+dispatches then use OIDC only.
+
+## Tag run Windows dependency-scope finding
+
+The first v0.14.3 tag run proved four bundle targets, including Debian 12 musl,
+but Windows compilation failed before packaging. `loctree-mcp/Cargo.toml` opened
+`[target.'cfg(unix)'.dependencies]` for `libc` and then declared `tracing`,
+`tracing-subscriber`, and `clap` without reopening a cross-platform table.
+TOML kept those three dependencies inside the Unix-only table, so Linux and
+macOS were green while Windows reported unresolved imports and missing clap
+derive attributes. The fix moves the Unix table below the shared dependencies
+and adds a cargo-metadata regression that asserts the three dependencies remain
+unscoped while `libc` stays `cfg(unix)`.
