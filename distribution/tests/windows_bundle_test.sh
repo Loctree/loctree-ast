@@ -86,6 +86,21 @@ printf '%s  -\n' "$FAKE_ARCHIVE_SHA"
 SH
 chmod +x "$TMP_ROOT/bin/shasum"
 
+real_tar=$(command -v tar)
+cat > "$TMP_ROOT/bin/tar" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+args=("$@")
+for ((i = 0; i < ${#args[@]}; i++)); do
+  if [[ "${args[$i]}" == "-czf" ]]; then
+    archive="${args[$((i + 1))]}"
+    [[ "$archive" != */* && "$archive" != *:* ]]
+  fi
+done
+exec "$REAL_TAR" "$@"
+SH
+chmod +x "$TMP_ROOT/bin/tar"
+
 asset() {
   bash "$ROOT_DIR/distribution/build-bundle.sh" 0.14.3 \
     --aicx-version 0.12.3 \
@@ -100,6 +115,7 @@ asset() {
 
 FAKE_RELEASE_DIR="$TMP_ROOT/release-payload" \
 FAKE_ARCHIVE_SHA="$archive_sha" \
+REAL_TAR="$real_tar" \
 LOCTREE_GPG_KEY_ID="" \
 PATH="$TMP_ROOT/bin:$PATH" bash "$ROOT_DIR/distribution/build-bundle.sh" 0.14.3 \
   --aicx-version 0.12.3 \

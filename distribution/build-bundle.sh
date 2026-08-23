@@ -588,6 +588,7 @@ for target in "${TARGETS[@]}"; do
   target_work="$WORK_DIR/$target"
   staging="$target_work/$bundle_name"
   tarball="$DIST_DIR/$bundle_name.tar.gz"
+  tarball_tmp="$target_work/$bundle_name.tar.gz"
   components_json="$staging/components.json"
   binary_suffix=$(binary_suffix_for_target "$target")
   bundle_binaries=()
@@ -662,8 +663,11 @@ for target in "${TARGETS[@]}"; do
   write_bundle_readme "$staging/README.md" "$target" "$bundle_flavor"
   write_bundle_checksums "$staging" "$staging/CHECKSUMS.sha256" "${bundle_binaries[@]}"
 
-  rm -f "$tarball" "$tarball.sha256" "$tarball.sig"
-  (cd "$target_work" && tar -czf "$tarball" "$bundle_name")
+  rm -f "$tarball" "$tarball.sha256" "$tarball.sig" "$tarball_tmp"
+  # Keep the archive operand relative. GNU tar treats `D:\...` as remote
+  # `host:path` syntax on Git Bash even though it is a local Windows drive.
+  (cd "$target_work" && tar -czf "$bundle_name.tar.gz" "$bundle_name")
+  mv "$tarball_tmp" "$tarball"
   printf "%s  %s\n" "$(sha256_file "$tarball")" "$(basename "$tarball")" > "$tarball.sha256"
   echo "  tarball -> $tarball"
   echo "  sha256  -> $tarball.sha256"

@@ -157,3 +157,12 @@ Windows filename to escape. The Windows bundle contract replaces `shasum`
 with a strict fake that accepts only stdin and returns the expected digest;
 the old filename-argument implementation fails that test. This preserves
 cryptographic verification and fixes only the textual transport boundary.
+
+The next branch run (`32659590071`) proved that checksum verification now
+passes, then exposed the archive-output equivalent: GNU tar interpreted the
+absolute `D:\...` output path as its historical remote `host:path` syntax and
+attempted to connect to host `D`. Bundle creation now writes a relative archive
+beside the staging directory and moves the finished file into the requested
+distribution directory. The Windows contract wraps tar and rejects absolute or
+drive-qualified create operands, so this cannot regress behind a Linux-only
+test path.
