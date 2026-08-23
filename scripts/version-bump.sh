@@ -195,8 +195,30 @@ installer_version() {
 # Prints the five-surface version contract and exits 1 when VS Code, its lockfile,
 # JetBrains, or the web installer has drifted from the Cargo workspace version.
 # This is what `make version-assert` gates a release on.
+assert_release_surfaces_tracked() {
+  local rel missing=false
+  for rel in \
+    Cargo.toml \
+    editors/vscode/package.json \
+    editors/vscode/package-lock.json \
+    editors/vscode/tsconfig.json \
+    editors/vscode/tsconfig.test.json \
+    editors/jetbrains/gradle.properties \
+    public_dist/install.sh
+  do
+    if ! git -C "$ROOT_DIR" ls-files --error-unmatch -- "$rel" >/dev/null 2>&1; then
+      log_error "Release surface is not tracked: $rel"
+      missing=true
+    fi
+  done
+  if $missing; then
+    exit 1
+  fi
+}
+
 assert_versions_synced() {
   local expected actual_vs actual_lock actual_jb actual_installer ok
+  assert_release_surfaces_tracked
   expected=$(workspace_version)
   actual_vs=$(vscode_version)
   actual_lock=$(vscode_lock_version)

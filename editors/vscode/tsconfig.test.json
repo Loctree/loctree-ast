@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "outDir": "out-test",
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false
+  },
+  "include": ["src/client.ts", "src/gateway.ts", "src/contextPill/scope.ts", "src/contextPill/viewModel.ts", "src/contextPill/agentContext.ts", "test/**/*.ts"],
+  "exclude": ["node_modules", "out", "out-test", "dist"]
+}

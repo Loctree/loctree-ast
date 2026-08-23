@@ -103,15 +103,18 @@ SeniorDev/
 # AI Context (local tooling)
 .ai-context/
 /.vibecrafted
-monika*
 /*.py
 /*.rs
 /logs
 /*.sh
 !install.sh
 *.json
-# Editor plugin lint config must be tracked (the broad *.json ignore would
-# otherwise drop it, unlike package.json/tsconfig.json which predate the rule).
+# Editor manifests and compiler contracts are release inputs. A clean clone
+# must contain them; otherwise local node_modules can hide an incomplete tree.
+!/editors/vscode/package.json
+!/editors/vscode/package-lock.json
+!/editors/vscode/tsconfig.json
+!/editors/vscode/tsconfig.test.json
 !/editors/vscode/.eslintrc.json
 # Glama.ai claim manifest — must live at repo root and reach the public
 # mirrors, so it has to survive the broad *.json ignore.
