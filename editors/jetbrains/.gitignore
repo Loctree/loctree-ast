@@ -1,0 +1,11 @@
+# Gradle build outputs and caches
+.gradle/
+build/
+.intellijPlatform/
+bin/
+
+# IDE
+.idea/
+*.iml
+out/
+.intellijPlatform/

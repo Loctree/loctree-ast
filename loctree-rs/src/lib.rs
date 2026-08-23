@@ -68,7 +68,7 @@
 //! exist for backward compatibility, but new non-CLI code should not depend on
 //! them.
 
-#![doc(html_root_url = "https://docs.rs/loctree/0.14.2")]
+#![doc(html_root_url = "https://docs.rs/loctree/0.14.3")]
 #![doc(html_favicon_url = "https://loct.io/assets/loctree-logo.png")]
 #![doc(html_logo_url = "https://loct.io/assets/loctree-logo.png")]
 
