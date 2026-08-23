@@ -19,6 +19,14 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   the same platform-to-asset mapping used for extraction. Release smoke now
   starts all six full-bundle binaries and scans a committed Git fixture.
 
+## [0.14.3] - 2026-08-23
+
+### Added
+- add canonical Windows combined bundles (#68)
+
+### Fixed
+- initialize musl smoke as a git fixture (#67)
+
 ## [0.14.2] - 2026-08-13
 
 > Supersedes the untagged `0.14.1`. That version was bumped but never tagged or
