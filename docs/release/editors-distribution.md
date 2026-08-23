@@ -104,18 +104,19 @@ mismatch is a 404 at install time, not a warning.
 | | |
 |---|---|
 | Name | `loctree-<version>-<triple>.tar.gz` (+ `.sha256`, `.sig` when signed) |
-| Internal path | `loctree-<version>-<triple>/bin/loctree-lsp` — **part of the contract** |
+| Internal path | `loctree-<version>-<triple>/bin/loctree-lsp` (`.exe` on Windows) — **part of the contract** |
 | Producer | `distribution/build-bundle.sh` via the `build` matrix |
 | Consumers | `editors/vscode/scripts/fetch-release-lsp.js` (`archiveName`, `extractedBinary`) at VSIX packaging time; `editors/vscode/src/client.ts` (`archiveAssetName`, `archiveRootDir`) at runtime |
 
 Published triples: `aarch64-apple-darwin`, `x86_64-apple-darwin`,
 `x86_64-unknown-linux-gnu`, `x86_64-unknown-linux-musl-core`.
+The full Windows archive is `x86_64-pc-windows-msvc`.
 
 ### Shape B — raw per-platform `loctree-lsp`
 
 | | |
 |---|---|
-| Names | `loctree-lsp-darwin-arm64`, `loctree-lsp-darwin-x64`, `loctree-lsp-linux-x64` (each + `.sha256`) |
+| Names | `loctree-lsp-darwin-arm64`, `loctree-lsp-darwin-x64`, `loctree-lsp-linux-x64`, `loctree-lsp-windows-x64.exe` (each + `.sha256`) |
 | Sidecar format | `<sha256>  <name>` — every consumer reads whitespace field 1 of line 1 |
 | Producer | **extracted from the shape-A archive**, not rebuilt (see below) |
 | Consumers | JetBrains `PlatformAsset.assetName()` + `ReleaseDownloader` (fail-closed on the sidecar); `editors/vscode/src/client.ts` `lspAssetNameForTarget()` for its cache-version marker |
@@ -129,14 +130,12 @@ the runtime JetBrains downloads and the runtime the VSIX packs cannot drift.
 
 ### Platform coverage, stated honestly
 
-`linux-arm64` and `windows-x64` have **no published `loctree-lsp` asset** and
-none is produced. The JetBrains resolver returns `null` for them and surfaces an
-unsupported-platform notice; `vscode-extension.yml` omits those lanes. A name
-that 404s is worse than an honest absence — do not add either name to a plugin
-before the corresponding asset exists here.
+`linux-arm64` has no published `loctree-lsp` asset and none is produced. Windows
+x64 is now covered by the full MSVC bundle and raw
+`loctree-lsp-windows-x64.exe`; consumers must retain the `.exe` suffix.
 
 `x86_64-apple-darwin` (Intel macOS) is a special case. AICX publishes no release
-asset for that triple (verified against `Loctree/aicx` v0.7.3), so its bundle can
+asset for that triple under the current 0.12.x naming, so its bundle can
 only ever be `core` — Loctree binaries without a bundled AICX. But
 `fetch-release-lsp.js` hard-codes the plain archive name and v0.13.1 shipped it
 under that name, so `release-bundles.yml` passes `--bundle-suffix ""` to keep the

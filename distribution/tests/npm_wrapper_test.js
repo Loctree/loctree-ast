@@ -16,6 +16,10 @@ assert.strictEqual(packageJson.bin['loctree-mcp'], 'bin/loctree-mcp');
 assert(packageJson.files.includes('bin/loctree-mcp'));
 assert(wrapper.BUNDLED_BINARIES.includes('loctree-mcp'));
 assert.strictEqual(typeof wrapper.runBinary, 'function');
+for (const binary of wrapper.BUNDLED_BINARIES) {
+  assert.strictEqual(wrapper.binaryFileName(binary, 'win32'), `${binary}.exe`);
+  assert.strictEqual(wrapper.binaryFileName(binary, 'linux'), binary);
+}
 
 if (process.platform === 'win32') {
   console.log('npm wrapper metadata passed; executable shim smoke skipped on Windows');

@@ -78,8 +78,8 @@ function platformPackageName() {
 }
 
 /** Add the .exe suffix Windows binaries carry inside the platform package. */
-function binaryFileName(name) {
-  return process.platform === 'win32' ? `${name}.exe` : name;
+function binaryFileName(name, platform = process.platform) {
+  return platform === 'win32' ? `${name}.exe` : name;
 }
 
 /**
@@ -188,6 +188,7 @@ module.exports = {
   BUNDLED_BINARIES,
   platformPackageName,
   getPlatformKey,
+  binaryFileName,
   getBinaryPath,
   runBinary,
   runRuntime,

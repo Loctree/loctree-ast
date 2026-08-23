@@ -194,15 +194,17 @@ make release-bundles VERSION=0.14.2 NO_SYNC=1             # actually build
 make release-pack                                          # version gate + editors + bundles
 ```
 
-Targets produced: `aarch64-apple-darwin` (full), `x86_64-unknown-linux-gnu`
-(full), `x86_64-unknown-linux-musl-core` (core, no bundled AICX).
+Targets produced: `aarch64-apple-darwin` (full), `x86_64-apple-darwin` (core),
+`x86_64-unknown-linux-gnu` (full), `x86_64-unknown-linux-musl-core` (core), and
+`x86_64-pc-windows-msvc` (full). Windows keeps the combined `.tar.gz` naming
+and stages all six executables with `.exe` suffixes.
 
 `NO_SYNC=1` is required unless the sibling `loct-io` repo is checked out next to
 this one — without it the script aborts on a missing
 `../loct-io/scripts/sync_releases.py`. Override the location with
 `LOCT_IO_ROOT=/path/to/loct-io`.
 
-Bundles embed AICX release binaries (default `AICX_VERSION=0.7.3`) downloaded
+Bundles embed AICX release binaries (default `AICX_VERSION=0.12.3`) downloaded
 from `Loctree/aicx` releases and checksum-verified.
 
 Smoke the staged binaries:
