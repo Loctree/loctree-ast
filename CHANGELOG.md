@@ -10,7 +10,7 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ### Changed
 
-- Combined bundles now default to the corrective AICX 0.12.4 release across
+- Combined bundles now default to the corrective AICX 0.12.5 release across
   local build tooling, tag workflows, tests, and operator documentation.
 
 ### Fixed

@@ -73,7 +73,7 @@ release-binaries: setup-protoc
 
 release-bundles:
 	@if [ -z "$(VERSION)" ]; then \
-		echo "VERSION is required. Usage: make release-bundles VERSION=0.14.4 [AICX_VERSION=0.12.4] [BUNDLE_TARGET=aarch64-apple-darwin|x86_64-unknown-linux-gnu|x86_64-pc-windows-msvc]" >&2; \
+		echo "VERSION is required. Usage: make release-bundles VERSION=0.14.4 [AICX_VERSION=0.12.5] [BUNDLE_TARGET=aarch64-apple-darwin|x86_64-unknown-linux-gnu|x86_64-pc-windows-msvc]" >&2; \
 		exit 1; \
 	fi
 	@set --; \
@@ -438,7 +438,7 @@ help:
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'install' '- Install loct, loctree & loctree-mcp'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'install-all' '- Install loct, loctree, loctree-mcp & loctree-lsp'
 	@printf '%s\n' '  make release-bundles VERSION=X - Build combined Loctree+AICX release tarballs'
-	@printf '%s\n' '      Optional: AICX_VERSION=0.12.4 BUNDLE_TARGET=x86_64-unknown-linux-gnu'
+	@printf '%s\n' '      Optional: AICX_VERSION=0.12.5 BUNDLE_TARGET=x86_64-unknown-linux-gnu'
 	@printf '%s\n' '      Windows: BUNDLE_TARGET=x86_64-pc-windows-msvc builds the full six-binary .tar.gz bundle'
 	@printf '%s\n' '      Musl: BUNDLE_TARGET=x86_64-unknown-linux-musl builds a -core tarball without bundled AICX'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'test' '- Run all tests'

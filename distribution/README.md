@@ -23,7 +23,7 @@ not "cargo publish the crate and hope for the best."
 The binary-first Loctree suite bundle is built by:
 
 ```bash
-make release-bundles VERSION=0.14.4 AICX_VERSION=0.12.4
+make release-bundles VERSION=0.14.4 AICX_VERSION=0.12.5
 ```
 
 The same path is used by the GitHub Actions workflow

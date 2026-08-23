@@ -23,7 +23,7 @@ AICX_RELEASE_BINARIES=(aicx aicx-mcp)
 # Canonical AICX release coordinates used in release mode; --aicx-repo /
 # --aicx-version override them, --aicx-root bypasses the download entirely.
 AICX_REPO_DEFAULT="Loctree/aicx"
-AICX_VERSION_DEFAULT="0.12.4"
+AICX_VERSION_DEFAULT="0.12.5"
 
 # Print the full CLI contract on --help or when no version argument is given.
 usage() {
@@ -34,7 +34,7 @@ Usage:
 Options:
   --aicx-root <path>       Developer override: build AICX from source instead
                            of the canonical GitHub release asset.
-  --aicx-version <version> AICX release version. Default: 0.12.4.
+  --aicx-version <version> AICX release version. Default: 0.12.5.
   --aicx-tag <tag>         AICX release tag. Default: v<aicx-version>.
   --aicx-repo <owner/repo> AICX GitHub repo. Default: Loctree/aicx.
   --loct-io-root <path>    Root containing scripts/sync_releases.py.
@@ -65,7 +65,7 @@ Options:
   -h, --help               Show this help.
 
 Default release mode downloads AICX from:
-  https://github.com/Loctree/aicx/releases/tag/v0.12.4
+  https://github.com/Loctree/aicx/releases/tag/v0.12.5
 
 Developer override mode uses:
   make -C <aicx-root> release-binaries STAGING_DIR=<staging> TARGET=<triple>

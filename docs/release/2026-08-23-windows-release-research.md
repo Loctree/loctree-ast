@@ -2,7 +2,7 @@
 
 Status: corrective releases in progress. The immutable `v0.14.3` tag exposed
 Windows release-contract failures after four other targets passed. The fixes
-are merged to public `main`; AICX `0.12.4` and Loctree `0.14.4` preserve the
+are merged to public `main`; AICX `0.12.5` and Loctree `0.14.4` preserve the
 failed-tag provenance instead of rewriting it.
 
 ## Research question
@@ -104,9 +104,10 @@ narrow clean-main change after release assets exist.
 
 ## Remaining proof before corrective publish
 
-1. Merge the synchronized AICX 0.12.4 release PR, sign the merged-main tag,
-   then verify GitHub Release and npm cold installs on all three OSes.
-2. Merge the synchronized Loctree 0.14.4 release PR with AICX 0.12.4 as its
+1. AICX 0.12.5 is complete: signed merged-main release, GitHub assets, npm
+   packages, hosted cold installs on all three OSes, and a real SSH Windows
+   cold install all passed.
+2. Merge the synchronized Loctree 0.14.4 release PR with AICX 0.12.5 as its
    bundle default, sign the merged-main tag, and prove all five bundles.
 3. Advance the public installer and release registry through the merged,
    deprivatized `loctree-com` VM deployment contract.
@@ -195,8 +196,9 @@ the changed installer into an isolated directory on the real SSH Windows host,
 downloaded and checksum-verified the public 0.12.3 ZIP, and ran both installed
 binaries as `0.12.3+g8243654a` with exit 0. The exact temporary directory was
 then removed; global npm and Cargo installations were untouched. Because npm
-versions are immutable, this repair will ship as AICX 0.12.4 rather than
-overwriting 0.12.3.
+versions are immutable, this repair was first cut as AICX 0.12.4 rather than
+overwriting 0.12.3. The 0.12.4 tag later failed its signed Windows build and
+was superseded by the immutable corrective 0.12.5 release described below.
 
 ## Merged repair proof
 
@@ -208,7 +210,31 @@ PR #70 then merged through protected checks as `ca1fea39d431ae6c50d80ba49e7379c6
 
 AICX PR #58 passed the complete hosted matrix on macOS, Linux, and Windows,
 including default and native-GGUF tests, then merged as
-`050e8244c3c4bf2b767ce4859ba74c7476845ffb`. Its separate 0.12.4 release PR
-contains only synchronized Cargo, lockfile, npm, changelog, and documentation
-surfaces; the Loctree 0.14.4 release branch selects AICX 0.12.4 as the canonical
-combined-bundle input.
+`050e8244c3c4bf2b767ce4859ba74c7476845ffb`.
+
+## AICX corrective release proof
+
+The signed AICX `v0.12.4` run `32665708444` passed exact-tag verification,
+macOS signing/notarization, and the Linux GPG bundle, but the serialized Windows
+runner exhausted memory in the final single-process full-LTO `rustc` link.
+Publish remained fail-closed. PR #60 keeps `opt-level=3` and stripping, disables
+cross-crate LTO only for the low-memory signed Windows target, and adds a
+`make version-check` contract covering serialization, LTO, and the LLVM-free
+MSVC feature set. It merged as
+`ced57997dd97a2b08960f35e3a657d7b0c49a200`.
+
+The signed `v0.12.5` run `32669780693` then completed exact-tag verification,
+macOS codesign/notary, Linux GPG + Debian packaging, Windows MSVC ZIP build,
+all archive smokes, checksums, detached signatures, and GitHub Release publish.
+Independent download verification passed every checksum and every GPG
+signature; public macOS binaries reported `0.12.5+gced57997`.
+
+npm run `32671741799` published `@loctree/aicx@0.12.5` plus all three platform
+packages and passed empty-prefix cold installs on hosted macOS, Ubuntu, and
+Windows. A separate real `ssh windows` install ran under a one-shot scheduled
+task because that host limits individual SSH commands to about 30 seconds. It
+returned npm exit 0 and both `aicx` and `aicx-mcp` as
+`0.12.5+gced57997`; its isolated temp directory, task, script, result, and logs
+were all removed. The mandatory AICX deprivatize pass reported no unambiguous
+PII or secret leaks. Loctree 0.14.4 therefore selects AICX 0.12.5 as its
+canonical combined-bundle input.
