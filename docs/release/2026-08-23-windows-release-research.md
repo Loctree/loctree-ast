@@ -141,3 +141,19 @@ macOS were green while Windows reported unresolved imports and missing clap
 derive attributes. The fix moves the Unix table below the shared dependencies
 and adds a cargo-metadata regression that asserts the three dependencies remain
 unscoped while `libc` stays `cfg(unix)`.
+
+## Branch bundle Windows checksum-path finding
+
+The repaired branch build (`32658638595`) then compiled all four native
+Windows executables successfully, but stopped while importing the already
+published AICX 0.12.3 Windows ZIP. The sidecar expected
+`348245adc3272e2ebc0cc2bc8add9bb25bc2d9d1cb2f88ecc31d87a2ea236ec9`; the
+local computation returned the same digest with a leading backslash. GNU
+checksum output prefixes the digest with `\` when its filename field requires
+escaping, and a native Windows path exercises that format.
+
+`sha256_file` now feeds the archive over stdin, so the checksum tool has no
+Windows filename to escape. The Windows bundle contract replaces `shasum`
+with a strict fake that accepts only stdin and returns the expected digest;
+the old filename-argument implementation fails that test. This preserves
+cryptographic verification and fixes only the textual transport boundary.

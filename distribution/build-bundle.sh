@@ -103,13 +103,14 @@ print(os.path.abspath(os.path.expanduser(sys.argv[1])))
 PY
 }
 
-# Print the SHA-256 of one file using whichever of shasum/sha256sum exists, so
-# checksums are produced identically on macOS and Linux runners.
+# Print the SHA-256 of one file using whichever of shasum/sha256sum exists.
+# Feed the file on stdin: GNU checksum tools prefix the digest with `\` when a
+# Windows path needs escaping, which would make a correct digest compare unequal.
 sha256_file() {
   if command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 "$1" | awk '{print $1}'
+    shasum -a 256 < "$1" | awk '{print $1}'
   elif command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$1" | awk '{print $1}'
+    sha256sum < "$1" | awk '{print $1}'
   else
     die "missing shasum or sha256sum"
   fi

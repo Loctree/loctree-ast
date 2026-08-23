@@ -74,6 +74,18 @@ fi
 printf '%s  %s\n' "$archive_sha" "$archive_name" \
   > "$TMP_ROOT/release-payload/$archive_name.sha256"
 
+# Model Git Bash checksum behavior without depending on the host platform.
+# The production helper must hash stdin; passing a Windows filename directly
+# lets GNU checksum tools prefix an otherwise correct digest with `\`.
+cat > "$TMP_ROOT/bin/shasum" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ "$#" -eq 2 && "$1" == "-a" && "$2" == "256" ]]
+cat >/dev/null
+printf '%s  -\n' "$FAKE_ARCHIVE_SHA"
+SH
+chmod +x "$TMP_ROOT/bin/shasum"
+
 asset() {
   bash "$ROOT_DIR/distribution/build-bundle.sh" 0.14.3 \
     --aicx-version 0.12.3 \
@@ -87,6 +99,7 @@ asset() {
 [[ "$(asset x86_64-pc-windows-msvc)" == "aicx-v0.12.3-x86_64-pc-windows-msvc-slim.zip" ]]
 
 FAKE_RELEASE_DIR="$TMP_ROOT/release-payload" \
+FAKE_ARCHIVE_SHA="$archive_sha" \
 LOCTREE_GPG_KEY_ID="" \
 PATH="$TMP_ROOT/bin:$PATH" bash "$ROOT_DIR/distribution/build-bundle.sh" 0.14.3 \
   --aicx-version 0.12.3 \
