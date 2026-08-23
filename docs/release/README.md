@@ -452,11 +452,12 @@ two different names. Getting either wrong is a 404 at a user's first run.
 |---|---|---|
 | A — suite archive | `loctree-<ver>-<triple>.tar.gz` + `.sha256` | `editors/vscode/scripts/fetch-release-lsp.js:24` (VSIX packaging), `editors/vscode/src/client.ts:198` (runtime) |
 | A — inner layout | `loctree-<ver>-<triple>/bin/loctree-lsp` | `fetch-release-lsp.js:28` — the **internal directory structure is part of the contract**, not just the filename |
-| B — raw LSP binary | `loctree-lsp-{darwin-arm64,darwin-x64,linux-x64}` + `.sha256` | `editors/jetbrains/.../PlatformAsset.kt` `assetName()` |
+| B — raw LSP binary | `loctree-lsp-{darwin-arm64,darwin-x64,linux-x64}` and `loctree-lsp-windows-x64.exe` + `.sha256` | `editors/jetbrains/.../PlatformAsset.kt` `assetName()` |
 
-Windows and Linux arm64 are deliberately absent from shape B; `PlatformAsset`
-returns `null` for them and the plugin raises a visible unsupported-platform
-notification instead of failing silently.
+Linux arm64 and Windows arm64 are deliberately absent from shape B;
+`PlatformAsset` returns `null` for them and the plugin raises a visible
+unsupported-platform notification instead of failing silently. Windows x64
+uses the raw `.exe` produced from the verified MSVC bundle.
 
 Two historical traps worth remembering. v0.13.1's `x86_64-apple-darwin` archive
 was assembled **by hand** — it lacks the `components.json` that `build-bundle.sh`

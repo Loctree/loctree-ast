@@ -1,0 +1,11 @@
+out/
+out-test/
+dist/
+node_modules/
+*.vsix
+.vscode-test/
+
+# Bundled LSP binary is a build artifact — prepare-bins.js / CI rebuilds it at
+# package time, and the extension downloads the right per-platform binary at
+# runtime. Do not commit it (platform-specific, ~24MB).
+bin/

@@ -1,0 +1,22 @@
+.vscode/**
+.vscode-test/**
+src/**
+out/**
+out-test/**
+test/**
+node_modules/**
+scripts/**
+esbuild.js
+.gitignore
+tsconfig.json
+tsconfig.test.json
+**/*.ts
+**/*.map
+.eslintrc.json
+eslint.config.cjs
+
+# The extension is bundled by esbuild (main = ./dist/extension.js, which inlines
+# vscode-languageclient and the rest of the dependency tree). The runtime needs
+# only dist/extension.js + bin/ + media/, so node_modules and sources are
+# excluded wholesale — this is also what removes the "Cannot find module" class
+# of activation failures the unbundled package had.
