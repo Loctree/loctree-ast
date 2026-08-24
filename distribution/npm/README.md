@@ -6,11 +6,13 @@ of truth for the code lives in
 contains the thin JS wrapper and platform package manifests that ship to the
 `@loctree` npm scope.
 
-## One user-facing package, one runtime
+## One wrapper, three maintained names, one runtime
 
 | Package | Commands exposed | Notes |
 | --- | --- | --- |
-| `@loctree/loctree` | `loctree` (runtime), `loct` (alias), `loctree-mcp` (stdio adapter) | the only public package |
+| `@loctree/loctree` | `loctree`, `loct`, `loctree-mcp`, `loctree-lsp` | canonical identity |
+| `@loctree/loct` | same | maintained scoped alias |
+| `loctree` | same | maintained short form |
 
 `loctree` and `loct` are the **same binary** (`loct` is a short alias). MCP and
 LSP are not separate packages — they are modes/co-processes the runtime spawns:
@@ -22,12 +24,12 @@ The wrapper declares 4 platform sub-packages as `optionalDependencies`
 (esbuild/swc pattern). Platform matrix: `darwin-arm64`, `darwin-x64`,
 `linux-x64-gnu`, `win32-x64-msvc`.
 
-**Embed model:** each `@loctree/loctree-<platform>` package carries three release
-binaries side by side — `loctree`, `loctree-mcp`, `loctree-lsp` — with no
+**Embed model:** each `@loctree/loctree-<platform>` package carries four release
+binaries side by side — `loct`, `loctree`, `loctree-mcp`, `loctree-lsp` — with no
 postinstall download. The runtime resolves `loctree-mcp` / `loctree-lsp` as
 **siblings** of its own executable, so they must live in the same directory.
 
-Total: **1 wrapper + 4 platform packages = 5 npm packages.**
+Total: **one wrapper source under 3 names + 4 platform packages = 7 npm identities.**
 
 > There are **no separate** `@loctree/loctree-mcp` or `@loctree/loctree-lsp` npm
 > packages. The bundled MCP binary is exposed as `loctree-mcp` so stdio clients
@@ -55,7 +57,7 @@ loct --version
 ```
 distribution/npm/
 ├── README.md            (this file)
-├── PUBLISHING.md        (publish flow — 1 wrapper, 4 platform packages, first-publish order)
+├── PUBLISHING.md        (local bootstrap + exact-tag OIDC contract for 7 identities)
 ├── QUICKSTART.md        (end-user install recipe)
 ├── LICENSE              (BUSL-1.1)
 ├── sync-version.mjs     (bump the 5 package.json files in lockstep)

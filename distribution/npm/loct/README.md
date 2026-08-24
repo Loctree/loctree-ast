@@ -2,9 +2,9 @@
 
 **Loctree** — structural code intelligence for AI agents. One runtime, one install.
 
-`npm install -g @loctree/loctree` installs the Loctree runtime. The same package
-also publishes under the short name `loctree` — `npm install -g loctree` gives
-you the identical tarball. Source of truth lives in
+`npm install -g @loctree/loctree` installs the Loctree runtime. The same wrapper
+also publishes under the maintained scoped alias `@loctree/loct` and short name
+`loctree`. All three identities contain the same runtime payload. Source of truth lives in
 [Loctree/loctree](https://github.com/Loctree/loctree): the npm scope names the
 org, the package names the repo.
 
@@ -12,6 +12,8 @@ org, the package names the repo.
 
 ```bash
 npm install -g @loctree/loctree     # canonical name
+# or
+npm install -g @loctree/loct        # maintained scoped alias
 # or
 npm install -g loctree              # same package, short name
 # or
@@ -86,7 +88,8 @@ The wrapper declares one technical platform package per target as an
 `optionalDependency`; npm/pnpm/yarn install only the one matching your platform.
 Each platform package embeds the runtime and its co-process binaries side by side
 (no postinstall download), so the runtime always finds them as siblings.
-`@loctree/loctree` (with its short name `loctree`) is the only public package.
+`@loctree/loctree`, `@loctree/loct`, and `loctree` are maintained install
+identities over this one wrapper source.
 
 ## Supported platforms
 

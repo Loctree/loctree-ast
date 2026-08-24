@@ -49,6 +49,16 @@ if ! grep -Fq 'sh tools/test.sh || exit 1;' "$ROOT_DIR/Makefile"; then
   exit 1
 fi
 
+RELEASE_BUNDLES_WORKFLOW="$ROOT_DIR/.github/workflows/release-bundles.yml"
+if grep -Eq 'tar -tzf .*\|.*grep -[A-Za-z]*q' "$RELEASE_BUNDLES_WORKFLOW"; then
+  echo "release bundle membership check is vulnerable to pipefail/SIGPIPE false negatives" >&2
+  exit 1
+fi
+if [ "$(grep -Fc "format('refs/tags/v{0}', inputs.version)" "$RELEASE_BUNDLES_WORKFLOW")" -ne 2 ]; then
+  echo "manual release bundle recovery does not pin both checkouts to the requested tag" >&2
+  exit 1
+fi
+
 for expected in \
   'cargo fmt --all -- --check' \
   'cargo clippy --workspace --all-targets -- -D warnings' \

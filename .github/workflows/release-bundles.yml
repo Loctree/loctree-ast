@@ -35,6 +35,9 @@ jobs:
         # actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
+          # A manual recovery run executes the workflow definition from main,
+          # but builds the immutable release tag named by the input.
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/v{0}', inputs.version) || github.ref }}
           fetch-depth: 0
 
       - name: Resolve versions
@@ -166,6 +169,7 @@ jobs:
         # actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/v{0}', inputs.version) || github.ref }}
           fetch-depth: 0
 
       - name: Setup Rust
@@ -612,7 +616,10 @@ jobs:
             if [[ "$asset" == *-windows-msvc.tar.gz ]]; then
               member="${member}.exe"
             fi
-            if ! tar -tzf "$asset" | grep -Fxq "$member"; then
+            # Do not pipe a full tar listing into grep -q under pipefail: grep
+            # exits at the match and tar then dies on SIGPIPE, producing a
+            # false "missing member" result for a valid archive.
+            if ! tar -tzf "$asset" "$member" >/dev/null; then
               echo "::error::$asset does not contain $member"
               exit 1
             fi

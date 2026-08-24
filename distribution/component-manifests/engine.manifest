@@ -46,9 +46,9 @@ extra=distribution/component-extras/engine/glama.json:glama.json
 # release.
 #
 # OPERATOR ACTIONS that make the public repo able to release (none of them
-# can be done from source): npm trusted publishers bound to Loctree/loctree +
-# publish.yml for all six package names once they exist (first publish of a
-# new name bootstraps with a granular token — see distribution/npm/PUBLISHING.md);
+# can be done from source): after the local 0.14.4 operator bootstrap, bind npm
+# trusted publishers to Loctree/loctree + publish.yml for all seven package
+# identities; GitHub Actions has no token fallback (see distribution/npm/PUBLISHING.md);
 # GPG / Apple signing secrets on Loctree/loctree if signed bundles are wanted;
 # a cross-repo token for the thin release repos (loct, loctree-mcp,
 # loctree-release). Until those exist the workflows run, but publish steps
