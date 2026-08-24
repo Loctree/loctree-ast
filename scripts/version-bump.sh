@@ -64,10 +64,11 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Current crate-publish reality stays on legacy crates.io names until the
 # dedicated rename tracks land. Thin releases, npm, and Homebrew use the
 # active loct / loct-mcp / loct-lsp contract separately.
-# Publish order: report-leptos → loctree → loctree-mcp (dependency chain)
+# Publish order: report-leptos → loctree-ast → loctree → loctree-mcp
+# (dependency chain)
 CRATE_LIST=(
   "report-leptos|reports|yes|"
-  "loctree-ast|loctree-ast|no|"
+  "loctree-ast|loctree-ast|yes|"
   "loctree|loctree-rs|yes|report-leptos,loctree-ast"
   "report-wasm|reports/wasm|no|report-leptos"
   "loctree-mcp|loctree-mcp|yes|loctree"
@@ -860,7 +861,7 @@ fi
 
 # Publish crates (in dependency order)
 if ! $skip_publish; then
-  for crate in report-leptos loctree loctree-mcp; do
+  for crate in report-leptos loctree-ast loctree loctree-mcp; do
     if is_in_scope "$crate"; then
       publishable=$(get_crate_field "$crate" "pub")
       if [[ "$publishable" != "yes" ]]; then
