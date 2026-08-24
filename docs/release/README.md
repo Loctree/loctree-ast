@@ -1,14 +1,17 @@
 # Loctree Suite — Release Runbook
 
-Canonical ordering for shipping a `loctree-suite` version. Re-verified against
-**0.14.2** on `release/0.14.2-rebuild`, 2026-08-18.
+Canonical ordering for shipping Loctree. The detailed state table below is a
+preserved 0.14.2 audit snapshot; current 0.14.4 release evidence lives in
+[`2026-08-23-windows-release-research.md`](2026-08-23-windows-release-research.md),
+and the current npm contract lives in
+[`distribution/npm/PUBLISHING.md`](https://github.com/Loctree/loctree/blob/main/distribution/npm/PUBLISHING.md).
 
 Related: [editors-distribution.md](editors-distribution.md) for the VS Code /
 JetBrains artifact story.
 
 ---
 
-## 0. State of play (read this first)
+## 0. Historical 0.14.2 state snapshot
 
 | Fact | Value |
 |------|-------|
@@ -131,7 +134,7 @@ git push origin v0.14.2
 > hand:
 >
 > ```bash
-> gh workflow run publish.yml -f tag=v0.14.2
+> gh workflow run publish.yml -f tag=v0.14.4
 > ```
 >
 > `homebrew-release.yml` then fires automatically off the GitHub release that
@@ -148,7 +151,7 @@ gates → version bump → CHANGELOG → commit → tag → push tag
         ├─ build-cli-*         linux / macos-arm64 / macos-x86_64 / windows
         ├─ build-mcp-*         linux / macos-arm64 / macos-x86_64 / windows
         ├─ publish-thin-releases  → Loctree/loct, Loctree/loctree-mcp
-        ├─ publish-npm            → @loctree/loctree + 4 platform packages
+        ├─ publish-npm            → 3 wrapper identities + 4 platform packages
         └─ publish-monorepo-release → GitHub release on loctree-suite
               └─ (auto) homebrew-release.yml → homebrew-cli, homebrew-mcp
   └─ (MANUAL) component mirrors: distribution/component-sync.sh (after crates land)
@@ -162,7 +165,7 @@ gates → version bump → CHANGELOG → commit → tag → push tag
 | Secret | Used by | For |
 |--------|---------|-----|
 | `CARGO_REGISTRY_TOKEN` | `publish.yml`, `make publish` | crates.io |
-| `NPM_TOKEN` | `publish.yml` | `npm publish --access public` |
+| npm OIDC trusted publishers | `publish.yml` | Exact-tag publish with provenance for all seven npm identities |
 | `HOMEBREW_GITHUB_API_TOKEN` | `publish.yml`, `homebrew-release.yml`, `release-bundles.yml` | Cross-repo release + tap writes; also publishes assets to `Loctree/loctree-release` |
 | `MACOS_CERT_P12_BASE64`, `MACOS_CERT_PASSWORD`, `MACOS_KEYCHAIN_PASSWORD` | `publish.yml` | Import Developer ID cert |
 | `MACOS_DEVELOPER_ID_APPLICATION` | `publish.yml`, `make release-binaries` | codesign identity |
@@ -368,7 +371,7 @@ checked in this pass; nothing is inherited from the previous revision unaltered.
 
 ### Open — blocking, and who can close them
 
-8. **The repository does not hold the secrets its buttons require.**
+8. **Historical 2026-08-18 credential census (npm portion superseded).**
    Verified 2026-08-18 via `gh secret list` plus org scope. Present: exactly
    `CARGO_REGISTRY_TOKEN`, `HOMEBREW_GITHUB_API_TOKEN`, `NPM_TOKEN` (repo) and
    `SEMGREP_APP_TOKEN`, `GEMINI_API_KEY`, `NPM_TOKEN` (org `Loctree`).
@@ -392,8 +395,8 @@ checked in this pass; nothing is inherited from the previous revision unaltered.
    first JetBrains upload cannot be automated at all: `publishPlugin` updates
    an existing listing, it cannot create one. Operator-only.
 
-10. **The public engine mirror still carries a dangerous publish workflow —
-    right now.** `Loctree/loctree` `origin/main` `.github/workflows/publish.yml`
+10. **Historical finding, since resolved:** the public engine mirror carried a
+    dangerous publish workflow. `Loctree/loctree` `origin/main` `.github/workflows/publish.yml`
     triggers on `push: tags`, runs on the retired `[self-hosted, …, ops]`
     runner class, uses long-lived `NPM_TOKEN`, and has **neither** the
     NOT-WIRED stub **nor** the fail-closed platform-package gate. The manifest

@@ -10,7 +10,7 @@ Loctree monorepo.
 | Workflow | Trigger | Purpose | Status |
 |----------|---------|---------|--------|
 | **release-bundles.yml** | Manual dispatch / tag push (`v*`) | Build combined Loctree + AICX tarballs for macOS ARM64, Linux X64 GNU, and Windows X64 MSVC, plus core tarballs for macOS X64 and Linux musl | ✅ Active |
-| **publish.yml** | **Manual dispatch** (`workflow_dispatch`, input `tag`) | Publish crates, build binaries, push active-line assets into thin repos, publish the runtime wrapper as `loctree` and `@loctree/loctree` via npm trusted publishing, then create the monorepo release | ✅ Active |
+| **publish.yml** | **Manual dispatch** (`workflow_dispatch`, input `tag`) | Publish crates, build binaries, push active-line assets into thin repos, publish one runtime wrapper as `@loctree/loctree`, `@loctree/loct`, and `loctree` via npm trusted publishing, then create the monorepo release | ✅ Active |
 | **homebrew-release.yml** | Monorepo release published / manual dispatch | Render formulas and sync active-line formulas into `Loctree/homebrew-cli` + `Loctree/homebrew-mcp` | ✅ Active |
 
 ### CI & Quality
@@ -63,7 +63,6 @@ the current crates.io line still depends on it.
 The release pipeline expects these secrets in `Loctree/loctree-suite`:
 
 - `CARGO_REGISTRY_TOKEN`
-- `NPM_TOKEN`
 - `HOMEBREW_GITHUB_API_TOKEN`
 - `MACOS_CERT_P12_BASE64`
 - `MACOS_CERT_PASSWORD`
@@ -96,7 +95,8 @@ input), not automatically by the tag push. Once dispatched, the workflow:
 2. Publishes `report-leptos`, `loctree`, and `loctree-mcp` as the current legacy crate line.
 3. Builds signed binaries for CLI and MCP.
 4. Uploads active-line assets into `Loctree/loct` and `Loctree/loctree-mcp`.
-5. Publishes the single `@loctree/loctree` suite wrapper from `distribution/npm/loct` (platform packages first, then the wrapper).
+5. Publishes four platform packages, then one suite wrapper under canonical
+   `@loctree/loctree` plus maintained aliases `@loctree/loct` and `loctree`.
 6. Creates the monorepo release.
 7. Triggers tap sync for formulas `loct` and `loct-mcp` into `Loctree/homebrew-cli` and `Loctree/homebrew-mcp`.
 

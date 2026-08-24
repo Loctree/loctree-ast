@@ -1,7 +1,27 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { classifyNpmView } from "./publish-if-missing.mjs";
+import {
+  assertPackageVersion,
+  classifyNpmView,
+  publishArgs,
+} from "./publish-if-missing.mjs";
+
+test("CI publishes with provenance by default", () => {
+  assert.deepEqual(publishArgs(), ["publish", "--access", "public", "--provenance"]);
+});
+
+test("operator bootstrap can explicitly omit unavailable CI provenance", () => {
+  assert.deepEqual(publishArgs(false), ["publish", "--access", "public"]);
+});
+
+test("requested immutable version must match package metadata", () => {
+  assert.doesNotThrow(() => assertPackageVersion("0.14.4", "0.14.4"));
+  assert.throws(
+    () => assertPackageVersion("0.14.3", "0.14.4"),
+    /does not match requested 0\.14\.4/,
+  );
+});
 
 test("exact immutable version is skipped", () => {
   assert.equal(

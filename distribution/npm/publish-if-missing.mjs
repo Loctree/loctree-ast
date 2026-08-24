@@ -8,6 +8,20 @@ import { pathToFileURL } from "node:url";
 
 const VERSION_RE = /^[0-9]+\.[0-9]+\.[0-9]+$/;
 
+export function publishArgs(provenance = true) {
+  const args = ["publish", "--access", "public"];
+  if (provenance) args.push("--provenance");
+  return args;
+}
+
+export function assertPackageVersion(packageVersion, requestedVersion) {
+  if (packageVersion !== requestedVersion) {
+    throw new Error(
+      `package.json version ${JSON.stringify(packageVersion)} does not match requested ${requestedVersion}`,
+    );
+  }
+}
+
 export function classifyNpmView(result, requestedVersion) {
   if (result.status === 0) {
     let published;
@@ -34,15 +48,22 @@ function parseArgs(argv) {
     const value = argv[index + 1];
     if (!flag?.startsWith("--") || value === undefined) {
       throw new Error(
-        "usage: publish-if-missing.mjs --package-dir <dir> --version <x.y.z>",
+        "usage: publish-if-missing.mjs --package-dir <dir> --version <x.y.z> [--provenance true|false]",
       );
     }
     options[flag.slice(2)] = value;
   }
   if (!options["package-dir"] || !VERSION_RE.test(options.version || "")) {
     throw new Error(
-      "usage: publish-if-missing.mjs --package-dir <dir> --version <x.y.z>",
+      "usage: publish-if-missing.mjs --package-dir <dir> --version <x.y.z> [--provenance true|false]",
     );
+  }
+  if (
+    options.provenance !== undefined &&
+    options.provenance !== "true" &&
+    options.provenance !== "false"
+  ) {
+    throw new Error("--provenance must be true or false");
   }
   return options;
 }
@@ -65,6 +86,7 @@ export function main(argv = process.argv.slice(2)) {
   if (typeof packageName !== "string" || packageName.length === 0) {
     throw new Error(`package.json has no package name: ${packageDir}`);
   }
+  assertPackageVersion(packageJson.version, options.version);
 
   const spec = `${packageName}@${options.version}`;
   const view = npm(["view", spec, "version", "--json"], packageDir, true);
@@ -74,12 +96,11 @@ export function main(argv = process.argv.slice(2)) {
     return 0;
   }
 
-  console.log(`${spec} is absent; publishing with public access and provenance`);
-  const published = npm(
-    ["publish", "--access", "public", "--provenance"],
-    packageDir,
-    false,
+  const provenance = options.provenance !== "false";
+  console.log(
+    `${spec} is absent; publishing with public access${provenance ? " and provenance" : " (operator bootstrap without CI provenance)"}`,
   );
+  const published = npm(publishArgs(provenance), packageDir, false);
   if (published.error) throw published.error;
   if (published.status !== 0) {
     throw new Error(`npm publish failed for ${spec} with exit ${published.status}`);

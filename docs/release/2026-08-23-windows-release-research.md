@@ -119,18 +119,19 @@ narrow clean-main change after release assets exist.
 
 The live registry check before dispatch found five absent Gen3 scoped npm
 identities (`@loctree/loctree` plus four `@loctree/loctree-*` platform
-packages); bare `loctree` exists only on its legacy 0.8.x line. npm trusted
-publishing cannot be configured for a package that does not yet exist, while
-the workflow had already removed its documented bootstrap-token path. An OIDC
-dispatch was therefore guaranteed to fail even though its build artifacts
-could be correct.
+packages); bare `loctree` remained on 0.8.16 and `@loctree/loct` on 0.13.1.
+npm trusted publishing cannot be configured for a package that does not yet
+exist, so a first OIDC dispatch was guaranteed to fail even with correct build
+artifacts.
 
-The repaired workflow makes bootstrap an explicit dispatch input, verifies the
-granular token before npm packaging, retains OIDC/provenance, and publishes
-each immutable package version idempotently so a partial first run can be
-retried safely. After v0.14.3 creates the five scoped identities and advances
-bare `loctree`, all six package identities need trusted publishers; future
-dispatches then use OIDC only.
+The final contract makes 0.14.4 the last token-authenticated bootstrap and owns
+it locally through `make npm-release-publish`: it consumes checksum-verified
+public release bundles, reads the operator credential from `KEYS/.npm`, and
+publishes each immutable version idempotently. The package graph contains seven
+identities: four canonical platform packages plus canonical
+`@loctree/loctree`, maintained alias `@loctree/loct`, and recovered short form
+`loctree`. After bootstrap, all seven receive trusted-publisher configuration;
+`publish.yml` has no token lane and uses exact-tag OIDC with provenance only.
 
 ## Tag run Windows dependency-scope finding
 
@@ -259,3 +260,37 @@ Loctree `0.14.4+g3e6e0901` for `loct`, `loctree`, `loctree-mcp`, and
 Git fixture scan completed with `Status: OK`, and the raw
 `loctree-lsp-windows-x64.exe` asset plus checksum uploaded successfully. The
 immutable tag run must repeat this proof before any publish button is used.
+
+## Immutable 0.14.4 tag run and publish-gate finding
+
+Signed tag `v0.14.4` points at merged main
+`3e9eb0a74cb3c043d740de5fe7d8c93985d0a876`. Tag run `32675065929`
+repeated the complete five-target build proof successfully: macOS arm64/x64,
+Linux GNU/musl, and Windows MSVC all passed their bundle, version, archive,
+fixture-scan, and raw-LSP contracts.
+
+The final `Publish to Loctree/loctree-release` job nevertheless failed before
+upload. Its archive-membership check ran `tar -tzf "$asset" | grep -Fxq
+"$member"` under `set -o pipefail`. `grep -q` exited immediately on the valid
+match, GNU tar received SIGPIPE while writing the remaining listing, and the
+pipeline falsely reported that the archive lacked `loctree-lsp`. The log's
+`tar: stdout: write error` is the distinguishing evidence; the build jobs had
+already extracted and executed the same member successfully.
+
+The repair queries the exact tar member directly, with no early-closing pipe.
+A preflight regression forbids the `tar | grep -q` shape. Manual recovery runs
+now execute the workflow definition from main but pin both source checkouts to
+`refs/tags/v<version>`, so rerunning for 0.14.4 rebuilds the immutable tag rather
+than accidentally stamping post-tag main into same-version binaries. npm and
+web publication remain blocked until that recovery run publishes the verified
+assets.
+
+Before using the npm credential, the four relevant artifacts from failed run
+`32675065929` were downloaded into an isolated temporary directory and passed
+through `make npm-release-verify VERSION=0.14.4 ASSET_DIR=<artifact-dir>`. The
+first rehearsals found two orchestration-only defects without reading the
+token: macOS x64 is a core payload under the intentionally unsuffixed public
+archive name, and wrapper-name sanitization was incorrectly applied to the
+whole absolute staging path. After both repairs, all four archive checksums,
+all sixteen staged binaries, the helper tests, four platform dry-packs, and
+three wrapper dry-packs passed. No npm publish occurred during rehearsal.

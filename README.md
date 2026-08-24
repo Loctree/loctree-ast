@@ -30,22 +30,15 @@ Alternative package-manager paths:
 ```bash
 cargo install --locked loctree       # crates.io: core analyzer + loct/loctree CLIs
 cargo add loctree@0.13.1             # library dependency for Rust integrations
-npm install -g @loctree/loctree         # runtime package: loct/loctree CLI plus sibling loctree-mcp/loctree-lsp binaries
+npm install -g @loctree/loctree      # canonical runtime package; loct/loctree plus MCP/LSP siblings
 ```
 
-> **npm naming.** `@loctree/loctree` is the canonical package name from 0.14.2
-> on: the scope names the org, the name names the repo, mirroring
-> [github.com/Loctree/loctree](https://github.com/Loctree/loctree) exactly.
-> The same wrapper publishes under plain `loctree` as the short form — both
-> names ship from the same tarball in one `publish.yml` run (see
-> `distribution/npm/PUBLISHING.md`); this is wired, and lands with the v0.14.2
-> tag cut from `Loctree/loctree` after merge. Registry today, until that tag:
-> `npm view @loctree/loct version` → `0.13.1` is the live package under the
-> **legacy scoped name**, and `npm install -g loctree` still resolves the
-> **deprecated 0.8.x line** (`0.8.16`, MIT/Apache, no `loct` alias, no MCP/LSP
-> siblings, deprecated 2026-08-20). Until v0.14.2: `npm install -g
-> @loctree/loct`. From v0.14.2: `npm install -g loctree` (or the canonical
-> `@loctree/loctree`) — then this note gets removed.
+> **npm naming.** One wrapper is published under three maintained identities:
+> canonical `@loctree/loctree`, established scoped alias `@loctree/loct`, and
+> short form `loctree`. They resolve the same four
+> `@loctree/loctree-*` platform packages and expose the same commands. See
+> [`distribution/npm/PUBLISHING.md`](distribution/npm/PUBLISHING.md) for the
+> seven-package release and trusted-publishing contract.
 
 Homebrew: the `loctree/cli` tap repository exists but currently ships **no
 formula** — `brew install loctree/cli/loct` will fail with "no available
@@ -70,9 +63,7 @@ docker run --rm -i \
   loctree-mcp
 ```
 
-> Version note: this tree is at **0.14.2**, which is not published yet. The
-> newest released version is **0.13.1** — that is what the pinned examples below
-> and the package managers currently resolve to. See
+> Version note: this tree is at **0.14.4**. See
 > [docs/release/README.md](docs/release/README.md) for the release procedure.
 
 Manual combined-bundle download with checksum and GPG verification:

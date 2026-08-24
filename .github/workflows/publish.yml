@@ -7,12 +7,6 @@ on:
         description: "Legacy thin-repo/crates release tag (vX.Y.Z)"
         required: true
         type: string
-      npm_bootstrap:
-        description: "Use NPM_TOKEN for the first publish of new Gen3 package names"
-        required: true
-        default: false
-        type: boolean
-
 permissions:
   contents: write
 
@@ -32,6 +26,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
+          ref: ${{ inputs.tag }}
           fetch-depth: 0
 
       - name: Extract version from tag
@@ -69,8 +64,8 @@ jobs:
             exit 1
           fi
 
-  verify-npm-bootstrap:
-    name: Verify npm authentication mode
+  verify-npm-contract:
+    name: Verify npm publish contract
     needs: verify-release
     runs-on: ubuntu-latest
     permissions:
@@ -78,6 +73,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ inputs.tag }}
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
@@ -87,17 +84,8 @@ jobs:
       - name: Test idempotent npm publish helper
         run: node --test distribution/npm/publish-if-missing.test.mjs
 
-      - name: Verify bootstrap token before expensive npm packaging
-        if: inputs.npm_bootstrap
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          npm install -g npm@latest
-          npm whoami
-
       - name: Confirm trusted-publishing mode
-        if: ${{ !inputs.npm_bootstrap }}
-        run: echo "npm publish will use the workflow OIDC identity"
+        run: echo "npm publish uses the workflow OIDC identity for every package name"
 
   publish-crates:
     name: Publish Rust Crates
@@ -109,7 +97,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          ref: ${{ github.ref }}
+          ref: ${{ inputs.tag }}
           fetch-depth: 0
 
       - name: Install protoc
@@ -174,7 +162,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          ref: ${{ github.ref }}
+          ref: ${{ inputs.tag }}
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
@@ -229,7 +217,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          ref: ${{ github.ref }}
+          ref: ${{ inputs.tag }}
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
@@ -321,7 +309,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          ref: ${{ github.ref }}
+          ref: ${{ inputs.tag }}
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
@@ -413,7 +401,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          ref: ${{ github.ref }}
+          ref: ${{ inputs.tag }}
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
@@ -463,7 +451,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          ref: ${{ github.ref }}
+          ref: ${{ inputs.tag }}
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
@@ -495,7 +483,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          ref: ${{ github.ref }}
+          ref: ${{ inputs.tag }}
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
@@ -561,7 +549,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          ref: ${{ github.ref }}
+          ref: ${{ inputs.tag }}
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
@@ -627,7 +615,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          ref: ${{ github.ref }}
+          ref: ${{ inputs.tag }}
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
@@ -866,7 +854,7 @@ jobs:
             }
 
   publish-npm:
-    name: Publish npm (single @loctree/loctree suite wrapper)
+    name: Publish npm (one wrapper, three identities)
     needs:
       - verify-release
       - build-cli-linux
@@ -877,12 +865,11 @@ jobs:
       - build-mcp-macos-arm64
       - build-mcp-macos-x86_64
       - build-mcp-windows
-      - verify-npm-bootstrap
+      - verify-npm-contract
     runs-on: ubuntu-latest
-    # Steady state uses trusted publishing (OIDC). The explicit bootstrap input
-    # temporarily supplies NPM_TOKEN only to create names that do not yet exist;
-    # provenance still uses this job's OIDC permission. After bootstrap, every
-    # package must trust this repository and workflow filename.
+    # Steady state uses trusted publishing (OIDC) exclusively. The one-time
+    # 0.14.4 bootstrap is an operator-owned local Make target; no long-lived npm
+    # credential remains in this workflow after the package identities exist.
     permissions:
       id-token: write
       contents: read
@@ -891,7 +878,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          ref: ${{ github.ref }}
+          ref: ${{ inputs.tag }}
 
       - name: Setup Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -905,8 +892,9 @@ jobs:
           npm install -g npm@latest
           npm --version
 
-      # Gen3 single-wrapper model. Only @loctree/loctree is user-facing; its
-      # @loctree/loctree-* platform packages are a technical delivery mechanism.
+      # Gen3 single-wrapper model. @loctree/loctree is canonical, while
+      # @loctree/loct and loctree remain maintained aliases. The four
+      # @loctree/loctree-* packages are a technical delivery mechanism.
       # We do NOT publish @loctree/loctree-mcp or @loctree/loctree-lsp separately.
       - name: Refresh npm package versions (wrapper + 4 platform packages)
         run: node distribution/npm/sync-version.mjs "${{ needs.verify-release.outputs.version }}"
@@ -995,21 +983,7 @@ jobs:
           fi
           echo "All platform packages carry executable loct, loctree, loctree-mcp, loctree-lsp."
 
-      - name: Publish npm platform packages (bootstrap token)
-        if: inputs.npm_bootstrap
-        working-directory: distribution/npm/loct
-        env:
-          RELEASE_VERSION: ${{ needs.verify-release.outputs.version }}
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          set -euo pipefail
-          for plat_dir in platform-packages/*/; do
-            node ../publish-if-missing.mjs --package-dir "$plat_dir" --version "$RELEASE_VERSION"
-          done
-          sleep 20
-
       - name: Publish npm platform packages (trusted OIDC)
-        if: ${{ !inputs.npm_bootstrap }}
         working-directory: distribution/npm/loct
         env:
           RELEASE_VERSION: ${{ needs.verify-release.outputs.version }}
@@ -1020,36 +994,18 @@ jobs:
           done
           sleep 20
 
-      # The wrapper ships under two names from ONE source directory — same
-      # tarball, same version, no duplicated resolver. `@loctree/loctree` is
-      # the canonical identity: the scope names the org, the name names the
-      # repo, mirroring github.com/Loctree/loctree exactly. Plain `loctree` is
-      # the free short form users reach for (`npm i -g loctree`). It and all
-      # five scoped Gen3 names need trusted publishers — and a FIRST publish of
-      # a not-yet-existing name cannot use OIDC: bootstrap new names with a
-      # token, then configure trusted publishing (see
-      # distribution/npm/PUBLISHING.md).
-      - name: Publish the user-facing wrapper with bootstrap token
-        if: inputs.npm_bootstrap
-        working-directory: distribution/npm/loct
-        env:
-          RELEASE_VERSION: ${{ needs.verify-release.outputs.version }}
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          set -euo pipefail
-          node ../publish-if-missing.mjs --package-dir . --version "$RELEASE_VERSION"
-
-          npm pkg set name=loctree
-          node ../publish-if-missing.mjs --package-dir . --version "$RELEASE_VERSION"
-          npm pkg set name=@loctree/loctree
-
-      - name: Publish the user-facing wrapper with trusted OIDC
-        if: ${{ !inputs.npm_bootstrap }}
+      # One wrapper source ships under three durable identities. The scoped
+      # `@loctree/loct` address remains a maintained alias; it is not frozen or
+      # deprecated merely because `@loctree/loctree` is canonical.
+      - name: Publish the user-facing wrapper aliases with trusted OIDC
         working-directory: distribution/npm/loct
         env:
           RELEASE_VERSION: ${{ needs.verify-release.outputs.version }}
         run: |
           set -euo pipefail
+          node ../publish-if-missing.mjs --package-dir . --version "$RELEASE_VERSION"
+
+          npm pkg set name=@loctree/loct
           node ../publish-if-missing.mjs --package-dir . --version "$RELEASE_VERSION"
 
           npm pkg set name=loctree

@@ -28,7 +28,7 @@ endif
 
 .PHONY: all build release-binaries release-bundles release-pack smoke-release-macos-arm64 smoke-release-linux-gnu install install-all install-service uninstall-service clean test check precheck preflight semgrep fmt help setup-protoc
 .PHONY: editors editors-full editors-vscode editors-vscode-package editors-neovim editors-jetbrains editors-jetbrains-full editors-jetbrains-verify editors-jetbrains-install
-.PHONY: version version-show version-check version-assert publish
+.PHONY: version version-show version-check version-assert publish npm-release-verify npm-release-publish
 .PHONY: mcp-build mcp-install mcp-test
 .PHONY: ai-hooks ai-hooks-claude ai-hooks-codex ai-hooks-gemini ai-hooks-all git-hooks test-git-hooks
 # Landing extracted to ../loct-io standalone repo (was: landing landing-dev landing-clean landing-deploy)
@@ -474,6 +474,8 @@ help:
 	@printf '\n'
 	@printf '  $(HELP_C_YELLOW)%s$(HELP_C_RESET)\n' 'PUBLISHING'
 	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'publish' '- Publish to crates.io'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'npm-release-verify' '- Verify immutable release assets and dry-pack all 7 npm identities'
+	@printf '    $(HELP_C_GREEN)%-18s$(HELP_C_RESET) %s\n' 'npm-release-publish' '- Operator bootstrap from verified assets using KEYS/.npm'
 	@printf '%s\n' '  make publish BUMP=true               - Bump patch + publish'
 	@printf '%s\n' '  make publish BUMP=true VERSION=minor - Bump minor + publish'
 	@printf '%s\n' '  make publish TAG=true                - Publish + tag (triggers npm + brew + binaries)'
@@ -559,6 +561,7 @@ publish:
 		echo "Usage: CARGO_REGISTRY_TOKEN=xxx make publish"; \
 		exit 1; \
 	fi
+
 	@if [ "$(BUMP)" = "true" ]; then \
 		echo "=== Bumping version ($(VERSION)) ==="; \
 		$(VERSION_SCRIPT) --all --$(VERSION) --no-publish --force; \
@@ -605,6 +608,25 @@ publish:
 		echo "Tip: Run 'make publish TAG=true' or push tag manually to trigger binary + npm + brew release:"; \
 		echo "  git tag -a v$$VER -m 'Release v$$VER' && git push origin v$$VER"; \
 	fi
+
+# Deterministic npm release path. The default target never authenticates or
+# publishes; the explicit publish target reads the operator token inside the
+# script and never copies it into the repository or GitHub Actions.
+npm-release-verify:
+	@if [ -z "$(VERSION)" ]; then \
+		echo "VERSION is required. Usage: make npm-release-verify VERSION=0.14.4 [ASSET_DIR=/path/to/assets]" >&2; \
+		exit 1; \
+	fi
+	@VERSION="$(VERSION)" KEYS="$(KEYS)" ASSET_DIR="$(ASSET_DIR)" RELEASE_REPO="$(or $(RELEASE_REPO),Loctree/loctree-release)" \
+		bash distribution/npm/publish-release.sh
+
+npm-release-publish:
+	@if [ -z "$(VERSION)" ]; then \
+		echo "VERSION is required. Usage: make npm-release-publish VERSION=0.14.4 KEYS=/path/to/operator-keys" >&2; \
+		exit 1; \
+	fi
+	@VERSION="$(VERSION)" KEYS="$(KEYS)" ASSET_DIR="$(ASSET_DIR)" RELEASE_REPO="$(or $(RELEASE_REPO),Loctree/loctree-release)" PUBLISH_CONFIRM=1 \
+		bash distribution/npm/publish-release.sh
 
 # ============================================================================
 # MCP Build & Install (loctree-mcp only)

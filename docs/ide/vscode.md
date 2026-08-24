@@ -4,7 +4,9 @@ The Loctree VSCode extension provides real-time dead code detection, circular im
 
 ## Installation
 
-The extension needs the `loctree-lsp` binary on `PATH`. In 0.13.0 the signed bundle and the `@loctree/loct` runtime package (legacy scoped name; `@loctree/loctree` from 0.14.2) both ship it:
+The extension needs the `loctree-lsp` binary on `PATH`. Signed bundles and all
+three maintained npm wrapper identities (`@loctree/loctree`, `@loctree/loct`,
+and `loctree`) ship it:
 
 ```bash
 npm install -g @loctree/loctree

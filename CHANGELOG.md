@@ -19,8 +19,12 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   committed Git fixture, stage the editor LSP executable, and upload through
   one Git Bash-safe path contract. Checksum generation and archive creation no
   longer pass drive-qualified filenames through GNU tools.
-- The first scoped npm publish has an explicit, preflighted bootstrap lane and
-  idempotent package publication; later releases remain on trusted publishing.
+- The 0.14.4 npm identity bootstrap has an explicit operator-owned local lane
+  over checksum-verified release assets. It publishes all seven package
+  identities idempotently; later releases use exact-tag trusted publishing
+  without a long-lived workflow token.
+- `@loctree/loct` remains a maintained wrapper alias alongside canonical
+  `@loctree/loctree` and short-form `loctree`.
 - `loctree-mcp` keeps shared CLI/logging dependencies cross-platform while
   retaining `libc` as Unix-only, restoring the Windows MSVC build.
 
@@ -49,9 +53,8 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 - npm identity: the wrapper's canonical name is now `@loctree/loctree` (scope =
   org, name = repo, mirroring `github.com/Loctree/loctree`), published together
   with the plain short form `loctree` from the same tarball. The four platform
-  packages follow as `@loctree/loctree-<platform>`. The previous scoped name
-  `@loctree/loct` (live at 0.13.1) becomes legacy and will be deprecated with a
-  pointer after the first healthy 0.14.2 publish.
+  packages follow as `@loctree/loctree-<platform>`. The established scoped name
+  `@loctree/loct` remains a maintained alias over the same platform packages.
 - npm wrapper now exposes `loctree-lsp` on PATH (bin shim), alongside
   `loctree`, `loct` and `loctree-mcp` — the platform packages always carried
   the binary, but `npm install -g` never linked it, so editors could not find
