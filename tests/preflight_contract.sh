@@ -4,6 +4,7 @@
 set -eu
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+bash "$ROOT_DIR/tests/crates_io_index_wait_contract.sh"
 dry_run="$(make -sn -C "$ROOT_DIR" preflight)"
 test_dry_run="$(make -sn -C "$ROOT_DIR" test | tail -n 1)"
 

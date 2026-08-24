@@ -91,14 +91,29 @@ jobs:
     name: Publish Rust Crates
     needs: verify-release
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: release-src
     env:
       CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
     steps:
-      - name: Checkout
+      - name: Checkout immutable release source
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ inputs.tag }}
           fetch-depth: 0
+          path: release-src
+
+      # Release-control fixes can land after a tag without changing the source
+      # being published. Pin them to the exact commit that supplied this
+      # workflow instead of assuming the immutable tag already contains them.
+      - name: Checkout release control
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          sparse-checkout: scripts/wait-for-crates-io-version.sh
+          sparse-checkout-cone-mode: false
+          path: release-control
 
       - name: Install release gate dependencies
         run: |
@@ -124,7 +139,7 @@ jobs:
       - name: Publish report-leptos (legacy crate)
         run: |
           cargo publish -p report-leptos 2>&1 || {
-            if cargo search report-leptos 2>/dev/null | grep -q '"${{ needs.verify-release.outputs.version }}"'; then
+            if (cd "$RUNNER_TEMP" && cargo info --registry crates-io "report-leptos@${{ needs.verify-release.outputs.version }}" >/dev/null 2>&1); then
               echo "report-leptos already at ${{ needs.verify-release.outputs.version }}, continuing"
             else
               exit 1
@@ -132,12 +147,25 @@ jobs:
           }
 
       - name: Wait for crates.io index
-        run: sleep 30
+        run: ../release-control/scripts/wait-for-crates-io-version.sh report-leptos "${{ needs.verify-release.outputs.version }}"
+
+      - name: Publish loctree-ast
+        run: |
+          cargo publish -p loctree-ast 2>&1 || {
+            if (cd "$RUNNER_TEMP" && cargo info --registry crates-io "loctree-ast@${{ needs.verify-release.outputs.version }}" >/dev/null 2>&1); then
+              echo "loctree-ast already at ${{ needs.verify-release.outputs.version }}, continuing"
+            else
+              exit 1
+            fi
+          }
+
+      - name: Wait for crates.io index
+        run: ../release-control/scripts/wait-for-crates-io-version.sh loctree-ast "${{ needs.verify-release.outputs.version }}"
 
       - name: Publish loctree (legacy crate)
         run: |
           cargo publish -p loctree 2>&1 || {
-            if cargo search loctree 2>/dev/null | grep -q '"${{ needs.verify-release.outputs.version }}"'; then
+            if (cd "$RUNNER_TEMP" && cargo info --registry crates-io "loctree@${{ needs.verify-release.outputs.version }}" >/dev/null 2>&1); then
               echo "loctree already at ${{ needs.verify-release.outputs.version }}, continuing"
             else
               exit 1
@@ -145,17 +173,20 @@ jobs:
           }
 
       - name: Wait for crates.io index
-        run: sleep 30
+        run: ../release-control/scripts/wait-for-crates-io-version.sh loctree "${{ needs.verify-release.outputs.version }}"
 
       - name: Publish loctree-mcp (legacy crate)
         run: |
           cargo publish -p loctree-mcp 2>&1 || {
-            if cargo search loctree-mcp 2>/dev/null | grep -q '"${{ needs.verify-release.outputs.version }}"'; then
+            if (cd "$RUNNER_TEMP" && cargo info --registry crates-io "loctree-mcp@${{ needs.verify-release.outputs.version }}" >/dev/null 2>&1); then
               echo "loctree-mcp already at ${{ needs.verify-release.outputs.version }}, continuing"
             else
               exit 1
             fi
           }
+
+      - name: Wait for crates.io index
+        run: ../release-control/scripts/wait-for-crates-io-version.sh loctree-mcp "${{ needs.verify-release.outputs.version }}"
 
   build-cli-linux:
     name: Build CLI Linux Artifact
