@@ -58,6 +58,14 @@ if [ "$(grep -Fc "format('refs/tags/v{0}', inputs.version)" "$RELEASE_BUNDLES_WO
   echo "manual release bundle recovery does not pin both checkouts to the requested tag" >&2
   exit 1
 fi
+if ! grep -Fq 'git describe --tags --exact-match HEAD' "$RELEASE_BUNDLES_WORKFLOW"; then
+  echo "release bundle verification does not prove the checkout is the exact requested tag" >&2
+  exit 1
+fi
+if ! grep -Fq "|| github.event_name == 'workflow_dispatch'" "$RELEASE_BUNDLES_WORKFLOW"; then
+  echo "manual release bundle recovery cannot reach the public release publish job" >&2
+  exit 1
+fi
 
 for expected in \
   'cargo fmt --all -- --check' \

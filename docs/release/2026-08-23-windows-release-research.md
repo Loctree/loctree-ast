@@ -294,3 +294,21 @@ archive name, and wrapper-name sanitization was incorrectly applied to the
 whole absolute staging path. After both repairs, all four archive checksums,
 all sixteen staged binaries, the helper tests, four platform dry-packs, and
 three wrapper dry-packs passed. No npm publish occurred during rehearsal.
+
+## Manual recovery publish contract
+
+Manual recovery run `32678237015`, launched from repaired main
+`f158370e98307829e6a4afe2db8ec1760b4b0a55`, rebuilt the exact signed
+`v0.14.4` tag and passed all five platform jobs. Linux GNU and musl, macOS
+arm64 and x64, and Windows MSVC each completed bundle verification, runtime
+smoke, committed-fixture scan, and artifact upload. This confirms both the
+Debian 12 musl repair and the real Windows release path on the recovery route.
+
+The final cross-repository publish was still skipped because its job-level
+condition admitted only tag-push events, even though manual recovery had been
+changed to build the immutable tag. The workflow therefore had two conflicting
+manual-run contracts: exact-tag recovery in checkout, but rehearsal-only at the
+publish boundary. The follow-up repair makes the contract single-valued:
+manual recovery may reach publish only after the verify job proves that HEAD is
+the exact `v<version>` tag and every platform build succeeds. Preflight now
+locks both the exact-tag proof and manual publish reachability.
