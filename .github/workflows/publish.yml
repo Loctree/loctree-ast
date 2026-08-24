@@ -917,13 +917,14 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: "20"
+          node-version: "24"
           registry-url: "https://registry.npmjs.org"
 
-      # Node 20 ships npm 10.x; OIDC trusted publishing needs npm >= 11.5.1.
+      # Keep the trusted-publishing client deterministic. npm@latest crossed to
+      # npm 12, whose Node engine can outrun the hosted setup-node runtime.
       - name: Ensure npm supports trusted publishing
         run: |
-          npm install -g npm@latest
+          npm install -g npm@11.17.0
           npm --version
 
       # Gen3 single-wrapper model. @loctree/loctree is canonical, while

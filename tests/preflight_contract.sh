@@ -68,6 +68,21 @@ if ! grep -Fq "|| github.event_name == 'workflow_dispatch'" "$RELEASE_BUNDLES_WO
   exit 1
 fi
 
+PUBLISH_WORKFLOW="$ROOT_DIR/.github/workflows/publish.yml"
+publish_npm_job="$(sed -n '/^  publish-npm:/,/^  publish-monorepo:/p' "$PUBLISH_WORKFLOW")"
+if ! printf '%s\n' "$publish_npm_job" | grep -Fq 'node-version: "24"'; then
+  echo "npm publish job does not pin a current Node runtime" >&2
+  exit 1
+fi
+if ! printf '%s\n' "$publish_npm_job" | grep -Fq 'npm install -g npm@11.17.0'; then
+  echo "npm publish job does not pin the tested trusted-publishing client" >&2
+  exit 1
+fi
+if printf '%s\n' "$publish_npm_job" | grep -Fq 'npm install -g npm@latest'; then
+  echo "npm publish job still follows the moving npm latest tag" >&2
+  exit 1
+fi
+
 for expected in \
   'cargo fmt --all -- --check' \
   'cargo clippy --workspace --all-targets -- -D warnings' \
